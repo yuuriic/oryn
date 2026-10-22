@@ -8,7 +8,7 @@ import { randomBytes } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
-import type { AddressInfo } from 'node:net';
+import { BlockList, isIP, type AddressInfo } from 'node:net';
 import { join, relative, sep } from 'node:path';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer, type WebSocket } from 'ws';
@@ -27,7 +27,10 @@ export interface HttpsOptions {
 export interface ServerConfig {
   distDir: string;
   httpPort: number;
-  /** Padrão: 127.0.0.1. O HTTP nunca deve escutar na LAN. */
+  /**
+   * Padrão: 127.0.0.1. Somente endereços LITERAIS de loopback (127.0.0.0/8 ou ::1) são aceitos;
+   * qualquer outro valor, incluindo "localhost", é rejeitado antes de abrir listeners.
+   */
   httpHost?: string;
   https?: HttpsOptions;
   maxSessions?: number;
@@ -99,21 +102,51 @@ export function loadStaticFiles(distDir: string): Map<string, { body: Buffer; ty
   return files;
 }
 
-function listen(server: http.Server, port: number, host: string): Promise<number> {
+function listen(server: http.Server, port: number, host: string): Promise<AddressInfo> {
   return new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(port, host, () => {
       server.off('error', reject);
-      resolve((server.address() as AddressInfo).port);
+      resolve(server.address() as AddressInfo);
     });
   });
 }
 
 const hostForUrl = (host: string): string => (host.includes(':') ? `[${host}]` : host);
 
+const LOOPBACK = new BlockList();
+LOOPBACK.addSubnet('127.0.0.0', 8, 'ipv4');
+LOOPBACK.addAddress('::1', 'ipv6');
+
+/** true para endereços literais de loopback (127.0.0.0/8 ou ::1), sem formas IPv4 mapeadas em IPv6. */
+export function isLoopbackLiteral(address: string): boolean {
+  const family = isIP(address);
+  if (family === 0) return false;
+  if (family === 6 && address.includes('.')) return false; // ex.: ::ffff:127.0.0.1 (forma ambígua)
+  return LOOPBACK.check(address, family === 6 ? 'ipv6' : 'ipv4');
+}
+
+/**
+ * Valida o host do listener HTTP (sem TLS). Somente loopback literal é aceito, sem fallback.
+ * "localhost" é recusado de propósito: a resolução depende do sistema (arquivo hosts, ordem
+ * IPv4/IPv6) e o bind ocorreria apenas no primeiro endereço resolvido, o que não é previsível.
+ */
+export function assertLoopbackHttpHost(host: string): void {
+  if (isIP(host) === 0) {
+    throw new Error(
+      `httpHost inválido: "${host}". Use um endereço literal de loopback (127.0.0.1 ou ::1); nomes como "localhost" não são aceitos.`,
+    );
+  }
+  if (!isLoopbackLiteral(host)) {
+    throw new Error(`httpHost recusado: "${host}" não é loopback. O HTTP sem TLS só pode escutar em 127.0.0.0/8 ou ::1.`);
+  }
+}
+
 export async function startServer(config: ServerConfig): Promise<RunningServer> {
   const log = config.log ?? ((line: string) => console.log(line));
   const httpHost = config.httpHost ?? '127.0.0.1';
+  // Validação antes de qualquer outra coisa: nenhum listener é aberto com configuração inválida.
+  assertLoopbackHttpHost(httpHost);
   const files = loadStaticFiles(config.distDir);
 
   const registry = new SessionRegistry({
@@ -227,33 +260,43 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
   httpServer.on('upgrade', onUpgrade);
   httpsServer?.on('upgrade', onUpgrade);
 
-  const httpPort = await listen(httpServer, config.httpPort, httpHost);
-  const httpOrigin = `http://${hostForUrl(httpHost)}:${httpPort}`;
-  allowedOrigins.add(httpOrigin);
-  if (httpHost === '127.0.0.1') allowedOrigins.add(`http://localhost:${httpPort}`);
+  const stop = (s: http.Server | null) =>
+    new Promise<void>((resolve) => {
+      if (!s?.listening) return resolve();
+      s.closeAllConnections?.();
+      s.close(() => resolve());
+    });
+  const shutdown = async (): Promise<void> => {
+    clearInterval(heartbeat);
+    registry.closeAll();
+    for (const ws of wss.clients) ws.close(1001, 'server shutdown');
+    wss.close();
+    await Promise.all([stop(httpServer), stop(httpsServer)]);
+  };
 
-  if (httpsServer && config.https) {
-    const httpsPort = await listen(httpsServer, config.https.port, config.https.host);
-    httpsOrigin = `https://${hostForUrl(config.https.host)}:${httpsPort}`;
-    allowedOrigins.add(httpsOrigin);
+  let httpOrigin: string;
+  try {
+    const bound = await listen(httpServer, config.httpPort, httpHost);
+    // Defesa em profundidade: confere o endereço efetivamente vinculado.
+    if (!isLoopbackLiteral(bound.address)) {
+      throw new Error(`Listener HTTP vinculado fora do loopback (${bound.address}); servidor abortado.`);
+    }
+    // URL/Origin a partir do endereço canônico do bind (ex.: "::1" → "http://[::1]:porta").
+    httpOrigin = `http://${hostForUrl(bound.address)}:${bound.port}`;
+    allowedOrigins.add(httpOrigin);
+    // localhost aponta para o loopback no navegador do próprio PC; o Origin enviado é "http://localhost:porta".
+    allowedOrigins.add(`http://localhost:${bound.port}`);
+
+    if (httpsServer && config.https) {
+      const tls = await listen(httpsServer, config.https.port, config.https.host);
+      httpsOrigin = `https://${hostForUrl(config.https.host)}:${tls.port}`;
+      allowedOrigins.add(httpsOrigin);
+    }
+  } catch (error) {
+    // Falha ao abrir qualquer listener: fecha o que já abriu e para o heartbeat (sem recursos órfãos).
+    await shutdown();
+    throw error;
   }
 
-  return {
-    httpOrigin,
-    httpsOrigin,
-    registry,
-    close: async () => {
-      clearInterval(heartbeat);
-      registry.closeAll();
-      for (const ws of wss.clients) ws.close(1001, 'server shutdown');
-      wss.close();
-      const stop = (s: http.Server | null) =>
-        new Promise<void>((resolve) => {
-          if (!s) return resolve();
-          s.closeAllConnections?.();
-          s.close(() => resolve());
-        });
-      await Promise.all([stop(httpServer), stop(httpsServer)]);
-    },
-  };
+  return { httpOrigin, httpsOrigin, registry, close: shutdown };
 }

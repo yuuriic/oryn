@@ -1,0 +1,124 @@
+# CI da POC-02A (poc/webrtc-audio-lan): verificações estáticas, testes, build, audit e
+# E2E com dois navegadores reais (Chrome ↔ Edge, processos separados, microfones sintéticos).
+#
+# Segurança: somente leitura do repositório, sem segredos, sem deploy, sem merge, sem instalação
+# de CA. Os certificados dos testes de TLS são gerados em diretório temporário pelo próprio teste.
+
+name: POC-02A CI
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'poc/webrtc-audio-lan/**'
+      - '.github/workflows/poc-02a-ci.yml'
+  push:
+    branches: [poc/webrtc-audio-lan]
+    paths:
+      - 'poc/webrtc-audio-lan/**'
+      - '.github/workflows/poc-02a-ci.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: poc-02a-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '24.19.0'
+
+defaults:
+  run:
+    shell: bash
+    working-directory: poc/webrtc-audio-lan
+
+jobs:
+  checks:
+    name: Verificações (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: pnpm (versão do packageManager)
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: poc/webrtc-audio-lan/package.json
+
+      - name: Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: poc/webrtc-audio-lan/pnpm-lock.yaml
+
+      - name: Instalação reproduzível
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Testes unitários e de integração (inclui TLS com OpenSSL do runner)
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+      - name: Audit de dependências
+        if: runner.os == 'Linux'
+        run: pnpm audit
+
+  e2e:
+    name: E2E Chrome ↔ Edge (windows-2025)
+    # Windows: plataforma-alvo do Oryn e mesmo ambiente da validação local. A imagem do runner
+    # traz Google Chrome e Microsoft Edge estáveis pré-instalados; as versões ficam registradas
+    # no log. O Edge NÃO é substituído por Chromium: se faltar, o job falha.
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: pnpm (versão do packageManager)
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: poc/webrtc-audio-lan/package.json
+
+      - name: Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: poc/webrtc-audio-lan/pnpm-lock.yaml
+
+      - name: Instalação reproduzível
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Verificar Chrome e Edge do runner
+        shell: pwsh
+        run: |
+          $browsers = @(
+            'C:\Program Files\Google\Chrome\Application\chrome.exe',
+            'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'
+          )
+          foreach ($path in $browsers) {
+            if (-not (Test-Path $path)) { Write-Error "Navegador ausente no runner: $path"; exit 1 }
+            "{0} {1}" -f (Split-Path $path -Leaf), (Get-Item $path).VersionInfo.ProductVersion
+          }
+
+      - name: E2E com dois navegadores reais (microfones sintéticos)
+        # O script termina com código 1 se qualquer verificação falhar.
+        run: pnpm e2e

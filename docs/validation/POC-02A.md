@@ -3,11 +3,13 @@
 | Campo | Valor |
 |---|---|
 | Data | 22/10/2026 |
-| Branch | `poc/webrtc-audio-lan`, no mesmo commit de `origin/main` (`ad8059d`, merge do PR #2) |
-| Commit | Ainda não commitado; operações Git ficam a cargo do usuário |
+| Branch | `poc/webrtc-audio-lan`, criada a partir de `main` em `ad8059d` (merge do PR #2) |
+| Pull Request | [#3](https://github.com/yuuriic/oryn/pull/3) (`poc/webrtc-audio-lan` → `main`), em revisão arquitetural |
+| Commit de referência | `4b6ac1d` (`4b6ac1da090882cdb5b169db55cc11ff82a92a87`): implementação **originalmente submetida** no PR #3. As validações de 22/10/2026 (§5, §6 e §6.1) foram feitas sobre esse conteúdo |
+| HEAD atual | **Não fixado neste documento:** muda com as correções da revisão (§12). Consulte o PR #3 ou `git log` da branch |
 | Código | `poc/webrtc-audio-lan/` |
 | Relação com o ARCHITECTURE.md | Primeiro passo da P02 (§14): dois pares reais com sinalização; sem TURN, sem mesh de N pares |
-| Status | **Testes automatizados aprovados; validação manual PC ↔ iPhone informada e confirmada pelo usuário e métricas de uma chamada real registradas a partir de captura de tela, em 22/10/2026 (§6). Aguardando encerramento arquitetural formal** |
+| Status | **Testes automatizados aprovados; validação manual PC ↔ iPhone informada e confirmada pelo usuário e métricas de uma chamada real registradas a partir de captura de tela, em 22/10/2026 (§6). Correções da revisão do PR #3 aplicadas (§12). Aguardando encerramento arquitetural formal; PR não integrado** |
 
 Legenda:
 - **[Observado]:** medido em execução automatizada nesta máquina.
@@ -43,7 +45,8 @@ A ◄══════════ áudio Opus via WebRTC (DTLS-SRTP), direto e
   - só o host oferta e só o guest responde;
   - quem chega depois que o host saiu vira host.
 - **`server.ts`:**
-  - HTTP em `127.0.0.1`, e HTTPS (TLS ≥ 1.2) somente no IP da LAN;
+  - HTTP somente em loopback literal (padrão `127.0.0.1`; `::1` aceito; qualquer outro valor é rejeitado antes de
+    abrir listeners, ver §12.2), e HTTPS (TLS ≥ 1.2) somente no IP da LAN;
   - WebSocket em `/ws` com `Origin` obrigatório e exato;
   - `maxPayload` de 16 KiB, mensagens binárias recusadas (código 1003);
   - token bucket por conexão (fecha com 1008 após reincidência) e heartbeat ping/pong de 15 s;
@@ -394,3 +397,91 @@ cada número representa:
    pelo app desktop/mobile, e a sessão anônima por autenticação. A CA local é apenas instrumento de teste.
 7. **Reaproveitar** o protocolo com `epoch`, a fila de candidatos, a guarda de encerramento e os testes de timers
    como referência para `packages/voice` e `packages/contracts`.
+
+## 12. Correções da revisão arquitetural do PR #3 (22/10/2026)
+
+Aplicadas **depois** do commit de referência `4b6ac1d`, a pedido do arquiteto. Nenhum resultado das seções 5, 6 e
+6.1 foi alterado: eles continuam se referindo ao commit de referência. Os resultados abaixo são do código corrigido
+**[Observado]**, executado localmente. O commit que conterá estas correções será definido pelo usuário.
+
+### 12.1 Metadados do documento
+
+O campo "Ainda não commitado" foi substituído por:
+- PR #3 e sua branch;
+- o **commit de referência** `4b6ac1d`, que é o conteúdo validado;
+- a indicação de que o **HEAD atual não é fixado** aqui.
+
+### 12.2 HTTP exclusivamente em loopback (`server/server.ts`)
+
+- **Problema:** `httpHost` aceitava qualquer endereço, o que poderia expor HTTP sem TLS na LAN.
+- **Correção:**
+  - `assertLoopbackHttpHost` roda **antes** de carregar arquivos ou abrir listeners e aceita só **endereços
+    literais** de loopback: `127.0.0.0/8` e `::1`, inclusive a forma longa;
+  - são rejeitados com erro explícito, sem fallback: `0.0.0.0`, `::`, IPs de LAN, IPs públicos, link-local,
+    IPv4 mapeado em IPv6 (`::ffff:127.0.0.1`) e qualquer nome.
+- **`localhost` é rejeitado por decisão.** A resolução depende do sistema (arquivo `hosts`, ordem IPv4/IPv6) e o
+  `listen` vincularia apenas o primeiro endereço resolvido. Endereços literais são previsíveis. O navegador do PC
+  continua acessando por `http://localhost:porta`, cuja origem segue aceita.
+- **Defesa em profundidade:** depois do bind, o endereço efetivo é conferido.
+- **Fechamento em falha:** se qualquer `listen` falhar (por exemplo, porta HTTPS ocupada), o servidor fecha o que
+  já abriu e para o heartbeat. Antes, o HTTP e o intervalo de heartbeat ficavam ativos.
+- **IPv6:**
+  - URL e `Origin` passam a usar o endereço canônico do bind (`::1` vira `http://[::1]:porta`), e `localhost`
+    é aceito como alias também em IPv6;
+  - no cliente, a página aberta em `http://[::1]:porta` passa a buscar o endereço do convite, como já fazia em
+    `localhost`.
+- **Sem alteração:** listener HTTPS/WSS e validação de `Origin`.
+- **Testes:** `tests/server-host.test.ts`, 30 casos:
+  - aceitação de `127.0.0.1`, `127.x`, `::1` e `0:0:0:0:0:0:0:1`;
+  - rejeição de 11 valores;
+  - para cada valor rejeitado, prova de que **nenhuma porta HTTP nem HTTPS passou a escutar**;
+  - fechamento do HTTP quando o HTTPS falha;
+  - HTTP e WebSocket em IPv4, com origens `127.0.0.1` e `localhost` aceitas e origem de LAN recusada;
+  - **IPv6 `::1` executado** nesta máquina (não pulado), sem fallback para IPv4;
+  - HTTP local e HTTPS/WSS juntos.
+- **Mutação:** sem a validação prévia, 11 testes falham.
+
+### 12.3 CI no GitHub Actions (`.github/workflows/poc-02a-ci.yml`)
+
+- **Gatilhos:** PRs para `main` e pushes em `poc/webrtc-audio-lan`, restritos a `poc/webrtc-audio-lan/**` e ao
+  próprio workflow.
+- **Segurança do workflow:**
+  - `permissions: contents: read`, `persist-credentials: false`, actions fixadas por SHA de commit;
+  - sem segredos, sem deploy, sem merge e sem instalação de CA;
+  - os testes de TLS geram certificados temporários pelo próprio teste.
+- **Job `checks`** (matriz `ubuntu-24.04` + `windows-2025`, timeout de 15 min): `pnpm install --frozen-lockfile`,
+  typecheck, test e build; `pnpm audit` só no Linux.
+- **Job `e2e`** (`windows-2025`, timeout de 20 min):
+  - instalação, build, verificação de Chrome e Edge e `pnpm e2e`;
+  - usa o Google Chrome e o Microsoft Edge **pré-instalados na imagem do runner**: Chrome 155 e Edge 155, segundo
+    o readme oficial das imagens consultado em 22/10/2026;
+  - as versões efetivas ficam registradas no log;
+  - se algum navegador faltar, o job **falha**: o Edge não é substituído por Chromium;
+  - microfones sintéticos preservados, e o script já retorna código 1 em qualquer falha.
+- **O script E2E não precisou de ajustes.**
+
+### 12.4 Resultados após as correções [Observado, execução local]
+
+Mesma sequência do CI, executada localmente no Windows (Node 24.19.0, pnpm 12.6.0):
+
+| Verificação | Resultado |
+|---|---|
+| `pnpm install --frozen-lockfile` | OK |
+| `pnpm typecheck` | OK |
+| `pnpm test` | **157/157**, 9 arquivos, nenhum pulado (127 anteriores + 30 de `server-host.test.ts`) |
+| `pnpm build` | OK |
+| `pnpm audit` | Nenhuma vulnerabilidade conhecida |
+| `pnpm e2e` | **27/27**, Chrome 155.0.8059.85 ↔ Edge 155.0.4283.62, conexão em 1350 ms, RMS recebido ≈ 0,31 nos dois sentidos |
+| Passo "Verificar Chrome e Edge do runner" (rodado localmente) | Encontrou chrome.exe 155.0.8059.85 e msedge.exe 155.0.4283.62 |
+
+**[Não executado]** O workflow **não foi executado no GitHub**. Ele só será considerado aprovado depois de uma
+execução real concluída. Pontos que só essa execução confirma:
+- o ajuste das inputs das actions fixadas, como `package_json_file` do `pnpm/action-setup` e o cache do
+  `setup-node` com pnpm 12;
+- a execução dos testes no Linux, que não foi feita localmente;
+- **o áudio sintético no runner Windows sem dispositivo de som.** **[Inferido, não verificado]** O Chromium usa
+  saída de áudio simulada quando não há dispositivo, mas, se o Web Audio não processar a mídia recebida no runner,
+  as verificações de RMS do E2E falharão e exigirão um ajuste de compatibilidade de CI no script.
+
+A sintaxe YAML foi checada apenas estruturalmente (indentação, ausência de tabs, comandos e permissões esperados),
+sem `actionlint`, que não está disponível localmente.

@@ -334,7 +334,7 @@ readInviteFromHash();
 window.addEventListener('hashchange', readInviteFromHash);
 
 // O endereço HTTPS da LAN só é fornecido ao navegador local (para montar o convite).
-if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
+if (['localhost', '127.0.0.1', '[::1]'].includes(location.hostname)) {
   fetch('/api/info')
     .then((r) => (r.ok ? r.json() : null))
     .then((info: { httpsOrigin?: string | null } | null) => {
