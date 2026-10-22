@@ -12,8 +12,6 @@
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "certs": "node server/certs-cli.ts",
-    "share-ca": "node server/share-ca.ts",
     "serve": "node server/index.ts",
     "start": "vite build && node server/index.ts",
     "e2e": "node scripts/e2e-two-browsers.mjs"

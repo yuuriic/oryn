@@ -1,22 +1,14 @@
-// A3 (auditoria do PR #3): validação do cabeçalho Host por listener (proteção contra DNS rebinding).
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+// A3 (auditoria do PR #3): validação do cabeçalho Host (proteção contra DNS rebinding).
+// POC-02B.2A: o listener HTTPS da LAN foi removido; os testes dele foram substituídos pelos de
+// "sem acesso público nesta etapa" (final do arquivo).
+import { rmSync } from 'node:fs';
 import http from 'node:http';
-import https from 'node:https';
 import net from 'node:net';
 import tls from 'node:tls';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { findOpenssl, generateCertificates } from '../server/certs.ts';
 import { checkHost, startServer, type RunningServer } from '../server/server.ts';
 import { TestClient, fakeDist } from './helpers/ws-client.ts';
 
-let opensslAvailable = true;
-try {
-  findOpenssl();
-} catch {
-  opensslAvailable = false;
-}
 const supportsIpv6 = await new Promise<boolean>((resolve) => {
   const s = net.createServer();
   s.once('error', () => resolve(false));
@@ -28,23 +20,17 @@ interface Reply {
   body: string;
 }
 
-/**
- * Requisição HTTP(S) com Host arbitrário, sempre conectando no endereço real do listener.
- * Em HTTPS, a cadeia é verificada com a CA local e a identidade do certificado é conferida contra o
- * endereço realmente conectado (o Node usaria o Host forjado). Nenhuma verificação é desabilitada.
- */
-function request(origin: string, path: string, headers: Record<string, string>, ca?: Buffer): Promise<Reply> {
+/** Requisição HTTP com Host arbitrário, sempre conectando no endereço real do listener. */
+function request(origin: string, path: string, headers: Record<string, string>): Promise<Reply> {
   const url = new URL(origin);
-  const mod = url.protocol === 'https:' ? https : http;
   return new Promise((resolve, reject) => {
-    const req = mod.request(
+    const req = http.request(
       {
         host: url.hostname.replace(/^\[|\]$/g, ''),
         port: url.port,
         path,
         method: 'GET',
         headers,
-        ...(ca ? { ca, checkServerIdentity: (_host: string, cert: tls.PeerCertificate) => tls.checkServerIdentity(url.hostname, cert) } : {}),
       },
       (res) => {
         let body = '';
@@ -117,13 +103,13 @@ describe('listener HTTP local (127.0.0.1)', () => {
     expect(reply.body).not.toContain('<!doctype');
   });
 
-  it('/api/info inacessível com Host inválido (não revela a origem HTTPS)', async () => {
+  it('/api/info foi removido (02B.2A): 404 com Host válido, 421 com Host inválido', async () => {
     const bad = await request(server.httpOrigin, '/api/info', { Host: `rebind.attacker.example:${port}` });
     expect(bad.status).toBe(421);
     expect(bad.body).not.toContain('httpsOrigin');
     const ok = await request(server.httpOrigin, '/api/info', { Host: `localhost:${port}` });
-    expect(ok.status).toBe(200);
-    expect(JSON.parse(ok.body)).toEqual({ httpsOrigin: null });
+    expect(ok.status).toBe(404);
+    expect(ok.body).not.toContain('httpsOrigin');
   });
 
   it('Host ausente → 400', async () => {
@@ -176,54 +162,49 @@ describe.skipIf(!supportsIpv6)('listener HTTP local em IPv6 (::1)', () => {
   });
 });
 
-describe.skipIf(!opensslAvailable)('listener HTTPS da LAN', () => {
+describe('sem acesso público nesta etapa (substitui os testes do antigo listener HTTPS da LAN)', () => {
   let server: RunningServer;
   let dist: string;
-  let certDir: string;
-  let ca: Buffer;
-  let tlsPort: string;
-  let httpPort: string;
+  let port: string;
+  const PUBLIC = 'oryn-poc.example.com'; // hostname de exemplo de um túnel futuro
 
   beforeAll(async () => {
     dist = fakeDist();
-    certDir = mkdtempSync(join(tmpdir(), 'oryn-wan-hosthdr-'));
-    const certs = generateCertificates({ ip: '127.0.0.1', dir: certDir });
-    ca = readFileSync(certs.caCertPath);
-    server = await startServer({
-      distDir: dist,
-      httpPort: 0,
-      https: { host: '127.0.0.1', port: 0, key: readFileSync(certs.serverKeyPath), cert: readFileSync(certs.serverCertPath) },
-      log: () => undefined,
-    });
-    tlsPort = new URL(server.httpsOrigin!).port;
-    httpPort = new URL(server.httpOrigin).port;
+    server = await startServer({ distDir: dist, httpPort: 0, log: () => undefined });
+    port = new URL(server.httpOrigin).port;
   });
   afterAll(async () => {
     await server.close();
     rmSync(dist, { recursive: true, force: true });
-    rmSync(certDir, { recursive: true, force: true });
   });
 
-  it('Host com o IP da LAN configurado → 200', async () => {
-    expect((await request(server.httpsOrigin!, '/', { Host: `127.0.0.1:${tlsPort}` }, ca)).status).toBe(200);
-  });
-
-  it('Host externo, localhost, porta do HTTP local → 421', async () => {
-    for (const host of [`rebind.attacker.example:${tlsPort}`, `localhost:${tlsPort}`, `127.0.0.1:${httpPort}`]) {
-      expect((await request(server.httpsOrigin!, '/', { Host: host }, ca)).status, host).toBe(421);
+  it('hostname público (como o de um túnel) é recusado enquanto não for configurado explicitamente', async () => {
+    for (const host of [PUBLIC, `${PUBLIC}:443`, `${PUBLIC}:${port}`]) {
+      const reply = await request(server.httpOrigin, '/', { Host: host });
+      expect(reply.status, host).toBe(421);
+      expect(reply.body, host).not.toContain('<!doctype');
     }
   });
 
-  it('listeners não compartilham hosts: o HTTP local recusa o Host do HTTPS', async () => {
-    expect((await request(server.httpOrigin, '/', { Host: `127.0.0.1:${tlsPort}` })).status).toBe(421);
+  it('Host do antigo listener HTTPS da LAN (IP:5543) é recusado', async () => {
+    expect((await request(server.httpOrigin, '/', { Host: '192.168.0.23:5543' })).status).toBe(421);
   });
 
-  it('upgrade WSS: Host válido conecta; Host de outro listener é recusado', async () => {
-    const wss = `wss://127.0.0.1:${tlsPort}/ws`;
-    await expect(TestClient.open(wss, server.httpsOrigin, { ca, headers: { Host: `localhost:${tlsPort}` } })).rejects.toThrow('421');
-    const ok = await TestClient.open(wss, server.httpsOrigin, { ca });
-    ok.send({ type: 'create' });
-    expect((await ok.next('session'))['role']).toBe('host');
-    ok.ws.terminate();
+  it('upgrade WebSocket com Host público é recusado; com Origin público também', async () => {
+    const ws = `ws://127.0.0.1:${port}/ws`;
+    await expect(TestClient.open(ws, `https://${PUBLIC}`, { headers: { Host: PUBLIC } })).rejects.toThrow('421');
+    await expect(TestClient.open(ws, `https://${PUBLIC}`, { headers: { Host: `localhost:${port}` } })).rejects.toThrow('403');
+  });
+
+  it('não há TLS local: um handshake TLS no listener falha', async () => {
+    await expect(
+      new Promise<void>((resolve, reject) => {
+        const socket = tls.connect({ host: '127.0.0.1', port: Number(port), servername: 'localhost' }, () => {
+          socket.destroy();
+          resolve();
+        });
+        socket.once('error', reject);
+      }),
+    ).rejects.toThrow();
   });
 });

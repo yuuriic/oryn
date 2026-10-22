@@ -26,7 +26,10 @@ export interface SignalingHandlers {
 
 const OPEN = 1;
 
-/** ws:// para páginas HTTP (localhost) e wss:// para HTTPS. Mesmo host e porta da página. */
+/**
+ * ws:// para páginas HTTP (loopback) e wss:// para páginas HTTPS (túnel público, incremento futuro).
+ * Mesmo host e porta da página.
+ */
 export function signalingUrl(location: { protocol: string; host: string }): string {
   return `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
 }

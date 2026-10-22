@@ -1,12 +1,10 @@
-// HTTP sem TLS exclusivamente em loopback (revisão do PR #3).
+// HTTP sem TLS exclusivamente em loopback (revisão do PR #3; POC-02B.2A sem CA nem HTTPS local).
 // Garante que endereços não-loopback são rejeitados ANTES de abrir qualquer listener, sem
-// fallback, e que o HTTP local e o HTTPS/WSS continuam funcionando.
-import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
+// fallback, que não existe mais infraestrutura de CA/HTTPS local e que o encerramento é limpo.
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import net from 'node:net';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
-import { findOpenssl, generateCertificates } from '../server/certs.ts';
+import { fileURLToPath } from 'node:url';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { assertLoopbackHttpHost, isLoopbackLiteral, startServer, type RunningServer } from '../server/server.ts';
 import { TestClient, fakeDist } from './helpers/ws-client.ts';
 
@@ -57,11 +55,24 @@ function ipv6LoopbackAvailable(): Promise<boolean> {
 }
 
 const supportsIpv6 = await ipv6LoopbackAvailable();
-let opensslAvailable = true;
-try {
-  findOpenssl();
-} catch {
-  opensslAvailable = false;
+
+/**
+ * Observa o intervalo de heartbeat do servidor, identificado por um período exclusivo, espionando
+ * setInterval/clearInterval (determinístico, sem depender de outros timers do processo).
+ */
+const HEARTBEAT_MS = 4321;
+function watchHeartbeat() {
+  const set = vi.spyOn(globalThis, 'setInterval');
+  const clear = vi.spyOn(globalThis, 'clearInterval');
+  const handles = () => set.mock.calls.flatMap((call, i) => (call[1] === HEARTBEAT_MS ? [set.mock.results[i]?.value] : []));
+  return {
+    created: () => handles().length,
+    allCleared: () => handles().every((h) => clear.mock.calls.some((c) => c[0] === h)),
+    restore: () => {
+      set.mockRestore();
+      clear.mockRestore();
+    },
+  };
 }
 
 const running: RunningServer[] = [];
@@ -91,40 +102,42 @@ describe('validação do httpHost (pura)', () => {
 });
 
 describe('startServer: nenhum listener com configuração inválida', () => {
-  it.each(REJECTED)('httpHost %s (%s): rejeita e não abre HTTP nem HTTPS', async (host) => {
+  it.each(REJECTED)('httpHost %s (%s): rejeita e não abre listener', async (host) => {
+    const httpPort = await freePort();
+    const hb = watchHeartbeat();
+    try {
+      const attempt = startServer({ distDir: dist(), httpHost: host, httpPort, heartbeatMs: HEARTBEAT_MS, log: () => undefined });
+      await expect(attempt).rejects.toThrow(/httpHost (inválido|recusado)/);
+      expect(await isListening('127.0.0.1', httpPort)).toBe(false);
+      expect(hb.created()).toBe(0); // a validação acontece antes de qualquer recurso
+    } finally {
+      hb.restore();
+    }
+  });
+
+  it('configuração legada com "https" (CA local da POC-02A) é recusada explicitamente, sem abrir portas', async () => {
     const [httpPort, httpsPort] = [await freePort(), await freePort()];
-    const attempt = startServer({
+    const legacy = {
       distDir: dist(),
-      httpHost: host,
       httpPort,
-      // Mesmo com HTTPS configurado, nada deve ser aberto.
       https: { host: '127.0.0.1', port: httpsPort, key: 'x', cert: 'x' },
       log: () => undefined,
-    });
-    await expect(attempt).rejects.toThrow(/httpHost (inválido|recusado)/);
+    } as unknown as Parameters<typeof startServer>[0];
+    await expect(startServer(legacy)).rejects.toThrow(/Opção "https" removida/);
     expect(await isListening('127.0.0.1', httpPort)).toBe(false);
     expect(await isListening('127.0.0.1', httpsPort)).toBe(false);
   });
 
-  it('falha ao abrir o HTTPS (porta ocupada) fecha o HTTP já aberto e não deixa recursos órfãos', async () => {
-    if (!opensslAvailable) return;
-    const certDir = mkdtempSync(join(tmpdir(), 'oryn-wan-host-'));
-    dirs.push(certDir);
-    const certs = generateCertificates({ ip: '127.0.0.1', dir: certDir });
+  it('porta HTTP ocupada: rejeita (EADDRINUSE) sem deixar heartbeat nem recursos órfãos', async () => {
     const blocker = net.createServer();
     const busyPort = await new Promise<number>((r) => blocker.listen(0, '127.0.0.1', () => r((blocker.address() as net.AddressInfo).port)));
-    const httpPort = await freePort();
+    const hb = watchHeartbeat();
     try {
-      await expect(
-        startServer({
-          distDir: dist(),
-          httpPort,
-          https: { host: '127.0.0.1', port: busyPort, key: readFileSync(certs.serverKeyPath), cert: readFileSync(certs.serverCertPath) },
-          log: () => undefined,
-        }),
-      ).rejects.toThrow(/EADDRINUSE/);
-      expect(await isListening('127.0.0.1', httpPort)).toBe(false);
+      await expect(startServer({ distDir: dist(), httpPort: busyPort, heartbeatMs: HEARTBEAT_MS, log: () => undefined })).rejects.toThrow(/EADDRINUSE/);
+      expect(hb.created()).toBe(1);
+      expect(hb.allCleared()).toBe(true);
     } finally {
+      hb.restore();
       await new Promise((r) => blocker.close(r));
     }
   });
@@ -160,22 +173,62 @@ describe('startServer: loopback aceito', () => {
     expect(await isListening('127.0.0.1', Number(port))).toBe(false);
   });
 
-  it.skipIf(!opensslAvailable)('HTTP local e HTTPS/WSS continuam funcionando juntos', async () => {
-    const certDir = mkdtempSync(join(tmpdir(), 'oryn-wan-host-'));
-    dirs.push(certDir);
-    const certs = generateCertificates({ ip: '127.0.0.1', dir: certDir });
-    const ca = readFileSync(certs.caCertPath);
-    const server = await startServer({
-      distDir: dist(),
-      httpPort: 0,
-      https: { host: '127.0.0.1', port: 0, key: readFileSync(certs.serverKeyPath), cert: readFileSync(certs.serverCertPath) },
-      log: () => undefined,
-    });
+  it('funciona sem CA nem certificado: sessão completa (create, join, signal) só em HTTP loopback', async () => {
+    const server = await startServer({ distDir: dist(), httpPort: 0, log: () => undefined });
     running.push(server);
-    expect((await fetch(`${server.httpOrigin}/`)).status).toBe(200);
-    const wss = await TestClient.open(`${server.httpsOrigin!.replace('https', 'wss')}/ws`, server.httpsOrigin, { ca });
-    wss.send({ type: 'create' });
-    expect((await wss.next('session'))['role']).toBe('host');
-    wss.ws.terminate();
+    expect(Object.keys(server).sort()).toEqual(['close', 'httpOrigin', 'registry']); // sem httpsOrigin
+    const ws = `${server.httpOrigin.replace('http', 'ws')}/ws`;
+    const host = await TestClient.open(ws, server.httpOrigin);
+    host.send({ type: 'create' });
+    const session = await host.next('session');
+    const guest = await TestClient.open(ws, server.httpOrigin);
+    guest.send({ type: 'join', sessionId: session['sessionId'] });
+    expect((await guest.next('session'))['role']).toBe('guest');
+    await host.next('peer-joined');
+    host.send({ type: 'signal', epoch: 1, payload: { kind: 'offer', sdp: 'v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n' } });
+    expect((await guest.next('signal'))['payload']).toMatchObject({ kind: 'offer' });
+    host.ws.terminate();
+    guest.ws.terminate();
+  });
+});
+
+describe('encerramento limpo do servidor', () => {
+  it('close() fecha a porta, encerra os WebSockets (1001), para o heartbeat e é idempotente', async () => {
+    const hb = watchHeartbeat();
+    try {
+      const server = await startServer({ distDir: dist(), httpPort: 0, heartbeatMs: HEARTBEAT_MS, log: () => undefined });
+      const port = Number(new URL(server.httpOrigin).port);
+      const client = await TestClient.open(`ws://127.0.0.1:${port}/ws`, server.httpOrigin);
+      expect(hb.created()).toBe(1);
+      expect(hb.allCleared()).toBe(false);
+      await server.close();
+      expect((await client.closed).code).toBe(1001);
+      expect(await isListening('127.0.0.1', port)).toBe(false);
+      expect(hb.allCleared()).toBe(true);
+      await expect(server.close()).resolves.toBeUndefined();
+    } finally {
+      hb.restore();
+    }
+  });
+});
+
+describe('infraestrutura de CA/HTTPS local removida da POC-02B', () => {
+  const root = fileURLToPath(new URL('..', import.meta.url));
+
+  it('não existem módulos nem scripts de certificados', () => {
+    for (const file of ['server/certs.ts', 'server/certs-cli.ts', 'server/share-ca.ts']) {
+      expect(existsSync(`${root}${file}`), file).toBe(false);
+    }
+    const scripts = (JSON.parse(readFileSync(`${root}package.json`, 'utf8')) as { scripts: Record<string, string> }).scripts;
+    expect(Object.keys(scripts)).not.toContain('certs');
+    expect(Object.keys(scripts)).not.toContain('share-ca');
+  });
+
+  it('o servidor não importa TLS/HTTPS nem OpenSSL', () => {
+    for (const file of ['server/server.ts', 'server/index.ts']) {
+      const source = readFileSync(`${root}${file}`, 'utf8');
+      expect(source, file).not.toMatch(/from 'node:(https|tls)'/);
+      expect(source, file).not.toMatch(/openssl|certs\.ts|createSecureContext/i);
+    }
   });
 });

@@ -46,7 +46,6 @@ const PHASE_LABEL: Record<CallPhase, string> = {
 const ACTIVE: readonly CallPhase[] = ['requesting-mic', 'connecting-signaling', 'waiting-peer', 'negotiating', 'connected'];
 
 let call: PeerCall | null = null;
-let httpsOrigin: string | null = null;
 
 // ---------- log em memória ----------
 
@@ -194,8 +193,10 @@ function renderSession(info: { sessionId: string; role: Role; epoch: number }): 
   setField('field', 'role', info.role === 'host' ? 'anfitrião (cria a offer)' : 'convidado (responde)');
   ui.sessionCode.hidden = false;
   ui.sessionCode.textContent = `Sessão: ${info.sessionId}`;
-  if (info.role === 'host' && httpsOrigin) {
-    const link = `${httpsOrigin}/#s=${info.sessionId}`;
+  // Convite com a origem da própria página. Em loopback (localhost) o celular não alcançaria o link,
+  // então só o código é exibido; pela URL pública do túnel (incremento futuro), o link e o QR aparecem.
+  if (info.role === 'host' && !isLoopbackPage()) {
+    const link = `${location.origin}/#s=${info.sessionId}`;
     ui.inviteLink.href = link;
     ui.inviteLink.textContent = link;
     renderQr(link);
@@ -333,16 +334,10 @@ readInviteFromHash();
 // O link também pode ser aberto numa aba que já está nesta página (só o fragmento muda).
 window.addEventListener('hashchange', readInviteFromHash);
 
-// O endereço HTTPS da LAN só é fornecido ao navegador local (para montar o convite).
-if (['localhost', '127.0.0.1', '[::1]'].includes(location.hostname)) {
-  fetch('/api/info')
-    .then((r) => (r.ok ? r.json() : null))
-    .then((info: { httpsOrigin?: string | null } | null) => {
-      httpsOrigin = info?.httpsOrigin ?? null;
-      if (!httpsOrigin) log('HTTPS da LAN desativado: o convite para o celular não está disponível.');
-    })
-    .catch(() => undefined);
+function isLoopbackPage(): boolean {
+  return ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
 }
+if (isLoopbackPage()) log('Página aberta em loopback: o convite mostra só o código (sem acesso externo nesta etapa).');
 
 renderPhase('idle');
 renderStats(null);

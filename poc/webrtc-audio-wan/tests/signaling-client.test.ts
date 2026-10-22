@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import type { ServerMessage } from '../src/protocol.ts';
-import { SignalingClient, type SocketLike } from '../src/signaling-client.ts';
+import { SignalingClient, signalingUrl, type SocketLike } from '../src/signaling-client.ts';
 import { describePair, formatMetric, remoteInboundAudio } from '../src/stats.ts';
 
 class FakeSocket implements SocketLike {
@@ -41,6 +41,14 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+});
+
+describe('signalingUrl (movido de tls.test.ts, removido no 02B.2A)', () => {
+  it('ws:// para página HTTP em loopback e wss:// para página HTTPS (túnel público futuro)', () => {
+    expect(signalingUrl({ protocol: 'http:', host: 'localhost:5280' })).toBe('ws://localhost:5280/ws');
+    expect(signalingUrl({ protocol: 'http:', host: '[::1]:5280' })).toBe('ws://[::1]:5280/ws');
+    expect(signalingUrl({ protocol: 'https:', host: 'oryn-poc.example.com' })).toBe('wss://oryn-poc.example.com/ws');
+  });
 });
 
 describe('SignalingClient', () => {

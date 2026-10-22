@@ -1,14 +1,15 @@
 // Servidor da POC-02B (baseline copiado da POC-02A, f068509): arquivos estáticos + sinalização WebSocket.
 // Não processa mídia.
 //
-// - Listener HTTP somente em 127.0.0.1 (navegador do próprio PC; localhost é contexto seguro).
-// - Listener HTTPS opcional somente no IP da LAN (celular), com certificado de CA local.
-// - WebSocket no caminho /ws do mesmo host/porta (ws:// no HTTP, wss:// no HTTPS).
+// - Um único listener HTTP, SOMENTE em loopback literal (127.0.0.0/8 ou ::1). Não existe bind público.
+// - Sem TLS local e sem CA própria (removidos no incremento 02B.2A). O acesso externo será feito por um
+//   túnel HTTPS público (Cloudflare Tunnel, incremento futuro): o TLS termina na Cloudflare e o túnel
+//   entrega o tráfego a este listener em loopback.
+// - WebSocket no caminho /ws do mesmo host/porta.
 
 import { randomBytes } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import http from 'node:http';
-import https from 'node:https';
 import { BlockList, isIP, type AddressInfo } from 'node:net';
 import { join, relative, sep } from 'node:path';
 import type { Duplex } from 'node:stream';
@@ -16,14 +17,6 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import { MAX_MESSAGE_BYTES, parseClientMessage, type ServerMessage } from '../src/protocol.ts';
 import { TokenBucket } from './rate-limit.ts';
 import { SessionRegistry, type Participant } from './registry.ts';
-
-export interface HttpsOptions {
-  /** IP da LAN em que o HTTPS escuta (o mesmo do SAN do certificado). */
-  host: string;
-  port: number;
-  key: string | Buffer;
-  cert: string | Buffer;
-}
 
 export interface ServerConfig {
   distDir: string;
@@ -33,7 +26,6 @@ export interface ServerConfig {
    * qualquer outro valor, incluindo "localhost", é rejeitado antes de abrir listeners.
    */
   httpHost?: string;
-  https?: HttpsOptions;
   maxSessions?: number;
   idleTimeoutMs?: number;
   heartbeatMs?: number;
@@ -43,7 +35,6 @@ export interface ServerConfig {
 
 export interface RunningServer {
   httpOrigin: string;
-  httpsOrigin: string | null;
   registry: SessionRegistry;
   close(): Promise<void>;
 }
@@ -159,6 +150,10 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
   const log = config.log ?? ((line: string) => console.log(line));
   const httpHost = config.httpHost ?? '127.0.0.1';
   // Validação antes de qualquer outra coisa: nenhum listener é aberto com configuração inválida.
+  // Configuração legada da POC-02A (listener HTTPS com CA local) é recusada explicitamente, nunca ignorada.
+  if ('https' in (config as object)) {
+    throw new Error('Opção "https" removida na POC-02B: não há TLS local nem CA própria; o acesso externo será pelo túnel público.');
+  }
   assertLoopbackHttpHost(httpHost);
   const files = loadStaticFiles(config.distDir);
 
@@ -171,15 +166,13 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
   });
 
   const allowedOrigins = new Set<string>();
-  // Hosts aceitos por listener, preenchidos após o bind (com a porta efetiva). Antes disso, tudo é recusado.
+  // Hosts aceitos, preenchidos após o bind (com a porta efetiva). Antes disso, tudo é recusado.
   const httpHosts = new Set<string>();
-  const httpsHosts = new Set<string>();
-  let httpsOrigin: string | null = null;
 
-  const requestHandler = (req: http.IncomingMessage, res: http.ServerResponse, isLocal: boolean): void => {
+  const requestHandler = (req: http.IncomingMessage, res: http.ServerResponse): void => {
     for (const [k, v] of Object.entries(SECURITY_HEADERS)) res.setHeader(k, v);
-    // Host antes de qualquer conteúdo (inclusive /api/info).
-    const host = checkHost(req.headers.host, isLocal ? httpHosts : httpsHosts);
+    // Host antes de qualquer conteúdo.
+    const host = checkHost(req.headers.host, httpHosts);
     if (host !== 'ok') {
       res
         .writeHead(host === 'missing' ? 400 : 421, { 'Content-Type': 'text/plain; charset=utf-8' })
@@ -191,12 +184,6 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
       return;
     }
     const path = new URL(req.url ?? '/', 'http://x').pathname;
-    // O endereço HTTPS da LAN só é informado ao navegador local (para montar link/QR do convite).
-    if (path === '/api/info' && isLocal) {
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(req.method === 'HEAD' ? undefined : JSON.stringify({ httpsOrigin }));
-      return;
-    }
     const file = files.get(path === '/' ? '/index.html' : path);
     if (!file) {
       res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }).end('Não encontrado');
@@ -206,20 +193,15 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
     res.end(req.method === 'HEAD' ? undefined : file.body);
   };
 
-  const httpServer = http.createServer((req, res) => requestHandler(req, res, true));
-  const httpsServer = config.https
-    ? https.createServer({ key: config.https.key, cert: config.https.cert, minVersion: 'TLSv1.2' }, (req, res) =>
-        requestHandler(req, res, false),
-      )
-    : null;
+  const httpServer = http.createServer(requestHandler);
 
   // ---------- WebSocket ----------
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES, perMessageDeflate: false });
   const alive = new WeakMap<WebSocket, boolean>();
 
-  const onUpgrade = (req: http.IncomingMessage, socket: Duplex, head: Buffer, hosts: ReadonlySet<string>): void => {
-    // Política de Host do listener que recebeu o upgrade, verificada separadamente e antes do Origin.
-    const host = checkHost(req.headers.host, hosts);
+  const onUpgrade = (req: http.IncomingMessage, socket: Duplex, head: Buffer): void => {
+    // Política de Host verificada separadamente e antes do Origin.
+    const host = checkHost(req.headers.host, httpHosts);
     if (host !== 'ok') {
       socket.end(`HTTP/1.1 ${host === 'missing' ? '400 Bad Request' : '421 Misdirected Request'}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
       log(`[sinalização] upgrade recusado (host)`);
@@ -288,21 +270,16 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
     registry.sweep();
   }, config.heartbeatMs ?? 15_000);
 
-  httpServer.on('upgrade', (req, socket, head) => onUpgrade(req, socket, head, httpHosts));
-  httpsServer?.on('upgrade', (req, socket, head) => onUpgrade(req, socket, head, httpsHosts));
+  httpServer.on('upgrade', onUpgrade);
 
-  const stop = (s: http.Server | null) =>
-    new Promise<void>((resolve) => {
-      if (!s?.listening) return resolve();
-      s.closeAllConnections?.();
-      s.close(() => resolve());
-    });
   const shutdown = async (): Promise<void> => {
     clearInterval(heartbeat);
     registry.closeAll();
     for (const ws of wss.clients) ws.close(1001, 'server shutdown');
     wss.close();
-    await Promise.all([stop(httpServer), stop(httpsServer)]);
+    if (!httpServer.listening) return;
+    httpServer.closeAllConnections();
+    await new Promise<void>((resolve) => httpServer.close(() => resolve()));
   };
 
   let httpOrigin: string;
@@ -319,19 +296,11 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
     allowedOrigins.add(`http://localhost:${bound.port}`);
     httpHosts.add(`${hostForUrl(bound.address)}:${bound.port}`.toLowerCase());
     httpHosts.add(`localhost:${bound.port}`);
-
-    if (httpsServer && config.https) {
-      const tls = await listen(httpsServer, config.https.port, config.https.host);
-      httpsOrigin = `https://${hostForUrl(config.https.host)}:${tls.port}`;
-      allowedOrigins.add(httpsOrigin);
-      // HTTPS da LAN: somente o IP configurado (o mesmo do certificado) e a porta efetiva.
-      httpsHosts.add(`${hostForUrl(config.https.host)}:${tls.port}`.toLowerCase());
-    }
   } catch (error) {
     // Falha ao abrir qualquer listener: fecha o que já abriu e para o heartbeat (sem recursos órfãos).
     await shutdown();
     throw error;
   }
 
-  return { httpOrigin, httpsOrigin, registry, close: shutdown };
+  return { httpOrigin, registry, close: shutdown };
 }

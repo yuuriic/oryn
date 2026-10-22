@@ -67,8 +67,10 @@ describe('HTTP estático', () => {
     expect((await fetch(`${server.httpOrigin}/`, { method: 'POST' })).status).toBe(405);
   });
 
-  it('/api/info informa a origem HTTPS somente ao listener local', async () => {
-    expect(await (await fetch(`${server.httpOrigin}/api/info`)).json()).toEqual({ httpsOrigin: null });
+  it('/api/info não existe mais (02B.2A: sem origem HTTPS local para informar)', async () => {
+    const res = await fetch(`${server.httpOrigin}/api/info`);
+    expect(res.status).toBe(404);
+    expect(await res.text()).not.toContain('httpsOrigin');
   });
 });
 
