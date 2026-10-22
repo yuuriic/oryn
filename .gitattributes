@@ -1,0 +1,61 @@
+# Padrão: Git detecta texto e normaliza para LF no repositório e na working tree.
+* text=auto eol=lf
+
+# Código e configuração (explícito, independente de core.autocrlf)
+*.ts      text eol=lf
+*.tsx     text eol=lf
+*.js      text eol=lf
+*.mjs     text eol=lf
+*.cjs     text eol=lf
+*.vue     text eol=lf
+*.json    text eol=lf
+*.jsonc   text eol=lf
+*.html    text eol=lf
+*.css     text eol=lf
+*.md      text eol=lf
+*.yml     text eol=lf
+*.yaml    text eol=lf
+*.toml    text eol=lf
+*.rs      text eol=lf
+*.sql     text eol=lf
+*.sh      text eol=lf
+.gitignore     text eol=lf
+.gitattributes text eol=lf
+.editorconfig  text eol=lf
+
+# Lockfiles: texto LF, marcados como gerados
+pnpm-lock.yaml text eol=lf linguist-generated=true -diff
+Cargo.lock     text eol=lf linguist-generated=true
+
+# Exceções Windows: scripts e arquivos de projeto que exigem CRLF
+*.bat     text eol=crlf
+*.cmd     text eol=crlf
+*.ps1     text eol=crlf
+*.psm1    text eol=crlf
+*.psd1    text eol=crlf
+*.sln     text eol=crlf
+*.vcxproj text eol=crlf
+*.reg     text eol=crlf
+
+# Binários
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.ico   binary
+*.icns  binary
+*.wav   binary
+*.mp3   binary
+*.ogg   binary
+*.opus  binary
+*.flac  binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.otf   binary
+*.exe   binary
+*.dll   binary
+*.msi   binary
+*.zip   binary
+*.pdf   binary

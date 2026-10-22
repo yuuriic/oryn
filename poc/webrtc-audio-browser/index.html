@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; media-src 'self' blob: mediastream:; connect-src 'self' ws://localhost:5173; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <title>Oryn POC-01A — Áudio WebRTC</title>
+    <!-- CSS via <link> (e não import no TS) para respeitar style-src 'self' também no dev server -->
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Oryn · POC-01A</h1>
+        <p class="subtitle">Áudio WebRTC loopback no navegador — prova de conceito descartável</p>
+      </header>
+
+      <section class="notice" aria-labelledby="notice-title">
+        <h2 id="notice-title">Antes de testar</h2>
+        <ul>
+          <li>
+            O participante <strong>A</strong> envia seu microfone; o participante <strong>B</strong>, na mesma
+            página, recebe pela conexão WebRTC. Você ouvirá a própria voz com atraso.
+          </li>
+          <li>
+            <strong>Use fones de ouvido</strong> antes de ligar “Ouvir áudio recebido”. Com alto-falantes, o som
+            volta ao microfone e gera microfonia.
+          </li>
+          <li>
+            O áudio recebido começa <strong>silenciado</strong>. O medidor “Recebido (B)” e o pico RMS comprovam a
+            recepção sem precisar ouvir. O <code>audioLevel</code> do getStats só sobe com a saída ligada.
+          </li>
+          <li>Nada é gravado, enviado a servidores ou persistido. O log abaixo existe apenas nesta aba.</li>
+        </ul>
+      </section>
+
+      <section class="controls" aria-label="Controles">
+        <button id="btn-start" type="button" data-testid="btn-start">Iniciar conexão</button>
+        <button id="btn-mute" type="button" data-testid="btn-mute" disabled aria-pressed="false">Mutar microfone</button>
+        <button id="btn-stop" type="button" data-testid="btn-stop" disabled>Encerrar</button>
+        <label class="inline">
+          <input id="chk-listen" type="checkbox" data-testid="chk-listen" disabled />
+          Ouvir áudio recebido (use fones)
+        </label>
+        <label class="inline">
+          Volume
+          <input id="rng-volume" type="range" min="0" max="1" step="0.05" value="0.3" disabled />
+        </label>
+      </section>
+
+      <p id="phase" class="phase" role="status" aria-live="polite" data-testid="phase" data-phase="idle">
+        Estado: ocioso
+      </p>
+      <p id="error" class="error" role="alert" data-testid="error" hidden></p>
+
+      <div class="grid">
+        <section aria-labelledby="states-title">
+          <h2 id="states-title">Estados das conexões</h2>
+          <table>
+            <thead>
+              <tr><th></th><th>A (emissor)</th><th>B (receptor)</th></tr>
+            </thead>
+            <tbody>
+              <tr><th>connectionState</th><td data-peer="A" data-key="connection">—</td><td data-peer="B" data-key="connection">—</td></tr>
+              <tr><th>iceConnectionState</th><td data-peer="A" data-key="ice">—</td><td data-peer="B" data-key="ice">—</td></tr>
+              <tr><th>iceGatheringState</th><td data-peer="A" data-key="gathering">—</td><td data-peer="B" data-key="gathering">—</td></tr>
+              <tr><th>signalingState</th><td data-peer="A" data-key="signaling">—</td><td data-peer="B" data-key="signaling">—</td></tr>
+            </tbody>
+          </table>
+
+          <h2>Codec negociado</h2>
+          <p id="codec" class="mono" data-testid="codec">—</p>
+          <p id="codec-fmtp" class="mono small" data-testid="codec-fmtp"></p>
+
+          <h2>Níveis de áudio</h2>
+          <div class="meter-row">
+            <span>Microfone (A)</span>
+            <meter id="meter-local" min="0" max="0.3" value="0"></meter>
+          </div>
+          <div class="meter-row">
+            <span>Recebido (B)</span>
+            <meter id="meter-remote" min="0" max="0.3" value="0" data-testid="meter-remote"></meter>
+          </div>
+        </section>
+
+        <section aria-labelledby="metrics-title">
+          <h2 id="metrics-title">Métricas (getStats, a cada 1 s)</h2>
+          <table class="metrics">
+            <tbody>
+              <tr><th>Taxa enviada (A)</th><td data-metric="sendKbps">—</td></tr>
+              <tr><th>Taxa recebida (B)</th><td data-metric="recvKbps">—</td></tr>
+              <tr><th>Pacotes enviados / recebidos</th><td data-metric="packets">—</td></tr>
+              <tr><th>Perda acumulada</th><td data-metric="loss">—</td></tr>
+              <tr><th>Jitter</th><td data-metric="jitter">—</td></tr>
+              <tr><th>Atraso médio do jitter buffer</th><td data-metric="jbDelay">—</td></tr>
+              <tr><th>RTT (par ICE)</th><td data-metric="rtt">—</td></tr>
+              <tr><th>Amostras ocultadas (PLC)</th><td data-metric="conceal">—</td></tr>
+              <tr><th>Pico RMS recebido (track, antes da saída)</th><td data-metric="remoteRmsPeak">—</td></tr>
+              <tr><th>audioLevel (getStats; após mute/volume da saída)</th><td data-metric="audioLevel">—</td></tr>
+              <tr><th>Par ICE (sem endereços)</th><td data-metric="pair">—</td></tr>
+              <tr><th>Duração</th><td data-metric="elapsed">—</td></tr>
+            </tbody>
+          </table>
+
+          <h2>Resumo da sessão</h2>
+          <button id="btn-summary" type="button" data-testid="btn-summary" disabled>Gerar resumo (JSON)</button>
+          <textarea id="summary" readonly rows="8" data-testid="summary" aria-label="Resumo JSON"></textarea>
+        </section>
+      </div>
+
+      <section aria-labelledby="log-title">
+        <h2 id="log-title">Eventos (somente em memória; sem SDP nem endereços)</h2>
+        <ol id="log" class="log mono small" data-testid="log"></ol>
+      </section>
+
+      <div id="audio-container" hidden></div>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
