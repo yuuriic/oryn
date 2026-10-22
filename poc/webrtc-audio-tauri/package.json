@@ -1,0 +1,28 @@
+{
+  "name": "@oryn/poc-webrtc-audio-tauri",
+  "private": true,
+  "version": "0.0.0",
+  "description": "POC-01B: áudio WebRTC loopback no Tauri 2 / WebView2 (descartável)",
+  "type": "module",
+  "packageManager": "pnpm@12.6.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build --no-bundle",
+    "e2e:webview2": "node scripts/e2e-webview2.mjs"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.4",
+    "playwright-core": "1.64.1",
+    "typescript": "7.0.2",
+    "vite": "8.3.5",
+    "vitest": "5.0.5"
+  }
+}
