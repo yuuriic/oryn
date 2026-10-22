@@ -4,7 +4,7 @@ import { rmSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { MAX_MESSAGE_BYTES } from '../src/protocol.ts';
 import { CONTENT_SECURITY_POLICY, startServer, type RunningServer } from '../server/server.ts';
-import { OPERATOR_KEY, OPERATOR_KEY_HASH, TestClient, createAndInvite, fakeDist } from './helpers/ws-client.ts';
+import { TestClient, createAndInvite, fakeDist, pairAdmin, wsUrlOf } from './helpers/ws-client.ts';
 
 const SDP = 'v=0\r\no=- 1 2 IN IP4 0.0.0.0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=ice-ufrag:SEGREDO\r\n';
 
@@ -13,6 +13,7 @@ let dist: string;
 let logs: string[];
 let wsUrl: string;
 let origin: string;
+let token: string;
 const clients: TestClient[] = [];
 
 async function client(o: string | null = origin): Promise<TestClient> {
@@ -21,9 +22,16 @@ async function client(o: string | null = origin): Promise<TestClient> {
   return c;
 }
 
+/** Operador: listener administrativo. */
+async function adminClient(): Promise<TestClient> {
+  const c = await TestClient.open(wsUrlOf(server.adminOrigin!), server.adminOrigin);
+  clients.push(c);
+  return c;
+}
+
 async function pair() {
-  const host = await client();
-  const { sessionId, invite } = await createAndInvite(host);
+  const host = await adminClient();
+  const { sessionId, invite } = await createAndInvite(host, token);
   const guest = await client();
   guest.send({ type: 'join', invite });
   await guest.next('session');
@@ -37,13 +45,14 @@ beforeEach(async () => {
   server = await startServer({
     distDir: dist,
     httpPort: 0,
+    adminPort: 0,
     heartbeatMs: 150,
-    operatorKeyHash: OPERATOR_KEY_HASH,
     rateLimit: { capacity: 20, refillPerSecond: 5 },
     log: (l) => logs.push(l),
   });
   origin = server.httpOrigin;
   wsUrl = `${server.httpOrigin.replace('http', 'ws')}/ws`;
+  token = await pairAdmin(server);
 });
 
 afterEach(async () => {
@@ -111,8 +120,8 @@ describe('sessão via WebSocket (testes 1–4)', () => {
   it('IDs de sessão são imprevisíveis (128 bits, sem repetição em 10 sessões)', async () => {
     const ids = new Set<string>();
     for (let i = 0; i < 10; i++) {
-      const c = await client();
-      ids.add((await createAndInvite(c)).sessionId);
+      const c = await adminClient();
+      ids.add((await createAndInvite(c, token)).sessionId);
       c.send({ type: 'leave' });
       c.ws.terminate(); // respeita o limite de conexões simultâneas
     }
@@ -143,7 +152,7 @@ describe('sessão via WebSocket (testes 1–4)', () => {
     await server.close();
     expect(await host.next('session-closed')).toEqual({ type: 'session-closed', reason: 'server-shutdown' });
     expect((await closed).map((c) => c.code)).toEqual([1001, 1001]);
-    server = await startServer({ distDir: dist, httpPort: 0, operatorKeyHash: OPERATOR_KEY_HASH, log: () => undefined }); // para o afterEach
+    server = await startServer({ distDir: dist, httpPort: 0, adminPort: 0, log: () => undefined }); // para o afterEach
   });
 });
 

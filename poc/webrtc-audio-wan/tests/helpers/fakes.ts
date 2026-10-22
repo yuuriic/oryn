@@ -6,10 +6,10 @@ import { vi } from 'vitest';
 import type { CallDeps, SignalingLike } from '../../src/call.ts';
 import { parseClientMessage, parseServerMessage, type ServerMessage } from '../../src/protocol.ts';
 import type { SignalingHandlers } from '../../src/signaling-client.ts';
-import { Admission, hashToken } from '../../server/admission.ts';
+import { Admission } from '../../server/admission.ts';
 import { SessionRegistry, type Participant } from '../../server/registry.ts';
 
-/** Chave fixa do operador nos testes (43 caracteres base64url). */
+/** Token administrativo fixo nos testes (43 caracteres base64url; no servidor real vem do pareamento). */
 export const TEST_OPERATOR_KEY = 'O'.repeat(43);
 
 // ---------- mídia ----------
@@ -180,11 +180,7 @@ export class SignalingHub {
 
   constructor() {
     this.admission = new Admission({
-      operatorKeyHash: hashToken(TEST_OPERATOR_KEY),
       inviteTtlMs: 600_000,
-      maxOperatorFailures: 5,
-      failureWindowMs: 60_000,
-      lockoutMs: 60_000,
       now: () => 0,
       randomToken: () => `I${String(++this.tokens).padStart(42, '0')}`,
     });
@@ -193,6 +189,7 @@ export class SignalingHub {
       idleTimeoutMs: 600_000,
       maxAuthFailures: 3,
       admission: this.admission,
+      verifyAdmin: (token) => token === TEST_OPERATOR_KEY,
       publicOrigin: null,
       now: () => 0,
       randomId: () => `SESSION${String(++this.ids).padStart(15, '0')}`,
@@ -244,8 +241,8 @@ export class FakeSignaling implements SignalingLike {
     this.sent.push(message);
     const parsed = parseClientMessage(JSON.stringify(message));
     if (!parsed.ok) throw new Error(`cliente enviou mensagem inválida: ${parsed.code}`);
-    // Hub em memória = conexão local do operador (Host loopback).
-    this.hub.registry.handle(this.participant, parsed.value, { local: true });
+    // Hub em memória = conexão do listener administrativo (operador neste PC).
+    this.hub.registry.handle(this.participant, parsed.value, { admin: true });
     return true;
   }
 

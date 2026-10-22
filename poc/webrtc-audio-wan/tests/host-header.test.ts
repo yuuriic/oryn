@@ -7,7 +7,7 @@ import net from 'node:net';
 import tls from 'node:tls';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { checkHost, startServer, type RunningServer } from '../server/server.ts';
-import { OPERATOR_KEY_HASH, TestClient, createAndInvite, fakeDist } from './helpers/ws-client.ts';
+import { TestClient, createAndInvite, fakeDist, openOperator } from './helpers/ws-client.ts';
 
 const supportsIpv6 = await new Promise<boolean>((resolve) => {
   const s = net.createServer();
@@ -76,7 +76,7 @@ describe('listener HTTP local (127.0.0.1)', () => {
 
   beforeAll(async () => {
     dist = fakeDist();
-    server = await startServer({ distDir: dist, httpPort: 0, operatorKeyHash: OPERATOR_KEY_HASH, log: () => undefined });
+    server = await startServer({ distDir: dist, httpPort: 0, adminPort: 0, log: () => undefined });
     port = new URL(server.httpOrigin).port;
   });
   afterAll(async () => {
@@ -127,8 +127,12 @@ describe('listener HTTP local (127.0.0.1)', () => {
     await expect(TestClient.open(ws, server.httpOrigin, { headers: { Host: '127.0.0.1:1' } })).rejects.toThrow('421');
     await expect(TestClient.open(ws, 'https://evil.example', { headers: { Host: `localhost:${port}` } })).rejects.toThrow('403');
     const ok = await TestClient.open(ws, `http://localhost:${port}`, { headers: { Host: `localhost:${port}` } });
-    await createAndInvite(ok);
+    const { client: operator, token } = await openOperator(server);
+    const { invite } = await createAndInvite(operator, token);
+    ok.send({ type: 'join', invite });
+    expect((await ok.next('session'))['role']).toBe('guest');
     ok.ws.terminate();
+    operator.ws.terminate();
   });
 });
 
@@ -139,7 +143,7 @@ describe.skipIf(!supportsIpv6)('listener HTTP local em IPv6 (::1)', () => {
 
   beforeAll(async () => {
     dist = fakeDist();
-    server = await startServer({ distDir: dist, httpHost: '::1', httpPort: 0, operatorKeyHash: OPERATOR_KEY_HASH, log: () => undefined });
+    server = await startServer({ distDir: dist, httpHost: '::1', httpPort: 0, adminPort: 0, log: () => undefined });
     port = new URL(server.httpOrigin).port;
   });
   afterAll(async () => {
@@ -153,10 +157,15 @@ describe.skipIf(!supportsIpv6)('listener HTTP local em IPv6 (::1)', () => {
     expect((await request(server.httpOrigin, '/', { Host: `127.0.0.1:${port}` })).status).toBe(421);
   });
 
-  it('upgrade WebSocket com Host [::1]:porta funciona', async () => {
+  it('upgrade WebSocket com Host [::1]:porta funciona nos dois listeners', async () => {
+    expect(server.adminOrigin).toMatch(/^http:\/\/\[::1\]:\d+$/);
+    const { client: operator, token } = await openOperator(server);
+    const { invite } = await createAndInvite(operator, token);
     const c = await TestClient.open(`ws://[::1]:${port}/ws`, server.httpOrigin);
-    await createAndInvite(c);
+    c.send({ type: 'join', invite });
+    expect((await c.next('session'))['role']).toBe('guest');
     c.ws.terminate();
+    operator.ws.terminate();
   });
 });
 

@@ -2,9 +2,9 @@
 // O servidor nunca recebe nem retransmite mídia: só encaminha offer/answer/candidate entre os
 // dois participantes de uma sessão.
 //
-// Admissão (POC-02B.2B):
-// - host = operador: só quem apresenta a chave do operador por um Host local cria a sessão ou
-//   volta a ela (rejoin);
+// Admissão (POC-02B.2B, separação administrativa no 02B.2C):
+// - host = operador: create/rejoin/invite só pelo LISTENER ADMINISTRATIVO e com o token administrativo
+//   obtido por pareamento. O privilégio não depende do cabeçalho Host;
 // - convidado = quem apresenta um convite de uso único emitido pelo operador; convites só
 //   preenchem a vaga de convidado;
 // - falhas de autorização repetidas na mesma conexão encerram a conexão.
@@ -20,10 +20,10 @@ export interface Participant {
   close?(code: number, reason: string): void;
 }
 
-/** Contexto de admissão derivado do Host validado da conexão. */
+/** Contexto da conexão, definido pelo listener que a aceitou (não pelo Host). */
 export interface ConnectionContext {
-  /** true quando o Host é local (loopback); false quando chegou pelo hostname público. */
-  local: boolean;
+  /** true somente para conexões do listener administrativo (porta própria, loopback). */
+  admin: boolean;
 }
 
 interface Session {
@@ -42,6 +42,8 @@ export interface RegistryOptions {
   /** Falhas de autorização por conexão antes de encerrá-la. */
   maxAuthFailures: number;
   admission: Admission;
+  /** Verifica o token administrativo (pareamento). */
+  verifyAdmin: (token: string) => boolean;
   /** Origem pública (https://hostname) informada ao operador junto com o convite, ou null. */
   publicOrigin: string | null;
   now: () => number;
@@ -129,8 +131,7 @@ export class SessionRegistry {
 
   private create(p: Participant, operatorKey: string, context: ConnectionContext): void {
     if (this.membership.has(p.id)) return this.error(p, 'already-in-session');
-    const auth = this.options.admission.verifyOperator(operatorKey, context.local);
-    if (auth !== 'ok') return this.authFailure(p, auth);
+    if (!this.authorizedAdmin(operatorKey, context)) return this.authFailure(p, 'unauthorized');
     if (this.sessions.size >= this.options.maxSessions) return this.error(p, 'server-busy');
     let id = this.options.randomId();
     while (this.sessions.has(id)) id = this.options.randomId();
@@ -145,8 +146,7 @@ export class SessionRegistry {
 
   private rejoin(p: Participant, sessionId: string, operatorKey: string, context: ConnectionContext): void {
     if (this.membership.has(p.id)) return this.error(p, 'already-in-session');
-    const auth = this.options.admission.verifyOperator(operatorKey, context.local);
-    if (auth !== 'ok') return this.authFailure(p, auth);
+    if (!this.authorizedAdmin(operatorKey, context)) return this.authFailure(p, 'unauthorized');
     const session = this.sessions.get(sessionId);
     if (!session) return this.error(p, 'not-found');
     if (session.host) return this.error(p, 'session-full');
@@ -233,6 +233,11 @@ export class SessionRegistry {
     const { token, expiresAt } = this.options.admission.issueInvite(session.id);
     p.send({ type: 'invite', token, expiresAt, publicOrigin: this.options.publicOrigin });
     this.log(`sessão ${shortId(session.id)}: convite emitido`); // o token nunca é registrado
+  }
+
+  /** Listener administrativo E token válido; o listener de sinalização nunca tem privilégio administrativo. */
+  private authorizedAdmin(token: string, context: ConnectionContext): boolean {
+    return context.admin && this.options.verifyAdmin(token);
   }
 
   private authFailure(p: Participant, code: ErrorCode): void {

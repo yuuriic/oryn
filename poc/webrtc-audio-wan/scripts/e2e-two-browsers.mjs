@@ -9,8 +9,9 @@
 
 import { chromium } from 'playwright-core';
 import { fileURLToPath } from 'node:url';
+import { createServer } from 'node:http';
 import { join } from 'node:path';
-import { hashToken, newToken } from '../server/admission.ts';
+import { formatPairingCode } from '../server/admin-auth.ts';
 import { startServer } from '../server/server.ts';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -96,21 +97,70 @@ const cleanupState = (p) =>
     audioElements: document.querySelectorAll('audio').length,
   }));
 
-// Chave efêmera do operador (como no server/index.ts): só o hash vai ao servidor.
-const operatorKey = newToken();
-const server = await startServer({ distDir: join(root, 'dist'), httpPort: 0, operatorKeyHash: hashToken(operatorKey), log: (l) => serverLogs.push(l) });
+// Dois listeners (02B.2C): sinalização (convidados) e administrativo (operador), portas distintas.
+const server = await startServer({ distDir: join(root, 'dist'), httpPort: 0, adminPort: 0, log: (l) => serverLogs.push(l) });
 const base = server.httpOrigin.replace('127.0.0.1', 'localhost');
+const adminBase = server.adminOrigin.replace('127.0.0.1', 'localhost');
 const opened = [];
 let exitCode = 0;
 
 try {
-  // A = operador (link #op= do terminal); B = convidado (sem chave).
-  const A = await openParticipant('chrome', `${base}/#op=${operatorKey}`, 'A (Chrome, operador)');
+  // A = operador (endereço administrativo); B = convidado (endereço de sinalização).
+  const A = await openParticipant('chrome', adminBase, 'A (Chrome, operador)');
   const B = await openParticipant('msedge', base, 'B (Edge, convidado)');
   opened.push(A, B);
   results.observed.browsers = { A: A.version, B: B.version };
-  check('operador: chave removida da URL e "Criar sessão" habilitado', !A.page.url().includes('#') && (await A.page.isEnabled('[data-testid="btn-create"]')));
-  check('sem a chave do operador, "Criar sessão" fica desabilitado', !(await B.page.isEnabled('[data-testid="btn-create"]')));
+  check('sem pareamento, "Criar sessão" fica desabilitado (A e B)', !(await A.page.isEnabled('[data-testid="btn-create"]')) && !(await B.page.isEnabled('[data-testid="btn-create"]')));
+
+  // Código de pareamento como o terminal exibiria (só o código; o token nunca sai do servidor por aqui).
+  const { code } = server.adminAuth.issuePairingCode();
+
+  // Separação: o mesmo código digitado no endereço de sinalização não autoriza nada nem é consumido.
+  await B.page.fill('[data-testid="inp-pair"]', formatPairingCode(code));
+  await B.page.click('[data-testid="btn-pair"]');
+  await B.page.waitForSelector('[data-testid="error"]:not([hidden])');
+  check('pareamento pelo endereço de sinalização recusado ("não é o administrativo")', /não é o administrativo/.test(await text(B, '[data-testid="error"]')));
+  check('após a recusa, B continua sem "Criar sessão" e o código segue válido', !(await B.page.isEnabled('[data-testid="btn-create"]')) && server.adminAuth.pairingPending);
+
+  // CSRF: página maliciosa em OUTRA origem local (outra porta, sem a CSP da POC), aberta no navegador de B.
+  const evil = createServer((_req, res) => res.writeHead(200, { 'Content-Type': 'text/html' }).end('<!doctype html><title>evil</title>'));
+  await new Promise((r) => evil.listen(0, '127.0.0.1', r));
+  const evilPage = await B.page.context().newPage();
+  await evilPage.goto(`http://localhost:${evil.address().port}/`);
+  const csrf = await evilPage.evaluate(async ({ url, code }) => {
+    const out = {};
+    try {
+      await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Oryn-Admin': '1' }, body: JSON.stringify({ code }) });
+      out.preflight = 'resolvido';
+    } catch (e) {
+      out.preflight = e.name;
+    }
+    try {
+      const simple = await fetch(url, { method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify({ code }) });
+      out.simple = simple.type;
+    } catch (e) {
+      out.simple = e.name;
+    }
+    return out;
+  }, { url: `${adminBase}/admin/pair`, code });
+  await evilPage.close();
+  evil.close();
+  check('CSRF: fetch com cabeçalhos do pareamento de outra origem falha (TypeError)', csrf.preflight === 'TypeError', csrf);
+  check('CSRF: POST simples (no-cors) é opaco e não consome o código', csrf.simple === 'opaque' && server.adminAuth.pairingPending, csrf);
+
+  // Pareamento legítimo no endereço administrativo (código digitado em minúsculas, com hífen).
+  await A.page.fill('[data-testid="inp-pair"]', formatPairingCode(code).toLowerCase());
+  const [pairResponse] = await Promise.all([
+    A.page.waitForResponse((r) => r.url().endsWith('/admin/pair')),
+    A.page.click('[data-testid="btn-pair"]'),
+  ]);
+  const operatorToken = (await pairResponse.json()).token;
+  await A.page.waitForSelector('[data-testid="btn-create"]:enabled');
+  check('operador pareado: "Criar sessão" habilitado, formulário oculto e campo limpo',
+    (await A.page.isHidden('[data-testid="pairing"]')) && (await A.page.inputValue('[data-testid="inp-pair"]')) === '');
+  const stored = await A.page.evaluate(() => JSON.stringify({ url: location.href, local: { ...localStorage }, session: { ...sessionStorage }, history: history.length }));
+  check('token administrativo fora da URL e do armazenamento do navegador', /^[A-Za-z0-9_-]{43}$/.test(operatorToken) && !stored.includes(operatorToken), stored);
+  check('código de pareamento consumido (uso único)', !server.adminAuth.pairingPending);
 
   // A cria a sessão e recebe um convite de uso único; B entra pelo link #i=.
   await A.page.click('[data-testid="btn-create"]');
@@ -238,7 +288,7 @@ try {
   check('logs (páginas, console, servidor) sem SDP, candidatos ou IPs', leaks.length === 0, leaks.map(String));
   check('logs do servidor sem o ID completo da sessão', !serverLogs.join('\n').includes(sessionId));
   const everything = [pageLogs, consoles, serverLogs.join('\n')].join('\n');
-  check('chave do operador e convites ausentes de logs, console e servidor', ![operatorKey, invite, invite2].some((sec) => everything.includes(sec)));
+  check('token administrativo, código de pareamento e convites ausentes de logs, console e servidor', ![operatorToken, code, formatPairingCode(code), invite, invite2].some((sec) => everything.includes(sec)));
   const csp = consoles.split('\n').filter((m) => /Content Security Policy/i.test(m));
   check('sem violações de CSP', csp.length === 0, csp);
   results.observed.serverLogLines = serverLogs.length;

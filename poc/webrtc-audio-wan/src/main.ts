@@ -16,6 +16,9 @@ const ui = {
   join: $<HTMLButtonElement>('#btn-join'),
   rejoin: $<HTMLButtonElement>('#btn-rejoin'),
   operatorHint: $<HTMLParagraphElement>('#operator-hint'),
+  pairing: $<HTMLDivElement>('#pairing'),
+  pairInput: $<HTMLInputElement>('#inp-pair'),
+  pair: $<HTMLButtonElement>('#btn-pair'),
   inviteToken: $<HTMLSpanElement>('#invite-token'),
   inviteExpiry: $<HTMLParagraphElement>('#invite-expiry'),
   inviteIntro: $<HTMLParagraphElement>('#invite-intro'),
@@ -53,8 +56,9 @@ const ACTIVE: readonly CallPhase[] = ['requesting-mic', 'connecting-signaling', 
 
 let call: PeerCall | null = null;
 /**
- * Chave do operador: só em memória (nunca localStorage/sessionStorage), lida do fragmento #op=…
- * do link exibido no terminal e removida da barra de endereço. Nunca é registrada no log.
+ * Token administrativo do operador, obtido por pareamento (código de uso único exibido no terminal) no
+ * listener administrativo. Só em memória: nunca localStorage/sessionStorage, URL ou log. Recarregar a
+ * página exige novo código.
  */
 let operatorKey: string | null = null;
 /** Última sessão criada por este operador (para "Voltar à sessão"). */
@@ -363,37 +367,69 @@ window.addEventListener('pagehide', () => call?.end());
 
 ui.env.textContent = `${location.origin} · contexto seguro: ${window.isSecureContext ? 'sim' : 'NÃO'} · sinalização: ${signalingUrl(location)}`;
 
-// Segredos via fragmento (#op=… do operador, #i=… do convite): não vão ao servidor nem ao Referer e
-// são removidos da barra de endereço e do histórico (replaceState). Nunca são registrados no log.
-function readSecretsFromHash(): void {
-  const params = new URLSearchParams(location.hash.slice(1));
-  const op = params.get('op');
-  const invite = params.get('i');
-  if (op === null && invite === null) return;
-  history.replaceState(null, '', location.pathname);
-  if (op !== null) {
-    if (isToken(op)) {
-      operatorKey = op;
-      log('Modo operador habilitado nesta página.');
-    } else {
-      log('Link de operador inválido ignorado.');
-    }
-  }
-  if (invite !== null) {
-    if (!isToken(invite)) log('Link de convite inválido ignorado.');
-    else if (!(call && ACTIVE.includes(call.phase))) {
-      ui.sessionInput.value = invite; // não troca o convite no meio de uma chamada
-      log('Convite preenchido pelo link.');
-    }
-  }
-  ui.operatorHint.hidden = operatorKey !== null;
-  if (call === null || !ACTIVE.includes(call.phase)) {
-    ui.create.disabled = operatorKey === null;
+// Convite via fragmento (#i=…): não vai ao servidor nem ao Referer e é removido da barra de endereço e
+// do histórico (replaceState). Nunca é registrado no log. (O antigo #op= do operador foi removido no 02B.2C.)
+function readInviteFromHash(): void {
+  const invite = new URLSearchParams(location.hash.slice(1)).get('i');
+  if (location.hash !== '') history.replaceState(null, '', location.pathname);
+  if (invite === null) return;
+  if (!isToken(invite)) log('Link de convite inválido ignorado.');
+  else if (!(call && ACTIVE.includes(call.phase))) {
+    ui.sessionInput.value = invite; // não troca o convite no meio de uma chamada
+    log('Convite preenchido pelo link.');
   }
 }
-readSecretsFromHash();
+readInviteFromHash();
 // O link também pode ser aberto numa aba que já está nesta página (só o fragmento muda).
-window.addEventListener('hashchange', readSecretsFromHash);
+window.addEventListener('hashchange', readInviteFromHash);
+
+// ---------- pareamento do operador (somente no endereço administrativo, em loopback) ----------
+
+const isLoopbackPage = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+ui.pairing.hidden = !isLoopbackPage;
+
+function setOperator(token: string | null): void {
+  operatorKey = token;
+  ui.pairing.hidden = token !== null || !isLoopbackPage;
+  ui.operatorHint.hidden = token !== null;
+  if (call === null || !ACTIVE.includes(call.phase)) ui.create.disabled = token === null;
+}
+
+ui.pair.addEventListener('click', () => {
+  const code = ui.pairInput.value;
+  ui.pairInput.value = ''; // o código é de uso único; não manter na página
+  ui.error.hidden = true;
+  // Mesma origem, JSON e cabeçalho próprio: o servidor exige os três (bloqueia CSRF e páginas de terceiros).
+  fetch('/admin/pair', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Oryn-Admin': '1' },
+    body: JSON.stringify({ code }),
+    credentials: 'omit',
+    cache: 'no-store',
+  })
+    .then(async (res) => {
+      if (res.ok) {
+        const body = (await res.json()) as { token?: unknown };
+        if (isToken(body.token)) {
+          setOperator(body.token);
+          log('Operador pareado nesta página.');
+          return;
+        }
+      }
+      const message =
+        res.status === 429
+          ? 'Código esgotado: gere outro no terminal ("codigo" + Enter).'
+          : res.status === 404 || res.status === 405 || res.status === 421
+            ? 'Este endereço não é o administrativo: use a porta de administração exibida no terminal.'
+            : 'Código de pareamento inválido ou expirado.';
+      ui.error.textContent = message;
+      ui.error.hidden = false;
+    })
+    .catch(() => {
+      ui.error.textContent = 'Falha ao contatar o servidor para o pareamento.';
+      ui.error.hidden = false;
+    });
+});
 
 renderPhase('idle');
 renderStats(null);

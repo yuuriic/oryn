@@ -1,19 +1,15 @@
-// Admissão (02B.2B): chave do operador e convites de uso único — lógica pura com relógio controlado.
+// Admissão (02B.2B): convites de uso único — lógica pura com relógio controlado.
+// A autorização do operador saiu daqui no 02B.2C (pareamento: tests/admin-auth.test.ts).
 import { beforeEach, describe, expect, it } from 'vitest';
 import { Admission, hashToken, newToken } from '../server/admission.ts';
 
-const KEY = newToken();
 let clock: number;
 let seq: number;
 let admission: Admission;
 
-function make(operatorKeyHash: Buffer | null = hashToken(KEY)): Admission {
+function make(): Admission {
   return new Admission({
-    operatorKeyHash,
     inviteTtlMs: 10_000,
-    maxOperatorFailures: 5,
-    failureWindowMs: 60_000,
-    lockoutMs: 60_000,
     now: () => clock,
     randomToken: () => `T${String(++seq).padStart(42, '0')}`,
   });
@@ -33,39 +29,6 @@ describe('tokens', () => {
       expect(t).toMatch(/^[A-Za-z0-9_-]{43}$/);
       expect(Buffer.from(t, 'base64url')).toHaveLength(32);
     }
-  });
-});
-
-describe('chave do operador', () => {
-  it('aceita a chave correta somente por Host local', () => {
-    expect(admission.verifyOperator(KEY, true)).toBe('ok');
-    expect(admission.verifyOperator(KEY, false)).toBe('unauthorized');
-  });
-
-  it('recusa chave errada; sem chave configurada, nada é autorizado (fechado por padrão)', () => {
-    expect(admission.verifyOperator(newToken(), true)).toBe('unauthorized');
-    expect(make(null).verifyOperator(KEY, true)).toBe('unauthorized');
-  });
-
-  it('5 falhas locais em 60 s bloqueiam por 60 s, inclusive a chave correta; depois libera', () => {
-    for (let i = 0; i < 5; i++) expect(admission.verifyOperator(newToken(), true)).toBe('unauthorized');
-    expect(admission.verifyOperator(KEY, true)).toBe('locked');
-    clock += 59_999;
-    expect(admission.verifyOperator(KEY, true)).toBe('locked');
-    clock += 1;
-    expect(admission.verifyOperator(KEY, true)).toBe('ok');
-  });
-
-  it('falhas fora da janela não acumulam', () => {
-    for (let i = 0; i < 4; i++) admission.verifyOperator(newToken(), true);
-    clock += 60_001;
-    admission.verifyOperator(newToken(), true);
-    expect(admission.verifyOperator(KEY, true)).toBe('ok');
-  });
-
-  it('tentativas remotas (Host público) não contam para o bloqueio: um terceiro não bloqueia o operador', () => {
-    for (let i = 0; i < 50; i++) expect(admission.verifyOperator(newToken(), false)).toBe('unauthorized');
-    expect(admission.verifyOperator(KEY, true)).toBe('ok');
   });
 });
 

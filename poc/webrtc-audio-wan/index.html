@@ -38,8 +38,17 @@
           </label>
           <button id="btn-join" type="button" data-testid="btn-join">Entrar</button>
         </div>
+        <div id="pairing" class="row" data-testid="pairing" hidden>
+          <label class="grow">
+            <span class="visually-hidden">Código de pareamento do operador</span>
+            <input id="inp-pair" type="text" autocomplete="off" spellcheck="false" maxlength="16"
+              placeholder="Código de pareamento (exibido no terminal)" data-testid="inp-pair" />
+          </label>
+          <button id="btn-pair" type="button" data-testid="btn-pair">Parear operador</button>
+        </div>
         <p id="operator-hint" class="muted small" data-testid="operator-hint">
-          Para criar uma sessão, abra o link do operador exibido no terminal do servidor (só neste computador).
+          Criar sessões é exclusivo do operador: abra o endereço administrativo deste computador e informe o código de
+          pareamento exibido no terminal do servidor.
         </p>
 
         <div id="invite" class="invite" hidden data-testid="invite">

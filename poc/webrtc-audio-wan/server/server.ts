@@ -6,8 +6,12 @@
 //   túnel HTTPS público (Cloudflare Tunnel, incremento futuro): o TLS termina na Cloudflare e o túnel
 //   entrega o tráfego a este listener em loopback.
 // - WebSocket no caminho /ws do mesmo host/porta.
-// - 02B.2B: admissão por chave do operador e convites de uso único; hostnames públicos só por allowlist
-//   explícita (fechada por padrão); Origin precisa corresponder ao Host; limites independentes de IP.
+// - 02B.2B: convites de uso único; hostnames públicos só por allowlist explícita (fechada por padrão);
+//   Origin precisa corresponder ao Host; limites independentes de IP.
+// - 02B.2C: DOIS listeners em loopback, em portas distintas:
+//     · sinalização (alvo do futuro túnel): página, join/signal/leave; NENHUMA capacidade administrativa;
+//     · administrativo (só o operador, nunca exposto): página, POST /admin/pair e create/rejoin/invite.
+//   O privilégio vem do listener que aceitou a conexão + token de pareamento, nunca do cabeçalho Host.
 //   Cabeçalhos de proxy (X-Forwarded-*, CF-Connecting-IP) NUNCA são lidos: atrás do túnel todas as
 //   conexões vêm de 127.0.0.1 e esses cabeçalhos não têm fronteira de confiança verificável aqui.
 
@@ -19,20 +23,33 @@ import { join, relative, sep } from 'node:path';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { MAX_MESSAGE_BYTES, parseClientMessage, type ServerMessage } from '../src/protocol.ts';
+import { AdminAuth, newPairingCode } from './admin-auth.ts';
 import { Admission, newToken } from './admission.ts';
 import { TokenBucket } from './rate-limit.ts';
 import { SessionRegistry, type ConnectionContext, type Participant } from './registry.ts';
 
+export type ListenerKind = 'signal' | 'admin';
+
 export interface ServerConfig {
   distDir: string;
+  /** Listener de SINALIZAÇÃO (alvo do futuro túnel): sem capacidade administrativa. */
   httpPort: number;
+  /**
+   * Listener ADMINISTRATIVO (operador), porta própria em loopback; nunca deve ser alvo do túnel.
+   * Ausente = sem administração (ninguém cria sessões). Igual a httpPort = configuração recusada.
+   */
+  adminPort?: number;
   /**
    * Padrão: 127.0.0.1. Somente endereços LITERAIS de loopback (127.0.0.0/8 ou ::1) são aceitos;
    * qualquer outro valor, incluindo "localhost", é rejeitado antes de abrir listeners.
    */
   httpHost?: string;
-  /** SHA-256 da chave efêmera do operador. Ausente = ninguém cria sessões (fechado por padrão). */
-  operatorKeyHash?: Buffer;
+  /** Validade do código de pareamento (padrão 5 min). */
+  pairingCodeTtlMs?: number;
+  /** Tentativas erradas que queimam o código (padrão 5). */
+  maxPairingAttempts?: number;
+  /** Validade do token administrativo (padrão 12 h; sempre limitado à vida do processo). */
+  adminSessionTtlMs?: number;
   /**
    * Hostnames públicos autorizados (ex.: o do túnel). Ausente/vazio = nenhum acesso público.
    * Somente nomes DNS exatos: sem curingas, IPs, portas ou "localhost".
@@ -54,11 +71,16 @@ export interface ServerConfig {
 }
 
 export interface RunningServer {
+  /** Origem do listener de sinalização (loopback). */
   httpOrigin: string;
+  /** Origem do listener administrativo (loopback), ou null se desativado. */
+  adminOrigin: string | null;
   /** https://<primeiro hostname público>, ou null quando o acesso público está fechado. */
   publicOrigin: string | null;
   registry: SessionRegistry;
   admission: Admission;
+  /** Pareamento do operador (o terminal emite o código; nunca imprime o token). */
+  adminAuth: AdminAuth;
   close(): Promise<void>;
 }
 
@@ -208,22 +230,33 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
   const log = config.log ?? ((line: string) => console.log(line));
   const httpHost = config.httpHost ?? '127.0.0.1';
   // Validação antes de qualquer outra coisa: nenhum listener é aberto com configuração inválida.
-  // Configuração legada da POC-02A (listener HTTPS com CA local) é recusada explicitamente, nunca ignorada.
+  // Configurações legadas são recusadas explicitamente, nunca ignoradas.
   if ('https' in (config as object)) {
     throw new Error('Opção "https" removida na POC-02B: não há TLS local nem CA própria; o acesso externo será pelo túnel público.');
   }
+  if ('operatorKeyHash' in (config as object)) {
+    throw new Error('Opção "operatorKeyHash" removida no 02B.2C: a autorização do operador é feita por pareamento no listener administrativo.');
+  }
   assertLoopbackHttpHost(httpHost);
+  // Configuração ambígua: os dois listeners não podem compartilhar a porta.
+  if (config.adminPort !== undefined && config.adminPort !== 0 && config.adminPort === config.httpPort) {
+    throw new Error(`Configuração ambígua: listener administrativo e de sinalização na mesma porta (${config.httpPort}).`);
+  }
   // Allowlist pública validada antes de abrir qualquer listener (configuração inválida = não sobe).
   const publicHosts = new Set((config.publicHostnames ?? []).map(validatePublicHostname));
   const publicOrigin = publicHosts.size > 0 ? `https://${[...publicHosts][0]}` : null;
   const files = loadStaticFiles(config.distDir);
 
+  const adminAuth = new AdminAuth({
+    codeTtlMs: config.pairingCodeTtlMs ?? 5 * 60_000,
+    maxCodeAttempts: config.maxPairingAttempts ?? 5,
+    sessionTtlMs: config.adminSessionTtlMs ?? 12 * 60 * 60_000,
+    now: Date.now,
+    newCode: newPairingCode,
+    newToken,
+  });
   const admission = new Admission({
-    operatorKeyHash: config.operatorKeyHash ?? null,
     inviteTtlMs: config.inviteTtlMs ?? 10 * 60_000,
-    maxOperatorFailures: 5,
-    failureWindowMs: 60_000,
-    lockoutMs: 60_000,
     now: Date.now,
     randomToken: newToken,
   });
@@ -232,6 +265,7 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
     idleTimeoutMs: config.idleTimeoutMs ?? 10 * 60_000,
     maxAuthFailures: config.maxAuthFailures ?? 3,
     admission,
+    verifyAdmin: (token) => adminAuth.verify(token),
     publicOrigin,
     now: Date.now,
     randomId: newSessionId,
@@ -240,14 +274,19 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
   const maxConnections = config.maxConnections ?? 8;
   const admissionTimeoutMs = config.admissionTimeoutMs ?? 10_000;
 
-  // Hosts locais aceitos, preenchidos após o bind (com a porta efetiva). Antes disso, tudo é recusado.
-  const httpHosts = new Set<string>();
+  // Hosts locais aceitos por listener, preenchidos após o bind (com a porta efetiva). Antes disso, tudo é recusado.
+  const signalHosts = new Set<string>();
+  const adminHosts = new Set<string>();
 
-  /** Zona do Host validado: local (loopback:porta) ou público (allowlist exata, sem porta). */
-  const zoneOf = (host: string | undefined): Zone | 'missing' | 'unknown' => {
+  /**
+   * Zona do Host validado. Listener de sinalização: local (loopback:porta) ou público (allowlist exata).
+   * Listener administrativo: SOMENTE local — hostnames públicos nunca são aceitos ali.
+   */
+  const zoneOf = (kind: ListenerKind, host: string | undefined): Zone | 'missing' | 'unknown' => {
     if (host === undefined || host === '') return 'missing';
     const h = host.toLowerCase();
-    if (httpHosts.has(h)) return 'local';
+    if (kind === 'admin') return adminHosts.has(h) ? 'local' : 'unknown';
+    if (signalHosts.has(h)) return 'local';
     if (publicHosts.has(h)) return 'public';
     return 'unknown';
   };
@@ -261,15 +300,84 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
       refusalsSuppressed += 1;
       return;
     }
-    log(`[sinalização] upgrade recusado (${reason})${refusalsSuppressed ? ` (+${refusalsSuppressed} suprimidos)` : ''}`);
+    log(`[sinalização] recusado (${reason})${refusalsSuppressed ? ` (+${refusalsSuppressed} suprimidos)` : ''}`);
     refusalsSuppressed = 0;
     lastRefusalLog = now;
   };
 
-  const requestHandler = (req: http.IncomingMessage, res: http.ServerResponse): void => {
+  const sendJson = (res: http.ServerResponse, status: number, body: unknown): void => {
+    // no-store: a resposta do pareamento contém o token administrativo (nunca em cache).
+    res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }).end(JSON.stringify(body));
+  };
+
+  /**
+   * POST /admin/pair (somente listener administrativo): troca o código de pareamento por um token
+   * administrativo. Proteções contra páginas maliciosas e CSRF:
+   * - Origin obrigatório e EXATAMENTE a origem administrativa (http://<Host local>:<porta admin>);
+   *   outras origens de 127.0.0.1 (outras portas/servidores locais) são recusadas;
+   * - Content-Type application/json e cabeçalho X-Oryn-Admin: exigem preflight CORS, que nunca é aceito;
+   * - Sec-Fetch-Site, quando enviado, precisa ser same-origin;
+   * - corpo pequeno e estrito; o código é de uso único e tem tentativas limitadas.
+   */
+  const handlePair = (req: http.IncomingMessage, res: http.ServerResponse, host: string): void => {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { Allow: 'POST' }).end();
+      return;
+    }
+    const site = req.headers['sec-fetch-site'];
+    if (
+      checkOrigin(req.headers.origin, host, 'local', true) !== 'ok' ||
+      req.headers['x-oryn-admin'] !== '1' ||
+      (site !== undefined && site !== 'same-origin')
+    ) {
+      logRefusal('pareamento: origem');
+      sendJson(res, 403, { error: 'forbidden' });
+      return;
+    }
+    if (!/^application\/json\s*(;|$)/i.test(req.headers['content-type'] ?? '')) {
+      sendJson(res, 415, { error: 'unsupported-media-type' });
+      return;
+    }
+    let body = '';
+    let tooLarge = false;
+    req.setEncoding('utf8');
+    req.on('data', (chunk: string) => {
+      body += chunk;
+      if (body.length > 1024) {
+        tooLarge = true;
+        req.destroy();
+      }
+    });
+    req.on('end', () => {
+      if (tooLarge) return;
+      let code: unknown;
+      try {
+        const parsed = JSON.parse(body) as unknown;
+        if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) && Object.keys(parsed).join() === 'code') {
+          code = (parsed as { code: unknown }).code;
+        }
+      } catch {
+        code = undefined;
+      }
+      if (typeof code !== 'string' || code.length > 32) {
+        sendJson(res, 400, { error: 'invalid-request' });
+        return;
+      }
+      const result = adminAuth.pair(code);
+      if (result.ok) {
+        log('[admin] pareamento do operador concluído'); // nem o código nem o token são registrados
+        sendJson(res, 200, { token: result.token, expiresAt: result.expiresAt });
+      } else {
+        log(`[admin] pareamento recusado (${result.reason})`);
+        sendJson(res, result.reason === 'exhausted' ? 429 : 403, { error: result.reason });
+      }
+    });
+  };
+
+  const requestHandler = (kind: ListenerKind) => (req: http.IncomingMessage, res: http.ServerResponse): void => {
     for (const [k, v] of Object.entries(SECURITY_HEADERS)) res.setHeader(k, v);
     // Host antes de qualquer conteúdo.
-    const zone = zoneOf(req.headers.host);
+    const zone = zoneOf(kind, req.headers.host);
     if (zone === 'missing' || zone === 'unknown') {
       res
         .writeHead(zone === 'missing' ? 400 : 421, { 'Content-Type': 'text/plain; charset=utf-8' })
@@ -281,11 +389,16 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
       res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' }).end('Origin não permitido');
       return;
     }
+    const path = new URL(req.url ?? '/', 'http://x').pathname;
+    // Endpoint administrativo existe SOMENTE no listener administrativo.
+    if (kind === 'admin' && path === '/admin/pair') {
+      handlePair(req, res, req.headers.host!);
+      return;
+    }
     if (req.method !== 'GET' && req.method !== 'HEAD') {
       res.writeHead(405, { Allow: 'GET, HEAD' }).end();
       return;
     }
-    const path = new URL(req.url ?? '/', 'http://x').pathname;
     const file = files.get(path === '/' ? '/index.html' : path);
     if (!file) {
       res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }).end('Não encontrado');
@@ -295,9 +408,10 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
     res.end(req.method === 'HEAD' ? undefined : file.body);
   };
 
-  const httpServer = http.createServer(requestHandler);
+  const signalServer = http.createServer(requestHandler('signal'));
+  const adminServer = config.adminPort === undefined ? null : http.createServer(requestHandler('admin'));
 
-  // ---------- WebSocket ----------
+  // ---------- WebSocket (compartilhado; o contexto vem do listener que aceitou a conexão) ----------
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES, perMessageDeflate: false });
   const alive = new WeakMap<WebSocket, boolean>();
 
@@ -310,9 +424,9 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
   const unadmittedSince = new Map<WebSocket, number>();
   const participants = new Map<WebSocket, Participant>();
 
-  const onUpgrade = (req: http.IncomingMessage, socket: Duplex, head: Buffer): void => {
+  const onUpgrade = (kind: ListenerKind) => (req: http.IncomingMessage, socket: Duplex, head: Buffer): void => {
     // Política de Host verificada separadamente e antes do Origin.
-    const zone = zoneOf(req.headers.host);
+    const zone = zoneOf(kind, req.headers.host);
     if (zone === 'missing') return refuse(socket, '400 Bad Request', 'host ausente');
     if (zone === 'unknown') return refuse(socket, '421 Misdirected Request', 'host');
     const path = new URL(req.url ?? '/', 'http://x').pathname;
@@ -322,7 +436,8 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
     if (checkOrigin(req.headers.origin, req.headers.host!, zone, true) !== 'ok') return refuse(socket, '403 Forbidden', 'origin');
     // Limite global de conexões (atrás do túnel todas vêm de 127.0.0.1: não há limite "por IP").
     if (wss.clients.size >= maxConnections) return refuse(socket, '503 Service Unavailable', 'capacidade');
-    const context: ConnectionContext = { local: zone === 'local' };
+    // O privilégio administrativo vem do LISTENER, nunca do Host ou de cabeçalhos de proxy.
+    const context: ConnectionContext = { admin: kind === 'admin' };
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, context));
   };
 
@@ -335,7 +450,7 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
       refillPerSecond: config.rateLimit?.refillPerSecond ?? 20,
       now: Date.now,
     });
-    // Violações do rate limit numa janela deslizante de 10 s (antes, as strikes nunca expiravam — A8).
+    // Violações do rate limit numa janela deslizante (antes, as strikes nunca expiravam — A8).
     let violations: number[] = [];
     const participant: Participant = {
       id: randomBytes(9).toString('base64url'),
@@ -401,35 +516,49 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
     registry.sweep();
   }, config.heartbeatMs ?? Math.min(15_000, admissionTimeoutMs));
 
-  httpServer.on('upgrade', onUpgrade);
+  signalServer.on('upgrade', onUpgrade('signal'));
+  adminServer?.on('upgrade', onUpgrade('admin'));
 
+  const stop = async (server: http.Server | null): Promise<void> => {
+    if (!server?.listening) return;
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  };
   const shutdown = async (): Promise<void> => {
     clearInterval(heartbeat);
+    adminAuth.revokeAll();
     registry.closeAll();
     for (const ws of wss.clients) ws.close(1001, 'server shutdown');
     wss.close();
-    if (!httpServer.listening) return;
-    httpServer.closeAllConnections();
-    await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+    await Promise.all([stop(signalServer), stop(adminServer)]);
+  };
+
+  /** Abre um listener em loopback, confere o endereço efetivo e registra os hosts locais aceitos. */
+  const open = async (server: http.Server, port: number, hosts: Set<string>): Promise<string> => {
+    const bound = await listen(server, port, httpHost);
+    // Defesa em profundidade: confere o endereço efetivamente vinculado.
+    if (!isLoopbackLiteral(bound.address)) {
+      throw new Error(`Listener vinculado fora do loopback (${bound.address}); servidor abortado.`);
+    }
+    hosts.add(`${hostForUrl(bound.address)}:${bound.port}`.toLowerCase());
+    // localhost aponta para o loopback no navegador do próprio PC.
+    hosts.add(`localhost:${bound.port}`);
+    // URL/Origin a partir do endereço canônico do bind (ex.: "::1" → "http://[::1]:porta").
+    return `http://${hostForUrl(bound.address)}:${bound.port}`;
   };
 
   let httpOrigin: string;
+  let adminOrigin: string | null = null;
   try {
-    const bound = await listen(httpServer, config.httpPort, httpHost);
-    // Defesa em profundidade: confere o endereço efetivamente vinculado.
-    if (!isLoopbackLiteral(bound.address)) {
-      throw new Error(`Listener HTTP vinculado fora do loopback (${bound.address}); servidor abortado.`);
+    httpOrigin = await open(signalServer, config.httpPort, signalHosts);
+    if (adminServer && config.adminPort !== undefined) {
+      adminOrigin = await open(adminServer, config.adminPort, adminHosts);
     }
-    // URL/Origin a partir do endereço canônico do bind (ex.: "::1" → "http://[::1]:porta").
-    httpOrigin = `http://${hostForUrl(bound.address)}:${bound.port}`;
-    // localhost aponta para o loopback no navegador do próprio PC.
-    httpHosts.add(`${hostForUrl(bound.address)}:${bound.port}`.toLowerCase());
-    httpHosts.add(`localhost:${bound.port}`);
   } catch (error) {
     // Falha ao abrir qualquer listener: fecha o que já abriu e para o heartbeat (sem recursos órfãos).
     await shutdown();
     throw error;
   }
 
-  return { httpOrigin, publicOrigin, registry, admission, close: shutdown };
+  return { httpOrigin, adminOrigin, publicOrigin, registry, admission, adminAuth, close: shutdown };
 }

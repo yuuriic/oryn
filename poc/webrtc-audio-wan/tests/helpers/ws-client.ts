@@ -2,12 +2,9 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import http from 'node:http';
 import WebSocket, { type ClientOptions } from 'ws';
-import { hashToken, newToken } from '../../server/admission.ts';
-
-/** Chave do operador usada nos testes de servidor (gerada por execução; só o hash vai ao servidor). */
-export const OPERATOR_KEY = newToken();
-export const OPERATOR_KEY_HASH = hashToken(OPERATOR_KEY);
+import type { RunningServer } from '../../server/server.ts';
 
 export interface Received {
   type: string;
@@ -67,9 +64,66 @@ export class TestClient {
   }
 }
 
+/** Resposta crua de um POST (sem as restrições de cabeçalho do fetch: Origin/Host livres). */
+export function post(
+  origin: string,
+  path: string,
+  body: string,
+  headers: Record<string, string> = {},
+): Promise<{ status: number; body: string }> {
+  const url = new URL(path, origin);
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      { host: url.hostname.replace(/^\[|\]$/g, ''), port: url.port, path: url.pathname, method: 'POST', headers },
+      (res) => {
+        let data = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk: string) => (data += chunk));
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, body: data }));
+      },
+    );
+    req.on('error', reject);
+    req.end(body);
+  });
+}
+
+/** Cabeçalhos que a página administrativa legítima envia em POST /admin/pair. */
+export function pairHeaders(adminOrigin: string): Record<string, string> {
+  return {
+    Host: new URL(adminOrigin).host,
+    Origin: adminOrigin,
+    'Content-Type': 'application/json',
+    'X-Oryn-Admin': '1',
+    'Sec-Fetch-Site': 'same-origin',
+  };
+}
+
+/**
+ * Fluxo real do operador: o "terminal" gera o código (adminAuth.issuePairingCode) e a página o troca
+ * por um token administrativo via POST /admin/pair no listener administrativo.
+ */
+export async function pairAdmin(server: RunningServer): Promise<string> {
+  const origin = server.adminOrigin;
+  if (!origin) throw new Error('servidor sem listener administrativo');
+  const { code } = server.adminAuth.issuePairingCode();
+  const reply = await post(origin, '/admin/pair', JSON.stringify({ code }), pairHeaders(origin));
+  if (reply.status !== 200) throw new Error(`pareamento falhou: HTTP ${reply.status}`);
+  return (JSON.parse(reply.body) as { token: string }).token;
+}
+
+/** URL do WebSocket de um listener (origem http://… → ws://…/ws). */
+export const wsUrlOf = (origin: string): string => `${origin.replace(/^http/, 'ws')}/ws`;
+
+/** Abre o operador no listener administrativo e obtém um token por pareamento. */
+export async function openOperator(server: RunningServer): Promise<{ client: TestClient; token: string }> {
+  const token = await pairAdmin(server);
+  const client = await TestClient.open(wsUrlOf(server.adminOrigin!), server.adminOrigin);
+  return { client, token };
+}
+
 /** Operador cria a sessão; devolve o ID e o convite de uso único emitido junto. */
-export async function createAndInvite(host: TestClient): Promise<{ sessionId: string; invite: string }> {
-  host.send({ type: 'create', operatorKey: OPERATOR_KEY });
+export async function createAndInvite(host: TestClient, operatorKey: string): Promise<{ sessionId: string; invite: string }> {
+  host.send({ type: 'create', operatorKey });
   const session = await host.next('session');
   const invite = await host.next('invite');
   return { sessionId: session['sessionId'] as string, invite: invite['token'] as string };

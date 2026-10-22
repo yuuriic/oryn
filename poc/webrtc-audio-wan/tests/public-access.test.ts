@@ -5,7 +5,7 @@ import http from 'node:http';
 import net from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
 import { checkOrigin, startServer, validatePublicHostname, type RunningServer } from '../server/server.ts';
-import { OPERATOR_KEY, OPERATOR_KEY_HASH, TestClient, createAndInvite, fakeDist } from './helpers/ws-client.ts';
+import { TestClient, createAndInvite, fakeDist, openOperator, post } from './helpers/ws-client.ts';
 
 const PUBLIC = 'oryn-poc.example.com';
 const running: { close(): Promise<void> | void }[] = [];
@@ -19,7 +19,7 @@ afterEach(async () => {
 async function server(options: { publicHostnames?: string[]; maxConnections?: number } = {}): Promise<RunningServer> {
   const dist = fakeDist();
   dirs.push(dist);
-  const s = await startServer({ distDir: dist, httpPort: 0, operatorKeyHash: OPERATOR_KEY_HASH, log: () => undefined, ...options });
+  const s = await startServer({ distDir: dist, httpPort: 0, adminPort: 0, log: () => undefined, ...options });
   running.push(s);
   return s;
 }
@@ -28,8 +28,13 @@ async function server(options: { publicHostnames?: string[]; maxConnections?: nu
  * Proxy reverso local que imita o túnel: reescreve o Host para o hostname público e injeta
  * cabeçalhos de proxy (inclusive um X-Forwarded-Host forjado apontando para o loopback).
  */
-async function tunnelProxy(target: RunningServer, publicHost: string, clientIp = '203.0.113.9'): Promise<string> {
-  const port = Number(new URL(target.httpOrigin).port);
+async function tunnelProxy(
+  target: RunningServer,
+  publicHost: string,
+  clientIp = '203.0.113.9',
+  targetOrigin: string = target.httpOrigin,
+): Promise<string> {
+  const port = Number(new URL(targetOrigin).port);
   const rewrite = (headers: http.IncomingHttpHeaders): http.OutgoingHttpHeaders => ({
     ...headers,
     host: publicHost,
@@ -139,17 +144,16 @@ describe('atrás do proxy local simulado (hostname público autorizado)', () => 
     }
   });
 
-  it('pelo túnel, criar sessão é negado mesmo com a chave correta (loopback não basta); convidado entra com convite', async () => {
+  it('pelo túnel, criar sessão é negado mesmo com o token administrativo válido; convidado entra com convite', async () => {
     const s = await server({ publicHostnames: [PUBLIC] });
     const proxy = await tunnelProxy(s, PUBLIC);
+    const { client: operator, token } = await openOperator(s);
     const remoteOperator = await TestClient.open(`ws://${proxy}/ws`, `https://${PUBLIC}`);
-    remoteOperator.send({ type: 'create', operatorKey: OPERATOR_KEY });
+    remoteOperator.send({ type: 'create', operatorKey: token });
     expect(await remoteOperator.next('error')).toEqual({ type: 'error', code: 'unauthorized' });
     remoteOperator.ws.terminate();
 
-    const port = new URL(s.httpOrigin).port;
-    const operator = await TestClient.open(`ws://127.0.0.1:${port}/ws`, s.httpOrigin);
-    const { invite } = await createAndInvite(operator);
+    const { invite } = await createAndInvite(operator, token);
     const phone = await TestClient.open(`ws://${proxy}/ws`, `https://${PUBLIC}`);
     phone.send({ type: 'join', invite });
     expect((await phone.next('session'))['role']).toBe('guest');
@@ -160,8 +164,8 @@ describe('atrás do proxy local simulado (hostname público autorizado)', () => 
 
   it('o convite emitido ao operador traz a origem pública configurada', async () => {
     const s = await server({ publicHostnames: [PUBLIC] });
-    const operator = await TestClient.open(`ws://127.0.0.1:${new URL(s.httpOrigin).port}/ws`, s.httpOrigin);
-    operator.send({ type: 'create', operatorKey: OPERATOR_KEY });
+    const { client: operator, token } = await openOperator(s);
+    operator.send({ type: 'create', operatorKey: token });
     await operator.next('session');
     expect((await operator.next('invite'))['publicOrigin']).toBe(`https://${PUBLIC}`);
     operator.ws.terminate();
@@ -174,6 +178,59 @@ describe('atrás do proxy local simulado (hostname público autorizado)', () => 
     for (const p of proxies.slice(0, 3)) open.push(await TestClient.open(`ws://${p}/ws`, `https://${PUBLIC}`));
     await expect(TestClient.open(`ws://${proxies[3]}/ws`, `https://${PUBLIC}`)).rejects.toThrow('503');
     for (const c of open) c.ws.terminate();
+  });
+});
+
+describe('separação administrativa atrás do túnel (02B.2C)', () => {
+  it('túnel que reescreve o Host para localhost:<porta de sinalização> não ganha privilégio administrativo', async () => {
+    const s = await server({ publicHostnames: [PUBLIC] });
+    const local = `localhost:${new URL(s.httpOrigin).port}`;
+    const proxy = await tunnelProxy(s, local);
+    const { client: operator, token } = await openOperator(s);
+    // Para o servidor, a requisição parece local (Host loopback), mas chega pelo listener de sinalização.
+    expect(await get(proxy)).toBe(200);
+    const viaTunnel = await TestClient.open(`ws://${proxy}/ws`, `http://${local}`);
+    viaTunnel.send({ type: 'create', operatorKey: token });
+    expect(await viaTunnel.next('error')).toEqual({ type: 'error', code: 'unauthorized' });
+    const { code } = s.adminAuth.issuePairingCode();
+    const headers = { Origin: `http://${local}`, 'Content-Type': 'application/json', 'X-Oryn-Admin': '1', 'Sec-Fetch-Site': 'same-origin' };
+    const reply = await post(`http://${proxy}`, '/admin/pair', JSON.stringify({ code }), headers);
+    expect(reply.status).toBe(405);
+    expect(s.adminAuth.pairingPending).toBe(true); // o código não foi consumido nem tentado
+    viaTunnel.ws.terminate();
+    operator.ws.terminate();
+  });
+
+  it('túnel mal configurado apontando para a porta administrativa com Host público → 421 em tudo', async () => {
+    const s = await server({ publicHostnames: [PUBLIC] });
+    const proxy = await tunnelProxy(s, PUBLIC, '203.0.113.9', s.adminOrigin!);
+    expect(await get(proxy)).toBe(421);
+    await expect(TestClient.open(`ws://${proxy}/ws`, `https://${PUBLIC}`)).rejects.toThrow('421');
+    const { code } = s.adminAuth.issuePairingCode();
+    const reply = await post(`http://${proxy}`, '/admin/pair', JSON.stringify({ code }), {
+      Origin: `https://${PUBLIC}`,
+      'Content-Type': 'application/json',
+      'X-Oryn-Admin': '1',
+    });
+    expect(reply.status).toBe(421);
+    expect(s.adminAuth.pairingPending).toBe(true);
+  });
+
+  it('pior caso (túnel para a porta administrativa reescrevendo Host para localhost): ainda exige token por pareamento', async () => {
+    const s = await server({ publicHostnames: [PUBLIC] });
+    const local = `localhost:${new URL(s.adminOrigin!).port}`;
+    const proxy = await tunnelProxy(s, local, '203.0.113.9', s.adminOrigin!);
+    const attacker = await TestClient.open(`ws://${proxy}/ws`, `http://${local}`);
+    attacker.send({ type: 'create', operatorKey: 'A'.repeat(43) });
+    expect(await attacker.next('error')).toEqual({ type: 'error', code: 'unauthorized' });
+    attacker.ws.terminate();
+    // Sem conhecer o código (exibido só no terminal), 5 palpites queimam o código.
+    s.adminAuth.issuePairingCode();
+    const headers = { Origin: `http://${local}`, 'Content-Type': 'application/json', 'X-Oryn-Admin': '1' };
+    const statuses: number[] = [];
+    for (let i = 0; i < 5; i++) statuses.push((await post(`http://${proxy}`, '/admin/pair', JSON.stringify({ code: `GUESS00${i}` }), headers)).status);
+    expect(statuses.at(-1)).toBe(429);
+    expect(s.adminAuth.pairingPending).toBe(false);
   });
 });
 

@@ -5,8 +5,8 @@
 | Branch | `poc/webrtc-audio-wan`, criada a partir de `main` em `f068509` (PR #3 da POC-02A) |
 | Código | `poc/webrtc-audio-wan/` |
 | Relação com o ARCHITECTURE.md | P02 (§14): travessia de NAT, CGNAT, TURN e UDP bloqueado; credenciais TURN temporárias (§9.1) |
-| Incremento atual | **02B.2B — segurança da sinalização pública** (§8) |
-| Status | **02B.1 e 02B.2A aprovados. 02B.2B aguardando revisão do arquiteto.** Exposição pública **proibida** até a aprovação e o cumprimento dos critérios de §8.8 |
+| Incremento atual | **02B.2C — hardening da sinalização WAN** (§9) |
+| Status | **02B.1 e 02B.2A aprovados. 02B.2B e 02B.2C aguardando revisão do arquiteto.** Exposição pública **proibida** até a aprovação e o cumprimento dos critérios de §9.8 |
 
 Legenda:
 - **[Observado]:** medido em execução pelo agente.
@@ -51,6 +51,7 @@ internet.
 | **02B.1** | Cópia isolada da POC-02A, baseline de testes, este documento | **Concluído e aprovado** |
 | **02B.2A** | Remoção da CA local e do HTTPS local; HTTP só em loopback; CI da POC-02B | **Concluído e aprovado** (§7) |
 | **02B.2B** | Admissão (operador e convites), allowlist pública fechada por padrão, `Host`/`Origin` coerentes, limites contra abuso | **Concluído; em revisão** (§8) |
+| **02B.2C** | Listener administrativo separado, pareamento do operador por código de uso único, análise do Cloudflare Access | **Concluído; em revisão** (§9) |
 | 02B.3 | ~~Admissão e controle de abuso~~ **antecipado para o 02B.2B**; resta a proteção na borda (Access/WAF), a definir com o túnel | Parcial |
 | 02B.4 | Credenciais TURN emitidas no servidor (TTL, revogação, provedor simulado nos testes) | Não iniciado |
 | 02B.5 | Cliente: `iceServers`, modos `auto`/`direto`/`relay`/`relay-tls`, estados `disconnected`/`failed` (A6), métricas de relay | Não iniciado |
@@ -152,7 +153,7 @@ Registradas sem antecipar implementação. Cabem ao arquiteto e ao usuário.
    pagamento.
 2. **Domínio:** túnel nomeado com domínio próprio (URL fixa; permite Cloudflare Access) ou Quick Tunnel (URL
    aleatória, limite de 200 requisições simultâneas, sem garantia de disponibilidade).
-3. **Autenticação mínima:** criação pelo operador (chave efêmera + `Host` local) e convite de uso único **implementados no 02B.2B**. Pendente: usar também Cloudflare Access ou rate limiting na borda (critério 4 de §8.8).
+3. **Autenticação mínima:** convite de uso único **implementado no 02B.2B**; operador por listener administrativo + pareamento **no 02B.2C** (substitui a chave + `Host` local). Pendente: proteção na borda, Cloudflare Access com validação do JWT na origem ou alternativa (§9.5, critério 4 de §9.8).
 4. ~~Destino do modo HTTPS/CA local herdado.~~ **Resolvida:** removido no 02B.2A.
 5. **ICE restart:** nesta POC ou na seguinte.
 6. **Comportamento na queda da sinalização (teste 8):** encerrar de forma limpa (comportamento atual) ou manter o
@@ -436,3 +437,222 @@ Todos obrigatórios, sujeitos à aprovação do arquiteto:
 6. Link do operador nunca compartilhado; convite enviado por canal privado e entrada conferida pelo operador.
 7. Revisão dos logs do servidor e do túnel após o teste (sem segredos).
 8. TURN não exposto antes do 02B.4.
+
+## 9. Incremento 02B.2C — hardening da sinalização WAN
+
+**Pré-condições verificadas [Observado]:**
+- branch `poc/webrtc-audio-wan`, working tree limpa;
+- HEAD `77f4c77` igual a `origin/poc/webrtc-audio-wan`;
+- `POC-02B CI` com `success` em push e pull_request.
+
+**Nada foi exposto à internet.** Os dois listeners escutam só em loopback. Não há configuração de Cloudflare
+(Tunnel, Access, WAF) nem de TURN, e nenhuma credencial real foi usada.
+
+### 9.1 Decisões
+
+| # | Decisão | Motivo |
+|---|---|---|
+| D1 | **Dois listeners HTTP em loopback**: sinalização (padrão **5280**, futuro alvo do túnel) e administração (padrão **5281**, só para o operador neste PC) | Separar a superfície pública da administrativa. O túnel aponta para uma porta que **não tem** capacidade administrativa |
+| D2 | O privilégio de operador vem do **listener que aceitou a conexão** (`context.admin`) **e** de um **token administrativo** válido | O `Host` é controlado pelo cliente (ou reescrito pelo túnel) e loopback não identifica ninguém (§8.1). Nenhum dos dois concede privilégio |
+| D3 | O listener de sinalização **não tem** `/admin/pair`, nem `create`, `rejoin` ou `invite` autorizados, mesmo com token válido | Separação real: um token vazado não serve pelo túnel |
+| D4 | O listener administrativo aceita **só `Host` local da própria porta**. Hostnames públicos, a porta da sinalização e nomes desconhecidos → 421 | Um túnel mal apontado para 5281 não serve nada com `Host` público |
+| D5 | `Origin` exato por listener: `http://<Host administrativo>` no administrativo; regras do §8.4 na sinalização | A página de sinalização (outra porta = outra origem) não fala com o administrativo |
+| D6 | Configurações ambíguas recusadas antes de abrir qualquer porta: `--http-port` = `--admin-port`; opção legada `operatorKeyHash`; opção legada `https` | Falha fechada, nunca ignorar silenciosamente |
+| D7 | **Entrega da credencial por código de pareamento** (§9.3). O terminal mostra só um código curto de uso único; o token nunca é impresso | Requisito B: nada de chave completa no terminal, em arquivo ou no histórico |
+| D8 | Uma sessão administrativa por vez: novo pareamento revoga o token anterior; `codigo` + Enter no terminal revoga tudo e gera outro código | Recuperação simples se o código ou a página vazarem |
+| D9 | Limites globais (conexões, sessões) e prazo de admissão **somados entre os dois listeners** | Um WebSocketServer compartilhado; o listener administrativo não abre uma "segunda cota" |
+
+### 9.2 Alternativas consideradas para a entrega da credencial
+
+| Alternativa | Avaliação | Decisão |
+|---|---|---|
+| Link com a chave no fragmento (`#op=`, 02B.2B) | Chave completa no terminal: fica no scrollback, em logs de terminal e em compartilhamento de tela | **Removida** |
+| Abrir o navegador automaticamente com a chave na URL | A URL passa pela linha de comando do processo (visível a outros processos) e entra no histórico do navegador | Rejeitada |
+| Cookie de sessão administrativa | Cookies **não são isolados por porta**: um cookie de `localhost:5281` também é enviado a `localhost:5280`. Exigiria `SameSite`/flags e ainda mistura as origens | Rejeitada |
+| Endpoint de bootstrap que devolve a chave a quem pedir em loopback | Qualquer processo local ou página com acesso ao loopback obteria a chave | Rejeitada (proibida pelo requisito) |
+| Chave persistida (DPAPI, cofre do SO, arquivo) | Persistência contraria o requisito; mais complexidade | Rejeitada |
+| **Código de pareamento curto, de uso único, trocado por token em memória** | Simples, sem persistência; o terminal mostra só um segredo de curta duração e uso único; resistente a CSRF com as proteções de §9.3 | **Adotada** |
+
+### 9.3 Fluxos de autenticação
+
+**Pareamento do operador (listener administrativo):**
+1. Na partida, o servidor gera um **código de pareamento**: 8 caracteres Crockford base32 (**40 bits**),
+   exibido como `XXXX-XXXX`. Ele é de **uso único**, vale **5 min** e é **queimado após 5 tentativas erradas**.
+   O servidor guarda só o SHA-256.
+2. O operador abre `http://localhost:5281`. O formulário de pareamento só aparece em páginas de loopback.
+3. A página envia `POST /admin/pair` com `{"code": "…"}`. O servidor exige, **todos**:
+   - `Host` local da porta administrativa (senão 421);
+   - `Origin` **presente e exatamente** a origem administrativa (`null`, ausente, outra porta ou `https` → 403);
+   - `X-Oryn-Admin: 1` e `Content-Type: application/json` (cabeçalho customizado e tipo não "simples" forçam
+     preflight CORS, que o servidor nunca autoriza: nenhum `Access-Control-Allow-*` é enviado);
+   - `Sec-Fetch-Site`, quando enviado, igual a `same-origin`;
+   - corpo de até 1 KiB, exatamente `{code}` com string de até 32 caracteres (senão 400; tipo errado → 415).
+4. Sucesso: resposta `{token, expiresAt}` com `Cache-Control: no-store`. O token tem **256 bits**, vale **12 h**,
+   e o servidor guarda só o SHA-256, comparado em tempo constante. O código é descartado.
+5. A página mantém o token **só em memória** (nunca URL, `localStorage`, `sessionStorage` ou log) e limpa o campo
+   do código. Recarregar a página exige novo código (`codigo` + Enter no terminal).
+6. `create`/`rejoin` levam o token no campo `operatorKey`. Só são autorizados por conexões do listener
+   administrativo.
+
+Requisições recusadas por origem, cabeçalhos ou formato **não consomem o código nem contam tentativa**. Só um
+código errado bem-formado conta.
+
+**Convidado (listener de sinalização):** inalterado em relação ao §8.2. Convite de uso único emitido pelo
+operador; `join { invite }` consome o convite atomicamente.
+
+**Recuperação:** `codigo` + Enter no terminal revoga o token vigente e o código pendente e gera outro código.
+Encerrar o servidor revoga tudo (nada é persistido).
+
+### 9.4 Modelo de ameaças (atualização do §8.1)
+
+| Ator / vetor | Controle no 02B.2C |
+|---|---|
+| Visitante remoto pelo túnel (5280) | Nenhuma operação administrativa existe nesse listener; token válido é recusado (`unauthorized`); `/admin/pair` → 405 |
+| Túnel que reescreve `Host` para `localhost:5280` | A requisição parece local, mas chega pelo listener de sinalização: **nenhum privilégio**. Testado com proxy |
+| Túnel mal apontado para 5281 com `Host` público | 421 em HTTP, WebSocket e `/admin/pair` |
+| Pior caso: túnel para 5281 reescrevendo `Host` para `localhost` | Ainda exige o código, que só aparece no terminal. 5 palpites (40 bits) queimam o código. **Proibido pelos critérios de exposição** |
+| Página maliciosa no navegador do operador (CSRF, outra origem local ou da internet) | Preflight bloqueado (cabeçalho customizado + JSON); `Origin` exato; `Sec-Fetch-Site`; POST "simples" (`text/plain`, formulário) → 415/403 sem consumir o código. WebSocket administrativo exige `Origin` exato |
+| DNS rebinding contra 5281 | `Host` exato da porta administrativa; desconhecido → 421 |
+| Cabeçalhos de proxy forjados (`X-Forwarded-*`, `CF-Connecting-IP`) | Nunca lidos (§8.1) |
+| Força bruta do código | 40 bits, 5 tentativas por código, TTL de 5 min: probabilidade por código ≈ 5/2⁴⁰ |
+| Outros **usuários do SO** no mesmo PC (alcançam o loopback) | Não veem o terminal do operador: precisam do código |
+| Vazamento por terminal, logs ou histórico | O token nunca é impresso nem registrado; o código é curto, de uso único e expira |
+
+**Fora do modelo de ameaças (decisão explícita):** processos executando **com o mesmo usuário do SO** do operador.
+Eles podem ler o buffer do console, a memória do navegador e do Node, injetar código no navegador ou registrar
+teclas. Nenhum mecanismo local simples protege contra isso. Esse cenário equivale a comprometer o PC do operador.
+
+### 9.5 Proteção na borda: Cloudflare Access (análise; nada configurado)
+
+**Fatos da documentação oficial [Informado pela documentação da Cloudflare, consultada no planejamento]:**
+- O Access autentica na borda e encaminha à origem o JWT da sessão no cabeçalho **`Cf-Access-Jwt-Assertion`**.
+- A Cloudflare recomenda que a origem **valide esse JWT**:
+  - assinatura com as chaves de `https://<team>.cloudflareaccess.com/cdn-cgi/access/certs`, pelo `kid`;
+  - `aud` (tag da aplicação), `iss` (domínio da equipe) e `exp`.
+- O cookie `CF_Authorization` **não tem garantia de ser repassado** à origem. Não deve ser a base da validação.
+- No Safari, o Access exige que o bloqueio de **todos** os cookies esteja desligado.
+- A duração padrão da sessão é de 24 h (configurável).
+
+**Impacto e desenho [Inferido; a validar com a configuração real no 02B.6]:**
+- **Ordem no navegador:** o login do Access acontece numa **navegação** (redirecionamento para a página de
+  login e volta). Um WebSocket não segue redirecionamentos de login. Portanto, a sessão do Access precisa existir
+  **antes** de a página abrir o WebSocket:
+  1. o convidado abre o link do convite;
+  2. o Access exige login e redireciona de volta;
+  3. a página carrega já autenticada;
+  4. o upgrade WSS para o mesmo hostname leva o cookie de sessão do Access, e a borda injeta o JWT.
+
+  Se a sessão expirar no meio da chamada, a reconexão falha até uma nova navegação. A página deve orientar
+  "recarregue a página".
+- **iPhone Safari:** exige cookies não bloqueados por completo. O cookie é primário no hostname do túnel, então
+  o ITP não deveria afetá-lo, mas isso precisa de teste no aparelho. Login por e-mail (código de uso único) é o
+  método menos dependente de terceiros.
+- **Validação na origem (incremento futuro, não implementado):**
+  - o listener de sinalização validaria `Cf-Access-Jwt-Assertion` em **toda** requisição HTTP e em **todo**
+    upgrade com `Host` público;
+  - as chaves JWKS ficariam em cache e a validação falharia fechada se o JWT faltasse ou fosse inválido;
+  - configuração por `ORYN_ACCESS_TEAM_DOMAIN` e `ORYN_ACCESS_AUD`, sem segredos;
+  - isso cobre um Access removido ou mal configurado (caminho ou hostname não cobertos) e não depende de cookies;
+  - requisições com `Host` local (listener de sinalização a partir do próprio PC) não teriam JWT e
+    continuariam atendidas só em loopback.
+- **Camadas independentes:** o Access controla **quem** pode chegar à página. O convite de uso único continua
+  sendo exigido para **entrar numa sessão**, e as operações administrativas continuam só na porta 5281. Uma
+  camada não substitui a outra.
+- **Custo de uso:** o convidado precisa estar na política do Access (e-mail permitido), o que é aceitável para
+  um teste controlado com um só aparelho.
+
+**Se o Access for inadequado** (fricção no Safari, convidados sem e-mail conhecido), estas são as alternativas,
+em ordem de preferência:
+1. Regra de rate limiting/WAF da Cloudflare restrita ao hostname e a `/ws`, mais desafio gerenciado na
+   navegação inicial (não no WebSocket).
+2. Exposição só durante a janela de teste, com o túnel encerrado logo depois.
+3. Manter o convite e os limites globais atuais como única defesa, aceitando o risco de DoS do §8.7.
+
+**Recomendação:** Access com validação do JWT na origem, **implementada e testada antes do 02B.6**. O WAF/rate
+limiting fica como alternativa se o teste no iPhone mostrar fricção inaceitável. **Decisão do arquiteto.**
+
+### 9.6 Testes [Observado, 22/10/2026, Windows, Node 24.19.0]
+
+| Requisito | Onde | Casos |
+|---|---|---|
+| Separação entre listeners | `admin-listener.test.ts`, `server-host.test.ts` | Portas distintas, ambas loopback (IPv4 e `::1`); portas iguais recusadas sem abrir porta; porta administrativa ocupada libera a de sinalização; sem `adminPort` não há operador |
+| Endpoints administrativos bloqueados no listener público | `admin-listener.test.ts`, `abuse.test.ts`, `public-access.test.ts` | `POST /admin/pair` → 405 com cabeçalhos perfeitos (código intacto); `create`/`rejoin`/`invite` com token válido → `unauthorized`; rejoin só pelo administrativo |
+| `Host`/`Origin` forjados no administrativo | `admin-listener.test.ts` | Hostname público, porta da sinalização, rebinding, sem porta, `X-Forwarded-Host` local; WebSocket com `Origin` `null`, ausente, da sinalização, `https`, incoerente |
+| `Host` reescrito para `localhost` | `public-access.test.ts` | Proxy para 5280 reescrevendo para `localhost`: sem privilégio e `/admin/pair` 405; proxy para 5281 com `Host` público: 421; pior caso (5281 + `localhost`): exige código e 5 palpites o queimam |
+| Ausência de vazamento da chave | `cli-leak.test.ts`, `admin-listener.test.ts`, `abuse.test.ts`, E2E | Processo real (`server/index.ts`): a saída tem o código e **nenhuma** sequência de 43 caracteres base64url, nem token, convite ou ID de sessão; logs sem código e sem token; token fora da URL e do armazenamento do navegador (E2E) |
+| CSRF no bootstrap | `admin-listener.test.ts` (16 variações), E2E | Sem `Origin`, `Origin` de outro site, `null`, da sinalização, incoerente ou `https`; sem ou com valor errado de `X-Oryn-Admin`; `Sec-Fetch-Site` `cross-site`/`same-site`; `text/plain`; formulário; JSON extra, não textual, inválido ou longo. Todos recusados **sem consumir o código**. GET/OPTIONS → 405 sem CORS. No E2E, página maliciosa real em outra origem local: `fetch` com preflight → `TypeError`; POST `no-cors` opaco; código intacto |
+| Pareamento | `admin-auth.test.ts` (13), `admin-listener.test.ts` | Formato, normalização (hífen, minúsculas, I/L/O), uso único, expiração, 5 erros → 429, novo código invalida o anterior, novo pareamento revoga o token, só hashes em memória, `no-store` |
+| Limites globais e limpeza | `abuse.test.ts`, `server-host.test.ts` | Teto de conexões **somado** entre os listeners; prazo de admissão também no administrativo; `close()` fecha as duas portas, encerra os WebSockets (1001), revoga o token e para o heartbeat único |
+| Fluxos legítimos e reentrada | `server.integration.test.ts`, `host-header.test.ts`, `cli-leak.test.ts`, E2E | Operador no 5281, convidado no 5280; reentrada do operador (`rejoin`) e do convidado (novo convite); `codigo` + Enter no processo real revoga o token e gera outro código |
+| Regressão WebRTC Chrome ↔ Edge | E2E | Áudio bidirecional, mute, encerramento e reentradas |
+
+**Resultados:**
+
+| Verificação | Resultado |
+|---|---|
+| `pnpm typecheck` | OK |
+| `pnpm test` | **289/289**, 16 arquivos, nenhum pulado. Novos: `admin-auth` 13, `admin-listener` 32, `cli-leak` 1. Ajustados: `abuse` 12, `public-access` 29, `admission` 9 (testes da chave do operador migraram para `admin-auth`), `server-host` 34, `host-header` 23 |
+| Arquivos sensíveis a tempo (`abuse`, `public-access`, `admin-listener`, `cli-leak`) repetidos 3 vezes | 74/74 nas três |
+| `pnpm build` | OK (JS 38,59 kB, 13,85 kB gzip) |
+| `pnpm audit` | Nenhuma vulnerabilidade conhecida |
+| `pnpm e2e` | **41/41** em duas execuções: Chrome 155.0.8059.85 (operador, endereço administrativo) ↔ Edge 155.0.4283.62 (convidado, endereço de sinalização) |
+
+**Mutações (todas detectadas; código restaurado após cada uma):**
+
+| Mutação | Testes que falharam |
+|---|---|
+| Contexto administrativo em todo listener | 5 |
+| Registro ignora o listener (só o token) | 7 |
+| Sem exigência de `X-Oryn-Admin` | 2 |
+| `Origin` opcional no pareamento | 1 |
+| Listener administrativo aceita hostnames públicos | 3 |
+| Sem checagem de `Sec-Fetch-Site` | 2 |
+| Código de pareamento reutilizável | 2 |
+| Sem exigência de `Content-Type` JSON | 2 |
+| `/admin/pair` também no listener de sinalização | 2 |
+| Sem limite de tentativas do código | 3 |
+| Portas iguais aceitas | 1 |
+| CLI imprime segredo longo | 1 |
+
+**Defeito encontrado pelo E2E e corrigido:** `.row { display: flex }` anulava o atributo `hidden`, então o
+formulário de pareamento nunca era ocultado (nem após parear, nem fora do loopback). Corrigido com
+`[hidden] { display: none !important; }` em `src/style.css`.
+
+**CI:** workflow inalterado; os novos testes rodam nos jobs existentes. **[Não executado]** a execução no GitHub
+depende do commit e do push do usuário.
+
+### 9.7 Riscos residuais
+
+| Risco | Severidade | Situação |
+|---|---|---|
+| Processos do mesmo usuário do SO | Alta, se ocorrer | **Fora do modelo** (§9.4). Equivale a comprometer o PC do operador |
+| Código visto por terceiros (compartilhamento de tela, foto do terminal) | Baixa | Uso único, 5 min, e o atacante precisa alcançar o loopback (5281 nunca exposto). Se alguém parear antes, o pareamento do operador falha de forma visível; `codigo` + Enter revoga o token do atacante |
+| XSS na página administrativa exporia o token em memória | Baixa | CSP `script-src 'self'`, sem HTML dinâmico; o token vale só no listener administrativo (loopback) |
+| Clientes sem `Sec-Fetch-Site` (navegadores antigos, ferramentas locais) | Baixa | Defesas principais são `Origin` exato e o preflight; ferramentas locais são processos locais (fora do modelo) |
+| Queima repetida do código por um processo local de outro usuário (DoS do pareamento) | Baixa | Exige acesso local; o operador gera outro código. Sem bloqueio persistente |
+| Sessão administrativa de 12 h sem botão de logout | Baixa | Fechar a aba descarta o token; `codigo` + Enter ou reiniciar o servidor revoga |
+| Riscos do §8.7 não tratados aqui: convite por URL, DoS pelo hostname público, ausência de limite por cliente | Média, ao expor | Proteção na borda (§9.5) segue como critério de exposição |
+| Túnel apontado para 5281 | Alta, se ocorrer | 421 para `Host` público; com reescrita para `localhost`, ainda exige o código. **Critério de exposição** |
+
+O risco "chave do operador no terminal" do §8.7 foi **eliminado**: o token nunca é impresso. O risco "túnel
+reescrevendo `Host` para `localhost`" foi **reduzido**: a reescrita não concede privilégio administrativo e só
+quebra a validação de `Origin` dos convidados.
+
+### 9.8 Critérios para permitir a futura exposição pública (02B.6), substituindo o §8.8
+
+Todos obrigatórios, sujeitos à aprovação do arquiteto:
+
+1. 02B.2B e 02B.2C aprovados e `POC-02B CI` verde no GitHub com este código.
+2. Túnel com **um único hostname**, entrada **somente** para `http://127.0.0.1:5280` e regra final devolvendo 404.
+   **Nunca** uma entrada para a porta administrativa (5281), nem como caminho, porta alternativa ou serviço
+   catch-all.
+3. Sem reescrita do `Host`: o `cloudflared` preserva o hostname público.
+4. `ORYN_PUBLIC_HOSTNAMES` com exatamente esse hostname, conferido no banner de partida.
+5. **Proteção na borda** decidida e implementada:
+   - Cloudflare Access com validação do JWT `Cf-Access-Jwt-Assertion` na origem, implementada e testada; ou
+   - a alternativa aprovada (§9.5).
+6. Pareamento feito só no PC do operador. O código não é mostrado em compartilhamento de tela durante o teste.
+7. Exposição só durante a janela de teste; túnel e servidor encerrados ao fim.
+8. Convite enviado por canal privado; entrada conferida pelo operador.
+9. Revisão dos logs do servidor e do túnel após o teste (sem segredos).
+10. TURN não exposto antes do 02B.4.

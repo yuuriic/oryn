@@ -6,7 +6,7 @@ import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { assertLoopbackHttpHost, isLoopbackLiteral, startServer, type RunningServer } from '../server/server.ts';
-import { OPERATOR_KEY_HASH, TestClient, createAndInvite, fakeDist } from './helpers/ws-client.ts';
+import { TestClient, createAndInvite, fakeDist, openOperator } from './helpers/ws-client.ts';
 
 const REJECTED: [string, string][] = [
   ['0.0.0.0', 'todas as interfaces IPv4'],
@@ -145,42 +145,53 @@ describe('startServer: nenhum listener com configuração inválida', () => {
 
 describe('startServer: loopback aceito', () => {
   it('IPv4: 127.0.0.1 serve HTTP e WebSocket; origens 127.0.0.1 e localhost aceitas quando coerentes com o Host', async () => {
-    const server = await startServer({ distDir: dist(), httpPort: 0, operatorKeyHash: OPERATOR_KEY_HASH, log: () => undefined });
+    const server = await startServer({ distDir: dist(), httpPort: 0, adminPort: 0, log: () => undefined });
     running.push(server);
     expect(server.httpOrigin).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(server.adminOrigin).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     expect((await fetch(`${server.httpOrigin}/`)).status).toBe(200);
+    expect((await fetch(`${server.adminOrigin}/`)).status).toBe(200);
     const port = new URL(server.httpOrigin).port;
-    for (const host of [`127.0.0.1:${port}`, `localhost:${port}`]) {
-      const c = await TestClient.open(`ws://127.0.0.1:${port}/ws`, `http://${host}`, { headers: { Host: host } });
-      await createAndInvite(c);
+    const adminPort = new URL(server.adminOrigin!).port;
+    const { client: operator, token } = await openOperator(server);
+    for (const name of ['127.0.0.1', 'localhost']) {
+      const admin = await TestClient.open(`ws://127.0.0.1:${adminPort}/ws`, `http://${name}:${adminPort}`, { headers: { Host: `${name}:${adminPort}` } });
+      await createAndInvite(admin, token);
+      admin.ws.terminate();
+      const c = await TestClient.open(`ws://127.0.0.1:${port}/ws`, `http://${name}:${port}`, { headers: { Host: `${name}:${port}` } });
       c.ws.terminate();
     }
+    operator.ws.terminate();
     // Origin e Host locais, mas diferentes entre si: combinação inconsistente.
     await expect(TestClient.open(`ws://127.0.0.1:${port}/ws`, `http://localhost:${port}`)).rejects.toThrow('403');
     await expect(TestClient.open(`ws://127.0.0.1:${port}/ws`, `http://192.168.0.23:${port}`)).rejects.toThrow('403');
   });
 
   it.skipIf(!supportsIpv6)('IPv6: ::1 (inclusive forma longa) gera URL "[::1]" e aceita a origem correspondente', async () => {
-    const server = await startServer({ distDir: dist(), httpHost: '0:0:0:0:0:0:0:1', httpPort: 0, operatorKeyHash: OPERATOR_KEY_HASH, log: () => undefined });
+    const server = await startServer({ distDir: dist(), httpHost: '0:0:0:0:0:0:0:1', httpPort: 0, adminPort: 0, log: () => undefined });
     running.push(server);
     expect(server.httpOrigin).toMatch(/^http:\/\/\[::1\]:\d+$/);
+    expect(server.adminOrigin).toMatch(/^http:\/\/\[::1\]:\d+$/);
     expect((await fetch(`${server.httpOrigin}/`)).status).toBe(200);
     const port = new URL(server.httpOrigin).port;
+    const { client: operator, token } = await openOperator(server);
+    await createAndInvite(operator, token);
+    operator.ws.terminate();
     const c = await TestClient.open(`ws://[::1]:${port}/ws`, server.httpOrigin);
-    await createAndInvite(c);
     c.ws.terminate();
+    expect(await isListening('127.0.0.1', Number(new URL(server.adminOrigin!).port))).toBe(false);
     // O loopback IPv4 não está escutando nessa porta (bind apenas em ::1, sem fallback).
     expect(await isListening('127.0.0.1', Number(port))).toBe(false);
   });
 
   it('funciona sem CA nem certificado: sessão completa (create, join, signal) só em HTTP loopback', async () => {
-    const server = await startServer({ distDir: dist(), httpPort: 0, operatorKeyHash: OPERATOR_KEY_HASH, log: () => undefined });
+    const server = await startServer({ distDir: dist(), httpPort: 0, adminPort: 0, log: () => undefined });
     running.push(server);
     expect(Object.keys(server)).not.toContain('httpsOrigin');
     expect(server.publicOrigin).toBeNull(); // acesso público fechado por padrão
     const ws = `${server.httpOrigin.replace('http', 'ws')}/ws`;
-    const host = await TestClient.open(ws, server.httpOrigin);
-    const { invite } = await createAndInvite(host);
+    const { client: host, token } = await openOperator(server);
+    const { invite } = await createAndInvite(host, token);
     const guest = await TestClient.open(ws, server.httpOrigin);
     guest.send({ type: 'join', invite });
     expect((await guest.next('session'))['role']).toBe('guest');
@@ -193,17 +204,22 @@ describe('startServer: loopback aceito', () => {
 });
 
 describe('encerramento limpo do servidor', () => {
-  it('close() fecha a porta, encerra os WebSockets (1001), para o heartbeat e é idempotente', async () => {
+  it('close() fecha as duas portas, encerra os WebSockets (1001), revoga o token, para o heartbeat e é idempotente', async () => {
     const hb = watchHeartbeat();
     try {
-      const server = await startServer({ distDir: dist(), httpPort: 0, heartbeatMs: HEARTBEAT_MS, log: () => undefined });
+      const server = await startServer({ distDir: dist(), httpPort: 0, adminPort: 0, heartbeatMs: HEARTBEAT_MS, log: () => undefined });
       const port = Number(new URL(server.httpOrigin).port);
+      const adminPort = Number(new URL(server.adminOrigin!).port);
       const client = await TestClient.open(`ws://127.0.0.1:${port}/ws`, server.httpOrigin);
-      expect(hb.created()).toBe(1);
+      const { client: operator, token } = await openOperator(server);
+      expect(hb.created()).toBe(1); // um heartbeat compartilhado pelos dois listeners
       expect(hb.allCleared()).toBe(false);
       await server.close();
       expect((await client.closed).code).toBe(1001);
+      expect((await operator.closed).code).toBe(1001);
       expect(await isListening('127.0.0.1', port)).toBe(false);
+      expect(await isListening('127.0.0.1', adminPort)).toBe(false);
+      expect(server.adminAuth.verify(token)).toBe(false);
       expect(hb.allCleared()).toBe(true);
       await expect(server.close()).resolves.toBeUndefined();
     } finally {

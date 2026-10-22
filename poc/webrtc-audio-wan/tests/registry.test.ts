@@ -1,14 +1,15 @@
 // Registro de sessões com admissão (02B.2B): operador, convites de uso único, limites, reentrada e logs.
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { ServerMessage } from '../src/protocol.ts';
-import { Admission, hashToken } from '../server/admission.ts';
+import { Admission } from '../server/admission.ts';
 import { TokenBucket } from '../server/rate-limit.ts';
 import { SessionRegistry, shortId, type ConnectionContext, type Participant } from '../server/registry.ts';
 
 const SDP = 'v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n';
 const KEY = 'K'.repeat(43);
-const LOCAL: ConnectionContext = { local: true };
-const PUBLIC: ConnectionContext = { local: false };
+/** Conexão aceita pelo listener administrativo / pelo listener de sinalização (o privilégio vem do listener). */
+const LOCAL: ConnectionContext = { admin: true };
+const PUBLIC: ConnectionContext = { admin: false };
 
 class FakeParticipant implements Participant {
   readonly inbox: ServerMessage[] = [];
@@ -43,11 +44,7 @@ beforeEach(() => {
   tokens = 0;
   logs = [];
   const admission = new Admission({
-    operatorKeyHash: hashToken(KEY),
     inviteTtlMs: 60_000,
-    maxOperatorFailures: 5,
-    failureWindowMs: 60_000,
-    lockoutMs: 60_000,
     now: () => clock,
     randomToken: () => `I${String(++tokens).padStart(42, '0')}`,
   });
@@ -56,6 +53,7 @@ beforeEach(() => {
     idleTimeoutMs: 60_000,
     maxAuthFailures: 3,
     admission,
+    verifyAdmin: (token) => token === KEY,
     publicOrigin: 'https://oryn-poc.example.com',
     now: () => clock,
     randomId: () => `S${String(++ids).padStart(21, '0')}`,
@@ -79,14 +77,14 @@ function pair() {
 }
 
 describe('criação restrita ao operador (testes 1 e "criação sem autorização")', () => {
-  it('operador local com a chave cria a sessão como host e recebe um convite com a origem pública', () => {
+  it('operador (listener administrativo + token) cria a sessão como host e recebe um convite com a origem pública', () => {
     const { host } = createSession();
     expect(host.inbox[0]).toEqual({ type: 'session', sessionId: 'S000000000000000000001', role: 'host', epoch: 0, peerPresent: false });
     expect(host.inbox[1]).toMatchObject({ type: 'invite', token: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/), publicOrigin: 'https://oryn-poc.example.com' });
     expect(registry.sessionCount).toBe(1);
   });
 
-  it('chave errada → unauthorized; chave certa pelo hostname público → unauthorized (loopback/Host não bastam sozinhos)', () => {
+  it('token errado → unauthorized; token certo pelo listener de sinalização → unauthorized (o privilégio vem do listener e do token)', () => {
     const wrong = new FakeParticipant('w');
     registry.handle(wrong, { type: 'create', operatorKey: 'X'.repeat(43) }, LOCAL);
     expect(wrong.last()).toEqual({ type: 'error', code: 'unauthorized' });
@@ -205,7 +203,7 @@ describe('reentrada legítima', () => {
     expect(back.last()).toEqual({ type: 'session', sessionId, role: 'guest', epoch: 2, peerPresent: true });
   });
 
-  it('operador sai e volta com a chave (rejoin) para a vaga de host', () => {
+  it('operador sai e volta com o token (rejoin) para a vaga de host', () => {
     const { host, guest, sessionId } = pair();
     registry.disconnect(host);
     expect(guest.last()).toEqual({ type: 'peer-left', epoch: 1 });
@@ -215,7 +213,7 @@ describe('reentrada legítima', () => {
     expect(guest.last()).toEqual({ type: 'peer-joined', epoch: 2 });
   });
 
-  it('rejoin recusado: chave errada, pelo hostname público, vaga ocupada ou sessão inexistente', () => {
+  it('rejoin recusado: token errado, pelo listener de sinalização, vaga ocupada ou sessão inexistente', () => {
     const { sessionId } = pair();
     const cases: [ConnectionContext, string, string, ServerMessage][] = [
       [LOCAL, 'X'.repeat(43), sessionId, { type: 'error', code: 'unauthorized' }],
@@ -302,7 +300,7 @@ describe('desconexão, expiração e limpeza', () => {
 });
 
 describe('logs', () => {
-  it('não contêm SDP, chave do operador, convites nem o ID completo da sessão', () => {
+  it('não contêm SDP, token administrativo, convites nem o ID completo da sessão', () => {
     const { host, sessionId, invite } = pair();
     registry.handle(host, { type: 'signal', epoch: 1, payload: { kind: 'offer', sdp: SDP } }, LOCAL);
     registry.handle(new FakeParticipant('x'), { type: 'create', operatorKey: 'X'.repeat(43) }, LOCAL);
