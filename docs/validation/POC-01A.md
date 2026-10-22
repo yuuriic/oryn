@@ -7,7 +7,7 @@
 | Commits | `795b0e9` (`.gitattributes`), `ed589bd` (código validado nas execuções 4 e 5) |
 | Código | `poc/webrtc-audio-browser/` |
 | Relação com o ARCHITECTURE.md | Subconjunto da P01 (§14): só o navegador; WebView2 não testado |
-| Status | **Aguardando revisão do arquiteto** |
+| Status | **Aprovada pelo arquiteto** (22/10/2026) |
 
 ## 1. Ambiente
 
@@ -97,8 +97,11 @@ e Edge 155 em loopback na mesma página. As evidências medidas são estas:
    emissor muta e volta quando reativa.
 3. `audioLevel` do `inbound-rtp` acima de zero quando a saída `<audio>` está ligada.
 
-**Não está comprovado:** captura de microfone real, inteligibilidade, qualidade percebida, latência boca-ouvido e
-reprodução em dispositivo físico. Ver §5.
+A captura com microfone real e a reprodução em dispositivo físico foram **informadas pelo usuário** como
+funcionais (§4). Não houve medição registrada desses testes.
+
+**Não está comprovado por medição:** inteligibilidade, qualidade percebida, latência boca-ouvido e comportamento
+fora do loopback local. Ver §5.
 
 ### Métricas observadas (resumo de cerca de 34 s por execução)
 
@@ -119,14 +122,34 @@ cerca de 25–26 kbit/s, mas voz real pode diferir.
 
 ## 4. Testes manuais realizados
 
-**Nenhum.** O agente não tem acesso a microfone físico, saída de áudio ou percepção auditiva. As instruções do
-teste manual estão em `poc/webrtc-audio-browser/README.md` ("Testar sem microfonia").
+### 4.1 Validação informada pelo usuário (22/10/2026)
+
+O usuário executou o roteiro manual de `poc/webrtc-audio-browser/README.md` ("Testar sem microfonia") com
+microfone real e informou o seguinte resultado:
+
+| Item | Resultado informado |
+|---|---|
+| Transmissão do microfone real de A para B | Funcionou |
+| Reprodução do áudio recebido | Funcionou |
+| Mute e unmute sem interromper a conexão | Funcionou |
+| Encerramento e liberação dos recursos | Funcionou |
+
+Natureza da evidência:
+
+- Este resultado é um **relato do usuário**. O agente não executou nem observou o teste, porque não tem acesso a
+  microfone, saída de áudio ou percepção auditiva.
+- Não foram registrados navegador e versão, dispositivo de entrada e saída (fones ou alto-falantes, com fio ou
+  Bluetooth), duração, métricas nem o resumo JSON da sessão. Esses campos ficam como **não informados**.
+- O relato não mede qualidade, inteligibilidade nem latência.
+
+Com isso, a POC-01A tem dois tipos de evidência que se complementam: o teste automatizado com dispositivo falso
+(§2.3) e a validação funcional manual informada pelo usuário.
 
 ## 5. Testes ainda não executados
 
 | Teste | Observação |
 |---|---|
-| Microfone real com voz humana e escuta com fones | Teste manual pendente; requer o usuário |
+| Métricas registradas de uma sessão com microfone real | O teste manual foi informado sem dados (§4.1); repetir com o resumo JSON se uma medição for necessária |
 | Diálogo real de permissão e revogação durante a chamada | Só o caminho "negado" foi automatizado |
 | Microfone indisponível (`NotFoundError`/`NotReadableError`) | Coberto por teste unitário de mapeamento, não reproduzido no navegador |
 | Remoção de headset ou dispositivo durante a chamada (`track.onended`) | Tratamento implementado, não exercitado |
@@ -185,5 +208,15 @@ teste manual estão em `poc/webrtc-audio-browser/README.md` ("Testar sem microfo
 
 ## 9. Decisão
 
-Pendente de revisão. O resultado automatizado sustenta que o pipeline WebRTC nativo funciona no Chrome/Edge 155 em
-loopback. A aprovação funcional completa depende do teste manual com microfone real (§5).
+**POC-01A aprovada pelo arquiteto em 22/10/2026.**
+
+A aprovação se apoia em dois tipos de evidência:
+
+- **Automatizada:** o pipeline WebRTC nativo funciona no Chrome e no Edge 155 em loopback, com 29/29 verificações
+  usando dispositivo de mídia falso (§2).
+- **Manual, informada pelo usuário:** transmissão, reprodução, mute e encerramento funcionaram com microfone
+  real (§4.1).
+
+As limitações (§6) e os testes não executados (§5) continuam valendo. Entre eles: ausência de rede real e de
+STUN/TURN, fluxo unidirecional, ausência de medição de latência boca-ouvido e WebView2 não testado. Esses itens
+passam para a POC-01B e para as POCs P01/P02.
