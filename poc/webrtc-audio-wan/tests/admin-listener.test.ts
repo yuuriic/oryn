@@ -3,8 +3,9 @@
 import { rmSync } from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { startServer, type RunningServer, type ServerConfig } from '../server/server.ts';
+import { testIssuer } from './helpers/access.ts';
 import { TestClient, createAndInvite, fakeDist, pairAdmin, pairHeaders, post, wsUrlOf } from './helpers/ws-client.ts';
 
 const PUBLIC = 'oryn-poc.example.com';
@@ -12,6 +13,11 @@ const running: RunningServer[] = [];
 const clients: TestClient[] = [];
 const dirs: string[] = [];
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+let issuer: Awaited<ReturnType<typeof testIssuer>>;
+beforeAll(async () => {
+  issuer = await testIssuer();
+});
 
 afterEach(async () => {
   for (const c of clients.splice(0)) c.ws.terminate();
@@ -26,7 +32,9 @@ function dist(): string {
 }
 
 async function server(options: Partial<ServerConfig> = {}, logs?: string[]): Promise<RunningServer> {
-  const s = await startServer({ distDir: dist(), httpPort: 0, adminPort: 0, log: (l) => logs?.push(l), ...options });
+  // Hostname público exige Cloudflare Access (02B.3A); o listener administrativo não o usa.
+  const access = options.publicHostnames?.length ? issuer.server : {};
+  const s = await startServer({ distDir: dist(), httpPort: 0, adminPort: 0, log: (l) => logs?.push(l), ...access, ...options });
   running.push(s);
   return s;
 }

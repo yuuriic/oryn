@@ -4,7 +4,7 @@ Prova de conceito **descartável** do Oryn. Objetivo final: chamada de áudio We
 Wi-Fi residencial e um iPhone (Safari) em rede móvel 4G/5G, com sinalização pública HTTPS/WSS (Cloudflare
 Tunnel) e STUN/TURN gerenciado (Cloudflare). Plano, decisões e evidências em `docs/validation/POC-02B.md`.
 
-## Estado atual: incremento 02B.2C
+## Estado atual: incremento 02B.3A
 
 - Baseline copiado da POC-02A (`poc/webrtc-audio-lan/`, conteúdo de `f068509`), isolado no 02B.1.
 - **CA local e HTTPS local removidos** no 02B.2A.
@@ -14,8 +14,11 @@ Tunnel) e STUN/TURN gerenciado (Cloudflare). Plano, decisões e evidências em `
 - **02B.2C:** separação administrativa. Dois listeners em loopback (sinalização 5280, administração 5281),
   pareamento do operador por **código de uso único** exibido no terminal (a chave/token nunca é impressa) e
   análise do Cloudflare Access. Detalhes em `POC-02B.md` §9.
+- **02B.3A:** validação criptográfica, na origem, do JWT do **Cloudflare Access** (`Cf-Access-Jwt-Assertion`)
+  em toda requisição HTTP e todo upgrade WebSocket da sinalização. Com hostname público, o Access é
+  **obrigatório**. Nada da Cloudflare foi configurado. Detalhes em `POC-02B.md` §10.
 - **Ainda não há** Cloudflare Tunnel nem STUN/TURN. **Nenhum serviço desta POC deve ser exposto na internet**
-  até a aprovação arquitetural dos critérios de exposição (`POC-02B.md` §9.8).
+  até a aprovação arquitetural dos critérios de exposição (`POC-02B.md` §9.8 e §10.10).
 
 ## Uso local (operador e convidado no mesmo PC)
 
@@ -56,6 +59,14 @@ Tunnel) e STUN/TURN gerenciado (Cloudflare). Plano, decisões e evidências em `
 - O listener administrativo aceita só `Host` local da própria porta (hostnames públicos → 421) e exige `Origin`
   exatamente igual à origem administrativa.
 - `--http-port` e `--admin-port` iguais são recusados (configuração ambígua).
+- **Cloudflare Access (02B.3A):** com `ORYN_PUBLIC_HOSTNAMES` definido, o servidor **só inicia** com
+  `ORYN_ACCESS_MODE=required`, `ORYN_ACCESS_TEAM_DOMAIN=<equipe>.cloudflareaccess.com` e `ORYN_ACCESS_AUD=<AUD tag>`.
+  - O listener 5280 inteiro passa a exigir o JWT válido, qualquer que seja o `Host`. Sem token → 403; chaves
+    indisponíveis → 503.
+  - O 5281 não usa Access.
+  - O Access não substitui o convite nem dá privilégio administrativo.
+  - Sem hostname público, o padrão é `ORYN_ACCESS_MODE=off` (uso local).
+  - Outras variáveis estão em `POC-02B.md` §10.4.
 - **Futuro (02B.6):** o túnel recebe HTTPS/WSS da internet, com o TLS terminando na Cloudflare, e entrega o tráfego
   ao Node por HTTP em loopback.
 - **Hoje:** só o próprio PC acessa (`http://localhost:5280`). Hostnames públicos não configurados são recusados

@@ -3,13 +3,21 @@
 import { rmSync } from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { checkOrigin, startServer, validatePublicHostname, type RunningServer } from '../server/server.ts';
+import { testIssuer } from './helpers/access.ts';
 import { TestClient, createAndInvite, fakeDist, openOperator, post } from './helpers/ws-client.ts';
 
 const PUBLIC = 'oryn-poc.example.com';
 const running: { close(): Promise<void> | void }[] = [];
 const dirs: string[] = [];
+
+// 02B.3A: hostname público exige Cloudflare Access. O proxy abaixo injeta um JWT válido de um emissor de
+// teste, como a borda da Cloudflare faria depois do login.
+let issuer: Awaited<ReturnType<typeof testIssuer>>;
+beforeAll(async () => {
+  issuer = await testIssuer();
+});
 
 afterEach(async () => {
   for (const r of running.splice(0).reverse()) await r.close();
@@ -19,7 +27,8 @@ afterEach(async () => {
 async function server(options: { publicHostnames?: string[]; maxConnections?: number } = {}): Promise<RunningServer> {
   const dist = fakeDist();
   dirs.push(dist);
-  const s = await startServer({ distDir: dist, httpPort: 0, adminPort: 0, log: () => undefined, ...options });
+  const access = options.publicHostnames?.length ? issuer.server : {};
+  const s = await startServer({ distDir: dist, httpPort: 0, adminPort: 0, log: () => undefined, ...access, ...options });
   running.push(s);
   return s;
 }
@@ -42,6 +51,7 @@ async function tunnelProxy(
     'cf-connecting-ip': clientIp,
     'x-forwarded-host': `localhost:${port}`,
     'x-forwarded-proto': 'https',
+    'cf-access-jwt-assertion': issuer.jwt, // a borda injeta o JWT do Access em toda requisição
   });
   const proxy = http.createServer((req, res) => {
     const upstream = http.request({ host: '127.0.0.1', port, method: req.method, path: req.url, headers: rewrite(req.headers) }, (r) => {
@@ -251,7 +261,7 @@ describe('DNS rebinding e Host spoofing', () => {
   it('Host público com caixa diferente é o mesmo nome DNS (aceito)', async () => {
     const s = await server({ publicHostnames: [PUBLIC] });
     const port = new URL(s.httpOrigin).port;
-    expect(await get(`127.0.0.1:${port}`, { Host: PUBLIC.toUpperCase() })).toBe(200);
+    expect(await get(`127.0.0.1:${port}`, { Host: PUBLIC.toUpperCase(), 'Cf-Access-Jwt-Assertion': issuer.jwt })).toBe(200);
   });
 
   it('X-Forwarded-Host, X-Forwarded-For e CF-Connecting-IP são ignorados', async () => {
@@ -259,6 +269,8 @@ describe('DNS rebinding e Host spoofing', () => {
     const port = new URL(s.httpOrigin).port;
     const spoof = { 'X-Forwarded-Host': PUBLIC, 'X-Forwarded-For': '203.0.113.1', 'CF-Connecting-IP': '203.0.113.1' };
     expect(await get(`127.0.0.1:${port}`, { Host: 'rebind.attacker.example', ...spoof })).toBe(421);
-    expect(await get(`127.0.0.1:${port}`, { Host: `localhost:${port}`, ...spoof })).toBe(200);
+    // Com Access ativo, nem Host local nem cabeçalhos de proxy dispensam o JWT.
+    expect(await get(`127.0.0.1:${port}`, { Host: `localhost:${port}`, ...spoof })).toBe(403);
+    expect(await get(`127.0.0.1:${port}`, { Host: `localhost:${port}`, ...spoof, 'Cf-Access-Jwt-Assertion': issuer.jwt })).toBe(200);
   });
 });

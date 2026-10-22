@@ -5,8 +5,8 @@
 | Branch | `poc/webrtc-audio-wan`, criada a partir de `main` em `f068509` (PR #3 da POC-02A) |
 | Código | `poc/webrtc-audio-wan/` |
 | Relação com o ARCHITECTURE.md | P02 (§14): travessia de NAT, CGNAT, TURN e UDP bloqueado; credenciais TURN temporárias (§9.1) |
-| Incremento atual | **02B.2C — hardening da sinalização WAN** (§9) |
-| Status | **02B.1 e 02B.2A aprovados. 02B.2B e 02B.2C aguardando revisão do arquiteto.** Exposição pública **proibida** até a aprovação e o cumprimento dos critérios de §9.8 |
+| Incremento atual | **02B.3A — validação do JWT do Cloudflare Access** (§10) |
+| Status | **02B.1, 02B.2A e 02B.2C aprovados (02B.2C em `b3e1bf2`, informado pelo usuário). 02B.3A aguardando revisão do arquiteto.** Exposição pública **proibida** até a aprovação e o cumprimento dos critérios de §9.8 e §10.10 |
 
 Legenda:
 - **[Observado]:** medido em execução pelo agente.
@@ -51,7 +51,8 @@ internet.
 | **02B.1** | Cópia isolada da POC-02A, baseline de testes, este documento | **Concluído e aprovado** |
 | **02B.2A** | Remoção da CA local e do HTTPS local; HTTP só em loopback; CI da POC-02B | **Concluído e aprovado** (§7) |
 | **02B.2B** | Admissão (operador e convites), allowlist pública fechada por padrão, `Host`/`Origin` coerentes, limites contra abuso | **Concluído; em revisão** (§8) |
-| **02B.2C** | Listener administrativo separado, pareamento do operador por código de uso único, análise do Cloudflare Access | **Concluído; em revisão** (§9) |
+| **02B.2C** | Listener administrativo separado, pareamento do operador por código de uso único, análise do Cloudflare Access | **Concluído e aprovado** (§9) |
+| **02B.3A** | Validação criptográfica do JWT do Cloudflare Access na origem (HTTP e WebSocket), JWKS com cache e falha fechada | **Concluído; em revisão** (§10) |
 | 02B.3 | ~~Admissão e controle de abuso~~ **antecipado para o 02B.2B**; resta a proteção na borda (Access/WAF), a definir com o túnel | Parcial |
 | 02B.4 | Credenciais TURN emitidas no servidor (TTL, revogação, provedor simulado nos testes) | Não iniciado |
 | 02B.5 | Cliente: `iceServers`, modos `auto`/`direto`/`relay`/`relay-tls`, estados `disconnected`/`failed` (A6), métricas de relay | Não iniciado |
@@ -656,3 +657,266 @@ Todos obrigatórios, sujeitos à aprovação do arquiteto:
 8. Convite enviado por canal privado; entrada conferida pelo operador.
 9. Revisão dos logs do servidor e do túnel após o teste (sem segredos).
 10. TURN não exposto antes do 02B.4.
+
+## 10. Incremento 02B.3A — validação do JWT do Cloudflare Access
+
+**Pré-condições verificadas:**
+- [Observado] branch `poc/webrtc-audio-wan`, working tree limpa;
+- [Observado] HEAD `b3e1bf2` igual a `origin/poc/webrtc-audio-wan`;
+- [Informado pelo usuário] CI do 02B.2C verde. O `gh` não está disponível neste ambiente para conferir.
+
+**Escopo:** tudo local e automatizado. **Não** há Tunnel, DNS, aplicação Access real nem credencial real
+configurados. Nenhuma porta foi exposta, e os testes não usam rede pública.
+
+### 10.1 Arquitetura de autenticação
+
+```text
+ Navegador ──HTTPS/WSS──► Borda Cloudflare (Access) ──túnel──► Node :5280 (sinalização)
+   cookie CF_Authorization    valida a sessão e INJETA            valida o JWT em TODA requisição HTTP
+   (enviado pelo navegador)   Cf-Access-Jwt-Assertion             e em TODO upgrade WebSocket
+
+ Operador (este PC) ──HTTP──► Node :5281 (administrativo): sem Access; pareamento + token (02B.2C)
+```
+
+| Camada | Pergunta que responde | Onde |
+|---|---|---|
+| Cloudflare Access (política da aplicação) | Esta pessoa pode chegar à página? | Borda; **conferido na origem pelo JWT** |
+| Convite de uso único (02B.2B) | Esta conexão pode entrar **nesta** sessão? | Registro de sessões |
+| Listener administrativo + token de pareamento (02B.2C) | Esta conexão é o operador? | Porta 5281 |
+
+As camadas são independentes:
+- um JWT válido não substitui o convite nem dá privilégio administrativo;
+- o token administrativo não substitui o JWT na porta 5280.
+
+### 10.2 Decisões
+
+| # | Decisão | Motivo |
+|---|---|---|
+| E1 | **Biblioteca `jose` 6.2.13** (MIT, sem dependências, versão exata no lockfile) para verificar assinatura e claims. As chaves são importadas por `importJWK`; nenhuma primitiva criptográfica foi implementada | Requisito de biblioteca consolidada; `node:crypto` sozinho exigiria escrever o parser e a validação de JWT à mão |
+| E2 | **Somente RS256.** `alg` diferente, `none` ou ausência de `kid` são recusados **antes** de buscar chaves; `crit` é recusado | O Access assina com RS256 (documentação). Impede confusão de algoritmos e buscas provocadas pelo cliente |
+| E3 | **Seleção explícita da chave pelo `kid`**, num mapa construído e validado na busca do JWKS. O JWT é verificado contra essa chave, com `algorithms: ['RS256']` | Nenhuma chave escolhida por tentativa; `kid` desconhecido nunca autoriza |
+| E4 | `iss` e URL do JWKS **derivados** do domínio da equipe (`https://<equipe>.cloudflareaccess.com` e `…/cdn-cgi/access/certs`). O domínio é validado por padrão estrito | Nenhum valor vindo do cliente (nem configuração livre de URL) determina de onde vêm as chaves |
+| E5 | Access aplicado ao **listener 5280 inteiro, qualquer `Host`**, inclusive `localhost` | Um túnel que reescrevesse o `Host` para `localhost` não pode escapar da validação |
+| E6 | **Sem fallback silencioso:** hostname público sem Access impede a partida. `ORYN_ACCESS_MODE=off` só é aceito sem hostnames públicos e sem nenhuma outra variável `ORYN_ACCESS_*` | Modo sem Access restrito ao uso local |
+| E7 | Upgrade: `Host` → caminho → `Origin` → **JWT (assíncrono)** → teto de conexões → upgrade. HTTP: `Host` → `Origin` → JWT → rotas | Checagens baratas primeiro; o teto é verificado depois da espera assíncrona, sem corrida |
+| E8 | Conexão WebSocket autenticada **encerrada quando o `exp` do JWT vence** (1008 `access expired`, verificado no heartbeat) | Sessão autenticada com prazo definido; um JWT expirado não sustenta conexão nem abre outra |
+| E9 | No máximo 16 validações de Access **pendentes** no upgrade (acima disso, 503) | JWKS lento não acumula sockets abertos |
+| E10 | O cookie `CF_Authorization` **não é aceito** pela origem; só o cabeçalho | Documentação: o cookie não tem garantia de chegar; uma única fonte de verdade |
+
+### 10.3 Como o JWT chega à origem no handshake WebSocket
+
+**Restrição:** a API `WebSocket` dos navegadores, inclusive o Safari no iPhone, **não permite** definir
+cabeçalhos HTTP. A página **não envia** `Cf-Access-Jwt-Assertion`, e o servidor não presume que envie.
+
+**Fluxo adotado (sem mudança no frontend):**
+1. O convidado abre o link do convite. Sem sessão, o Access o leva ao login (navegação) e cria o cookie
+   `CF_Authorization` no hostname da aplicação.
+2. A página carrega. A requisição chega à origem com `Cf-Access-Jwt-Assertion`, que o servidor valida.
+3. A página abre `wss://<hostname>/ws` (mesma origem). O **navegador** envia o cookie automaticamente no
+   handshake; a **borda** valida a sessão e injeta `Cf-Access-Jwt-Assertion` no upgrade encaminhado; a **origem**
+   valida o JWT antes de concluir o upgrade.
+
+**Evidência:**
+- [Informado pela documentação da Cloudflare] "When Cloudflare sends a request to your origin, the request will
+  include an application token as a `Cf-Access-Jwt-Assertion` request header", e o cookie "is not guaranteed to
+  be passed".
+- [Não verificado] A documentação consultada **não trata especificamente** do upgrade WebSocket. Que a borda
+  injete o cabeçalho também no upgrade é **[Inferido]** e precisa ser comprovado no teste real (critério 3 de §10.10).
+
+**Alternativas se o teste real mostrar que o cabeçalho não chega no upgrade** (cada uma exige aprovação; nenhuma
+foi implementada):
+
+| Alternativa | Como | Prós | Contras |
+|---|---|---|---|
+| A. Validar também o cookie `CF_Authorization` no upgrade | Mesmo JWT, mesma validação criptográfica, lido do cookie só no upgrade | Sem mudança no frontend; segurança equivalente (o cookie contém o JWT assinado) | Documentação diz que o cookie não tem garantia de ser repassado |
+| B. Ticket de sessão emitido pela origem | A página, já autenticada (JWT validado em HTTP), obtém um ticket curto e de uso único; o WebSocket o apresenta no protocolo (`Sec-WebSocket-Protocol`) ou na primeira mensagem | Independe do comportamento da borda no upgrade | Mudança arquitetural: novo endpoint, estado de tickets, mudança no frontend |
+| C. Access service token | Cabeçalhos `CF-Access-Client-Id`/`Secret` | Para máquinas | **Inviável** em navegador (segredo no cliente) |
+
+**Recomendação:** manter o fluxo adotado e comprová-lo no 02B.6. Se falhar, preferir **A** (mínima e com a
+mesma garantia criptográfica); **B** só se A também falhar.
+
+### 10.4 Configuração
+
+| Variável | Valores | Padrão | Observação |
+|---|---|---|---|
+| `ORYN_ACCESS_MODE` | `required`, `off` | `off` | `off` com `ORYN_PUBLIC_HOSTNAMES` → **não inicia** |
+| `ORYN_ACCESS_TEAM_DOMAIN` | `<equipe>.cloudflareaccess.com` | — | Obrigatório com `required`; define `iss` e a URL das chaves |
+| `ORYN_ACCESS_AUD` | AUD tag (64 hex) | — | Obrigatório com `required` |
+| `ORYN_ACCESS_JWKS_TIMEOUT_MS` | 100–30 000 | 3 000 | Inclui a leitura do corpo |
+| `ORYN_ACCESS_JWKS_MAX_BYTES` | 1 KiB–1 MiB | 64 KiB | Declarado (`Content-Length`) e contado no fluxo |
+| `ORYN_ACCESS_JWKS_CACHE_TTL_MS` | 10 s–24 h | 10 min | Validade do cache |
+| `ORYN_ACCESS_JWKS_MAX_STALE_MS` | 0–24 h | 1 h | Uso de chaves em cache após falha de atualização |
+| `ORYN_ACCESS_JWKS_COOLDOWN_MS` | 0–TTL | 30 s | Intervalo mínimo entre atualizações por `kid` desconhecido |
+| `ORYN_ACCESS_CLOCK_TOLERANCE_S` | 0–300 | 30 | Tolerância para `exp`/`nbf` |
+
+Nenhum valor é segredo; mesmo assim, valores reais não são versionados. Qualquer valor inválido impede a partida.
+O banner mostra `Cloudflare Access (sinalização): OBRIGATÓRIO (equipe …)` ou `DESLIGADO (somente uso local)`.
+
+### 10.5 Ciclo de vida do JWT
+
+1. **Emissão** (borda): após o login, o Access cria a sessão (cookie). A duração é configurada na aplicação
+   Access (padrão 24 h).
+2. **Apresentação** (borda → origem): `Cf-Access-Jwt-Assertion` em cada requisição encaminhada.
+3. **Validação** (origem), em toda requisição HTTP e todo upgrade do 5280:
+   - formato compacto e até 8 KiB; cabeçalho repetido recusado;
+   - `alg = RS256` e `kid` presente; sem `crit`;
+   - chave pelo `kid`;
+   - assinatura;
+   - `iss` exato e `aud` contendo a AUD tag;
+   - `exp` e `iat` obrigatórios; `nbf` quando presente; tolerância de 30 s.
+4. **Uso:** só autoriza a requisição ou conexão; a identidade (e-mail, `sub`) **não** é registrada nem usada para
+   autorização na origem. Quem pode entrar é decidido pela **política** do Access.
+5. **Expiração:** nenhuma nova requisição ou conexão; conexões abertas são encerradas no heartbeat seguinte ao
+   `exp` (até 10 s depois, com os padrões). Renovar exige navegação (recarregar a página).
+
+### 10.6 Gerenciamento do JWKS
+
+- **Origem:** URL `https` fixa, derivada; sem credenciais, consulta ou fragmento; `redirect: 'error'`;
+  `credentials: 'omit'`.
+- **Limites:** timeout total, tamanho declarado e real, até 20 chaves, `kid` único.
+- **Validação das chaves:**
+  - só RSA com `alg` RS256 ou ausente e `use` `sig` ou ausente; outras chaves são ignoradas;
+  - material privado ou RSA inválida → o conjunto inteiro é recusado;
+  - módulo mínimo de 2048 bits;
+  - pelo menos uma chave utilizável.
+- **Cache:**
+  - 10 min de validade;
+  - buscas simultâneas unificadas;
+  - chaves já em cache continuam valendo por até 1 h se a atualização falhar;
+  - um JWKS inválido nunca substitui um cache bom.
+- **Rotação:**
+  - [Informado pela documentação] o Access troca a chave a cada 6 semanas, e a anterior continua válida por 7 dias;
+  - um `kid` desconhecido provoca **no máximo uma** atualização a cada 30 s (anti-amplificação);
+  - um `kid` que continua desconhecido → recusa.
+- **Indisponibilidade:** sem chaves utilizáveis → **503**. Após uma falha, novas tentativas esperam 2 s, sem
+  martelar a origem das chaves.
+- **Pré-carregamento** na partida. A falha é registrada, mas não impede a partida: as requisições falham fechadas
+  até as chaves chegarem.
+
+### 10.7 Comportamento fail-closed
+
+| Situação | HTTP | Upgrade WebSocket |
+|---|---|---|
+| `Host` desconhecido (antes do Access) | 421 | 421 |
+| `Origin` incoerente (antes do Access) | 403 | 403 |
+| JWT ausente, malformado, repetido | 403 | 403 |
+| Assinatura, `alg`, `kid`, `iss`, `aud`, `exp`, `nbf` inválidos | 403 | 403 |
+| JWKS indisponível, lento, grande ou malformado | 503 | 503 |
+| Validações pendentes acima do limite | — | 503 |
+| JWT vence com a conexão aberta | — | Fechamento 1008 `access expired` |
+| Hostname público sem Access; configuração do Access inválida | Servidor não inicia | Servidor não inicia |
+
+Respostas de recusa não trazem conteúdo da página e não indicam o motivo ao cliente. O motivo vai ao log
+(`access: missing|malformed|invalid|unavailable`), amostrado, sem JWT, e-mail ou `sub`.
+
+### 10.8 Limitações do Safari e dos navegadores
+
+- **Cabeçalhos no WebSocket:** impossíveis pela API; resolvido pelo fluxo de §10.3, com a ressalva [Não verificado].
+- **Cookies:** o Access exige que "Bloquear todos os cookies" esteja desligado no Safari. O cookie é primário no
+  hostname do túnel e não deve ser afetado pelo ITP, mas isso é **[Não verificado]** no iPhone.
+- **Login:** só ocorre por navegação. Se a sessão vence, a reconexão automática do WebSocket falha (403) e o
+  usuário precisa recarregar a página.
+- **Fim da sessão Access durante a chamada:**
+  - a sinalização é encerrada (E8), e a chamada termina como em qualquer queda de sinalização;
+  - para voltar, o convidado precisa recarregar, logar e receber um **novo convite**;
+  - mitigação: duração da sessão Access maior que a janela de teste.
+- **Uso local com Access ligado:** a página em `localhost:5280` também exige JWT e, portanto, não funciona sem a
+  borda (E5). O teste local usa o modo `off`, que é o padrão sem hostname público.
+
+### 10.9 Testes [Observado, 22/10/2026, Windows, Node 24.19.0]
+
+| Requisito | Onde | Casos |
+|---|---|---|
+| JWT válido; `aud` em lista ou string | `access.test.ts` | `expiresAt` = `exp` |
+| Assinatura inválida | `access.test.ts`, `access-server.test.ts` | Chave do atacante com o mesmo `kid`; payload adulterado |
+| Emissor e audiência incorretos | `access.test.ts`, `access-server.test.ts` | Outra equipe, barra final, outra AUD, sem `aud` |
+| Expirado; `nbf` futuro; sem `exp`/`iat` | `access.test.ts`, `access-server.test.ts` | Limites da tolerância; tolerância 0 |
+| Algoritmos e confusão | `access.test.ts` | `none` (assinatura vazia e falsa), HS256 com a chave pública como segredo, ES256 com `kid` publicado, RS512 com assinatura válida, `crit` |
+| `kid` inexistente; sem `kid` | `access.test.ts` | Uma atualização no máximo; sem `kid` não busca chaves |
+| JWKS: indisponível, HTTP 500/302/404, timeout (cabeçalhos e corpo), tamanho (declarado e em fluxo), malformado (9 variações) | `access.test.ts`, `access-server.test.ts` | Sempre `unavailable` → 503 |
+| Rotação; cache; *stale*; recuo após falha; anti-amplificação; JWKS inválido não substitui o bom | `access.test.ts` | Contagem de buscas |
+| Configuração | `access.test.ts`, `access-server.test.ts`, `cli-access.test.ts` | 11 inválidas na API; 9 casos no processo real (sem rede); hostname público sem Access não abre porta |
+| HTTP sem autenticação | `access-server.test.ts` | 403 com `Host` público e local; token administrativo, `Authorization` e cookie não substituem |
+| WebSocket sem autenticação | `access-server.test.ts` | 403 antes do upgrade; token inválido ou expirado; JWKS indisponível → 503 |
+| `Host`/`Origin` preservados | `access-server.test.ts`, `public-access.test.ts` | JWT válido não compensa `Host` desconhecido (421) nem `Origin` incoerente (403); proxy simulado injeta o JWT como a borda |
+| Operações administrativas pelo público | `access-server.test.ts` | `create`/`rejoin` com token administrativo + JWT → `unauthorized`; `/admin/pair` → 405 |
+| Administrativo sem Access | `access-server.test.ts` | Página, pareamento e WebSocket sem JWT; `Host` público continua 421 |
+| Convite e limites preservados | `access-server.test.ts` | Convite inválido recusado; prazo de admissão; teto de conexões; limite de pendentes |
+| Prazo da sessão autenticada | `access-server.test.ts` | Conexão encerrada no `exp`; o token vencido não abre outra |
+| Admissão e reentrada | `access-server.test.ts`, suíte existente, E2E | Convidado autenticado entra e reentra com novo convite; operador pelo 5281 |
+| Logs | `access-server.test.ts` | Sem JWT, e-mail ou `sub` |
+| Regressão WebRTC Chrome ↔ Edge | E2E (modo local, Access desligado) | Fluxo completo do 02B.2C |
+
+**Resultados:** §10.12.
+
+### 10.10 Critérios de aprovação e de exposição (substituem §9.8)
+
+**Para aprovar o 02B.3A:**
+1. Suíte, build, audit e E2E verdes localmente e no `POC-02B CI`.
+2. Revisão do arquiteto das decisões E1–E10 e da estratégia de §10.3.
+
+**Para expor (02B.6), além dos itens 2, 3, 4 e 6 a 10 de §9.8:**
+1. Aplicação Access **self-hosted** cobrindo o hostname **inteiro** (todos os caminhos, inclusive `/ws`), com
+   política por e-mails explícitos e duração de sessão maior que a janela de teste.
+2. `ORYN_ACCESS_MODE=required`, `ORYN_ACCESS_TEAM_DOMAIN` e `ORYN_ACCESS_AUD` reais **só** no ambiente local
+   (nunca no repositório), conferidos no banner.
+3. **Comprovar no teste real**, antes de enviar o convite:
+   - acesso direto sem login → página de login do Access, não a página da POC;
+   - upgrade WebSocket autenticado funcionando no Chrome do PC e no Safari do iPhone, isto é, a borda injeta o
+     JWT no upgrade;
+   - logs do servidor sem recusas `access:` inesperadas.
+
+   Se o upgrade falhar, parar e decidir entre as alternativas de §10.3.
+4. TURN continua fora até o 02B.4.
+
+### 10.11 Riscos residuais
+
+| Risco | Severidade | Situação |
+|---|---|---|
+| Borda não injeta o JWT no upgrade WebSocket | **Alta para o uso** (a sinalização pelo túnel não funcionaria); não é risco de segurança, pois falha fechada | [Não verificado]. Critério 3 de §10.10; alternativas em §10.3 |
+| Política do Access permissiva (ex.: qualquer e-mail) | Alta, se ocorrer | A origem só confere `iss`/`aud`; quem entra é decidido pela política. Critério 1 de §10.10. O convite continua exigido |
+| Fim da sessão Access encerra a chamada em andamento | Média (experiência) | Duração da sessão maior que a janela de teste; novo convite para voltar |
+| Confiança na borda e no endpoint de chaves da Cloudflare (TLS validado pelo Node com o repositório de CAs dele) | Baixa | Inerente ao Access; chave privada da Cloudflare fora do nosso controle |
+| Tolerância de relógio de 30 s | Baixa | Configurável (0–300) |
+| Custo de verificação RSA para tokens com `kid` válido e assinatura falsa | Baixa | Verificação RS256 é barata; tokens sem `kid` conhecido não buscam chaves; pendentes limitados |
+| Dependência nova (`jose`) | Baixa | Versão exata, lockfile, `pnpm audit` sem vulnerabilidades; só no servidor (bundle do frontend inalterado: mesmo hash) |
+| Encerramento da conexão no `exp` tem granularidade do heartbeat | Baixa | Até 10 s com os padrões |
+| Modo `off` usado por engano com exposição | — | **Eliminado** para a configuração de exposição: hostname público sem Access não inicia |
+
+### 10.12 Resultados [Observado, 22/10/2026]
+
+| Verificação | Resultado |
+|---|---|
+| `pnpm install --frozen-lockfile` | OK (lockfile com `jose` 6.2.13) |
+| `pnpm typecheck` | OK |
+| `pnpm test` | **374/374**, 19 arquivos, nenhum pulado. Novos: `access` 55, `access-server` 21, `cli-access` 9. Ajustados: `public-access` (o proxy simulado injeta o JWT como a borda; `Host` local sem JWT → 403) e `admin-listener` (hostname público com Access) |
+| Arquivos sensíveis a tempo (`access`, `access-server`, `abuse`, `public-access`, `admin-listener`) repetidos 3 vezes | 148/148 nas três |
+| `pnpm build` | OK (JS 38,59 kB, 13,85 kB gzip; **mesmo hash do 02B.2C**: o frontend não mudou e `jose` não entra no bundle) |
+| `pnpm audit` | Nenhuma vulnerabilidade conhecida |
+| `pnpm e2e` | **41/41** em duas execuções, Chrome 155.0.8059.85 ↔ Edge 155.0.4283.62 (modo local, Access desligado): admissão, reentrada do operador e do convidado, áudio bidirecional |
+| Rede pública nos testes | Nenhuma: JWKS por transporte em memória; chaves RSA/EC geradas a cada execução |
+
+**Mutações:**
+
+| Mutação | Testes que falharam |
+|---|---|
+| HTTP sem verificação do Access | 6 |
+| Upgrade sem verificação do Access | 4 |
+| Sem verificação de `iss` | 3 |
+| Sem verificação de `aud` | 3 |
+| `exp` não obrigatório | 1 |
+| Tolerância de relógio enorme | 5 |
+| `kid` desconhecido usa qualquer chave | 1 (detectada após acrescentar o teste "kid desconhecido assinado por chave publicada") |
+| JWKS indisponível libera | 18 |
+| Sem limite de tamanho do JWKS | 1 |
+| Sem intervalo mínimo para `kid` desconhecido | 1 |
+| Material privado aceito no JWKS | 2 |
+| Hostname público sem Access permitido | 3 |
+| Sem fechamento no `exp` | 1 |
+| Access só para `Host` público | 2 |
+| Chaves antigas sem limite após falha | 1 |
+| Sem limite de validações pendentes | 1 (detectada após o teste passar a exigir recusa imediata) |
+| Sem lista de algoritmos **ou** sem recusa antecipada de `alg` (isoladas e combinadas) | 0. **Mutação equivalente:** a chave é importada vinculada a RS256 (`importJWK(…, 'RS256')`), e a biblioteca recusa HS256, ES256, RS512 e `none` mesmo sem as duas checagens explícitas. Os testes negativos de algoritmo continuam passando por essa terceira camada. As checagens explícitas ficam como defesa em profundidade e evitam buscar chaves para algoritmos proibidos |
+
+**CI:** workflow inalterado; os novos testes rodam nos jobs existentes. **[Não executado]** a execução no GitHub
+depende do commit e do push do usuário.

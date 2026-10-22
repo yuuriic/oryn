@@ -14,6 +14,11 @@
 //   O privilégio vem do listener que aceitou a conexão + token de pareamento, nunca do cabeçalho Host.
 //   Cabeçalhos de proxy (X-Forwarded-*, CF-Connecting-IP) NUNCA são lidos: atrás do túnel todas as
 //   conexões vêm de 127.0.0.1 e esses cabeçalhos não têm fronteira de confiança verificável aqui.
+// - 02B.3A: Cloudflare Access. Com hostnames públicos configurados, o Access é OBRIGATÓRIO: TODA
+//   requisição HTTP e TODO upgrade WebSocket do listener de sinalização (qualquer Host) precisam do JWT
+//   válido em Cf-Access-Jwt-Assertion, injetado pela borda da Cloudflare. O listener administrativo não
+//   usa Access. O Access identifica quem pode chegar à página; não substitui o convite nem concede
+//   privilégio administrativo.
 
 import { randomBytes } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -23,6 +28,7 @@ import { join, relative, sep } from 'node:path';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { MAX_MESSAGE_BYTES, parseClientMessage, type ServerMessage } from '../src/protocol.ts';
+import { ACCESS_HEADER, AccessVerifier, resolveAccessConfig, type AccessConfig, type JwksFetch } from './access.ts';
 import { AdminAuth, newPairingCode } from './admin-auth.ts';
 import { Admission, newToken } from './admission.ts';
 import { TokenBucket } from './rate-limit.ts';
@@ -55,6 +61,15 @@ export interface ServerConfig {
    * Somente nomes DNS exatos: sem curingas, IPs, portas ou "localhost".
    */
   publicHostnames?: readonly string[];
+  /**
+   * Cloudflare Access (02B.3A). Obrigatório quando há hostnames públicos (sem fallback silencioso).
+   * Ativo = todo o listener de sinalização exige o JWT válido em Cf-Access-Jwt-Assertion.
+   */
+  access?: AccessConfig;
+  /** Transporte do JWKS (padrão: fetch global). Só para testes, sem rede pública. */
+  accessFetch?: JwksFetch;
+  /** Validações de Access pendentes simultâneas no upgrade (padrão 16; acima disso, 503). */
+  maxPendingAccessChecks?: number;
   maxSessions?: number;
   /** Conexões WebSocket simultâneas (todas chegam de 127.0.0.1 atrás do túnel; limite global). */
   maxConnections?: number;
@@ -77,6 +92,8 @@ export interface RunningServer {
   adminOrigin: string | null;
   /** https://<primeiro hostname público>, ou null quando o acesso público está fechado. */
   publicOrigin: string | null;
+  /** Validador do Cloudflare Access do listener de sinalização, ou null (modo local sem Access). */
+  access: AccessVerifier | null;
   registry: SessionRegistry;
   admission: Admission;
   /** Pareamento do operador (o terminal emite o código; nunca imprime o token). */
@@ -245,6 +262,15 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
   // Allowlist pública validada antes de abrir qualquer listener (configuração inválida = não sobe).
   const publicHosts = new Set((config.publicHostnames ?? []).map(validatePublicHostname));
   const publicOrigin = publicHosts.size > 0 ? `https://${[...publicHosts][0]}` : null;
+  // Sem fallback silencioso: configuração de exposição (hostname público) exige Cloudflare Access.
+  if (publicHosts.size > 0 && config.access === undefined) {
+    throw new Error('Hostnames públicos exigem Cloudflare Access (02B.3A): configure teamDomain e audience. O modo sem Access é só para uso local.');
+  }
+  // Configuração do Access incompleta ou inválida impede a inicialização.
+  const access = config.access === undefined
+    ? null
+    : new AccessVerifier({ config: resolveAccessConfig(config.access), now: Date.now, fetch: config.accessFetch ?? fetch });
+  const maxPendingAccessChecks = config.maxPendingAccessChecks ?? 16;
   const files = loadStaticFiles(config.distDir);
 
   const adminAuth = new AdminAuth({
@@ -374,6 +400,10 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
     });
   };
 
+  /** Resposta HTTP de uma falha do Access (403; JWKS indisponível = 503). Nunca libera o conteúdo. */
+  const accessDenied = (reason: string): { status: number; text: string } =>
+    reason === 'unavailable' ? { status: 503, text: '503 Service Unavailable' } : { status: 403, text: '403 Forbidden' };
+
   const requestHandler = (kind: ListenerKind) => (req: http.IncomingMessage, res: http.ServerResponse): void => {
     for (const [k, v] of Object.entries(SECURITY_HEADERS)) res.setHeader(k, v);
     // Host antes de qualquer conteúdo.
@@ -389,6 +419,24 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
       res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' }).end('Origin não permitido');
       return;
     }
+    // Cloudflare Access: todo o listener de sinalização (qualquer Host, inclusive local) exige o JWT.
+    if (kind === 'signal' && access) {
+      access
+        .verify(req.headers[ACCESS_HEADER])
+        .then((result) => {
+          if (result.ok) return serve(kind, req, res);
+          logRefusal(`access: ${result.reason}`);
+          const denied = accessDenied(result.reason);
+          res.writeHead(denied.status, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }).end(denied.text);
+        })
+        .catch(() => res.writeHead(500).end());
+      return;
+    }
+    serve(kind, req, res);
+  };
+
+  /** Rotas, depois de Host, Origin e (na sinalização com Access) do JWT validados. */
+  const serve = (kind: ListenerKind, req: http.IncomingMessage, res: http.ServerResponse): void => {
     const path = new URL(req.url ?? '/', 'http://x').pathname;
     // Endpoint administrativo existe SOMENTE no listener administrativo.
     if (kind === 'admin' && path === '/admin/pair') {
@@ -434,11 +482,40 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
     // Origin obrigatório, exato e coerente com o Host: impede uso por outros sites (CSWSH) e
     // combinações cruzadas (Host público com Origin local e vice-versa). "null" é recusado.
     if (checkOrigin(req.headers.origin, req.headers.host!, zone, true) !== 'ok') return refuse(socket, '403 Forbidden', 'origin');
+    if (kind === 'signal' && access) {
+      // JWT do Access validado ANTES de concluir o upgrade. Validações pendentes são limitadas.
+      if (pendingAccessChecks >= maxPendingAccessChecks) return refuse(socket, '503 Service Unavailable', 'access: pendentes');
+      pendingAccessChecks += 1;
+      access
+        .verify(req.headers[ACCESS_HEADER])
+        .then((result) => {
+          if (socket.destroyed) return;
+          if (!result.ok) return refuse(socket, accessDenied(result.reason).text, `access: ${result.reason}`);
+          accept(kind, req, socket, head, result.expiresAt);
+        })
+        .catch(() => socket.destroy())
+        .finally(() => {
+          pendingAccessChecks -= 1;
+        });
+      return;
+    }
+    accept(kind, req, socket, head, null);
+  };
+
+  let pendingAccessChecks = 0;
+  /** Conexões autenticadas pelo Access e quando o JWT delas expira (a conexão é encerrada nesse momento). */
+  const accessExpiry = new Map<WebSocket, number>();
+
+  const accept = (kind: ListenerKind, req: http.IncomingMessage, socket: Duplex, head: Buffer, accessExpiresAt: number | null): void => {
     // Limite global de conexões (atrás do túnel todas vêm de 127.0.0.1: não há limite "por IP").
+    // Verificado depois da validação assíncrona do Access, imediatamente antes de aceitar.
     if (wss.clients.size >= maxConnections) return refuse(socket, '503 Service Unavailable', 'capacidade');
-    // O privilégio administrativo vem do LISTENER, nunca do Host ou de cabeçalhos de proxy.
+    // O privilégio administrativo vem do LISTENER, nunca do Host, de cabeçalhos de proxy ou do Access.
     const context: ConnectionContext = { admin: kind === 'admin' };
-    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, context));
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      if (accessExpiresAt !== null) accessExpiry.set(ws, accessExpiresAt);
+      wss.emit('connection', ws, context);
+    });
   };
 
   wss.on('connection', (ws: WebSocket, context: ConnectionContext) => {
@@ -486,6 +563,7 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
       else if (!unadmittedSince.has(ws)) unadmittedSince.set(ws, Date.now());
     });
     ws.on('close', () => {
+      accessExpiry.delete(ws);
       unadmittedSince.delete(ws);
       participants.delete(ws);
       registry.disconnect(participant);
@@ -500,6 +578,12 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
     for (const ws of wss.clients) {
       if (alive.get(ws) === false) {
         ws.terminate();
+        continue;
+      }
+      // Prazo da sessão autenticada pelo Access: JWT expirado encerra a conexão (nova conexão exige novo JWT).
+      const expiresAt = accessExpiry.get(ws);
+      if (expiresAt !== undefined && now >= expiresAt) {
+        ws.close(1008, 'access expired');
         continue;
       }
       const participant = participants.get(ws);
@@ -560,5 +644,13 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
     throw error;
   }
 
-  return { httpOrigin, adminOrigin, publicOrigin, registry, admission, adminAuth, close: shutdown };
+  // Pré-carrega as chaves do Access (falha não impede a partida: as requisições falham fechadas até obtê-las).
+  if (access) {
+    access.jwks
+      .keys()
+      .then(() => log('[access] chaves públicas do Cloudflare Access carregadas'))
+      .catch(() => log('[access] chaves públicas indisponíveis: requisições da sinalização serão recusadas (503) até obtê-las'));
+  }
+
+  return { httpOrigin, adminOrigin, publicOrigin, access, registry, admission, adminAuth, close: shutdown };
 }
