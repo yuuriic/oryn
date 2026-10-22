@@ -9,6 +9,7 @@ import {
 import { preferOpus } from '../src/codecs.ts';
 
 const SID = 'AbCdEfGhIjKlMnOpQrStUv';
+const TOKEN = 'T'.repeat(42) + 'x'; // 43 caracteres base64url
 const SDP = 'v=0\r\no=- 1 2 IN IP4 0.0.0.0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n';
 const CAND = { candidate: 'candidate:1 1 udp 2122260223 x 50000 typ host', sdpMid: '0', sdpMLineIndex: 0 };
 
@@ -26,9 +27,11 @@ describe('isSessionId', () => {
 
 describe('parseClientMessage — mensagens válidas', () => {
   it.each([
-    [{ type: 'create' }],
+    [{ type: 'create', operatorKey: TOKEN }],
+    [{ type: 'rejoin', sessionId: SID, operatorKey: TOKEN }],
+    [{ type: 'invite' }],
     [{ type: 'leave' }],
-    [{ type: 'join', sessionId: SID }],
+    [{ type: 'join', invite: TOKEN }],
     [{ type: 'signal', epoch: 1, payload: { kind: 'offer', sdp: SDP } }],
     [{ type: 'signal', epoch: 1, payload: { kind: 'answer', sdp: SDP } }],
     [{ type: 'signal', epoch: 1, payload: { kind: 'candidate', candidate: CAND } }],
@@ -46,9 +49,15 @@ describe('parseClientMessage — rejeições', () => {
     ['JSON inválido', '{type:'],
     ['não-objeto', '[1,2]'],
     ['tipo desconhecido', { type: 'relay-audio' }],
-    ['chave extra', { type: 'create', admin: true }],
-    ['join sem id', { type: 'join' }],
-    ['join com id curto', { type: 'join', sessionId: 'abc' }],
+    ['chave extra', { type: 'create', operatorKey: TOKEN, admin: true }],
+    ['create sem chave do operador', { type: 'create' }],
+    ['create com chave curta', { type: 'create', operatorKey: 'abc' }],
+    ['rejoin sem chave', { type: 'rejoin', sessionId: SID }],
+    ['invite com campos extras', { type: 'invite', sessionId: SID }],
+    ['join sem convite', { type: 'join' }],
+    ['join com convite curto', { type: 'join', invite: 'abc' }],
+    ['join com convite de caracteres inválidos', { type: 'join', invite: `${'T'.repeat(42)}+` }],
+    ['join pelo ID da sessão (modelo antigo)', { type: 'join', sessionId: SID }],
     ['epoch negativo', { type: 'signal', epoch: -1, payload: { kind: 'offer', sdp: SDP } }],
     ['epoch fracionário', { type: 'signal', epoch: 1.5, payload: { kind: 'offer', sdp: SDP } }],
     ['kind desconhecido', { type: 'signal', epoch: 1, payload: { kind: 'media', data: 'x' } }],
@@ -69,7 +78,7 @@ describe('parseClientMessage — rejeições', () => {
   });
 
   it('mede bytes UTF-8, não caracteres', () => {
-    const multibyte = JSON.stringify({ type: 'join', sessionId: SID, pad: 'ç'.repeat(MAX_MESSAGE_BYTES / 2) });
+    const multibyte = JSON.stringify({ type: 'join', invite: TOKEN, pad: 'ç'.repeat(MAX_MESSAGE_BYTES / 2) });
     expect(parse(multibyte).ok).toBe(false);
     expect(parse(multibyte)).toEqual({ ok: false, code: 'too-large' });
   });
@@ -84,6 +93,9 @@ describe('parseServerMessage', () => {
       { type: 'signal', epoch: 1, payload: { kind: 'answer', sdp: SDP } },
       { type: 'session-closed', reason: 'expired' },
       { type: 'error', code: 'session-full' },
+      { type: 'error', code: 'invite-invalid' },
+      { type: 'invite', token: TOKEN, expiresAt: 123, publicOrigin: null },
+      { type: 'invite', token: TOKEN, expiresAt: 123, publicOrigin: 'https://oryn-poc.example.com' },
     ]) {
       expect(parseServerMessage(JSON.stringify(m))).toEqual(m);
     }
@@ -96,6 +108,11 @@ describe('parseServerMessage', () => {
       JSON.stringify({ type: 'error', code: 'pwned' }),
       JSON.stringify({ type: 'peer-joined', epoch: 1, extra: true }),
       JSON.stringify({ type: 'signal', epoch: 1, payload: { kind: 'offer', sdp: 'x' } }),
+      JSON.stringify({ type: 'invite', token: TOKEN, expiresAt: 1, publicOrigin: 'http://oryn-poc.example.com' }),
+      JSON.stringify({ type: 'invite', token: TOKEN, expiresAt: 1, publicOrigin: 'javascript:alert(1)' }),
+      JSON.stringify({ type: 'invite', token: TOKEN, expiresAt: 1, publicOrigin: 'https://evil.example/#' }),
+      JSON.stringify({ type: 'invite', token: 'curto', expiresAt: 1, publicOrigin: null }),
+      JSON.stringify({ type: 'invite', token: TOKEN, expiresAt: 1, publicOrigin: null, sessionId: SID }),
     ]) {
       expect(parseServerMessage(raw)).toBeNull();
     }

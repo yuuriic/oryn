@@ -56,8 +56,8 @@ describe('SignalingClient', () => {
     const connected = client.connect();
     socket.open();
     await connected;
-    expect(client.send({ type: 'create' })).toBe(true);
-    expect(socket.sent).toEqual(['{"type":"create"}']);
+    expect(client.send({ type: 'invite' })).toBe(true);
+    expect(socket.sent).toEqual(['{"type":"invite"}']);
 
     socket.onmessage?.({ data: '{"type":"peer-joined","epoch":1}' });
     socket.onmessage?.({ data: '{"type":"peer-joined","epoch":1,"x":1}' });

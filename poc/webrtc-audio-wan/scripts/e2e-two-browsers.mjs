@@ -10,6 +10,7 @@
 import { chromium } from 'playwright-core';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
+import { hashToken, newToken } from '../server/admission.ts';
 import { startServer } from '../server/server.ts';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -95,24 +96,31 @@ const cleanupState = (p) =>
     audioElements: document.querySelectorAll('audio').length,
   }));
 
-const server = await startServer({ distDir: join(root, 'dist'), httpPort: 0, log: (l) => serverLogs.push(l) });
+// Chave efêmera do operador (como no server/index.ts): só o hash vai ao servidor.
+const operatorKey = newToken();
+const server = await startServer({ distDir: join(root, 'dist'), httpPort: 0, operatorKeyHash: hashToken(operatorKey), log: (l) => serverLogs.push(l) });
 const base = server.httpOrigin.replace('127.0.0.1', 'localhost');
 const opened = [];
 let exitCode = 0;
 
 try {
-  const A = await openParticipant('chrome', base, 'A (Chrome)');
-  const B = await openParticipant('msedge', base, 'B (Edge)');
+  // A = operador (link #op= do terminal); B = convidado (sem chave).
+  const A = await openParticipant('chrome', `${base}/#op=${operatorKey}`, 'A (Chrome, operador)');
+  const B = await openParticipant('msedge', base, 'B (Edge, convidado)');
   opened.push(A, B);
   results.observed.browsers = { A: A.version, B: B.version };
+  check('operador: chave removida da URL e "Criar sessão" habilitado', !A.page.url().includes('#') && (await A.page.isEnabled('[data-testid="btn-create"]')));
+  check('sem a chave do operador, "Criar sessão" fica desabilitado', !(await B.page.isEnabled('[data-testid="btn-create"]')));
 
-  // A cria a sessão; B entra pelo link com o código no fragmento.
+  // A cria a sessão e recebe um convite de uso único; B entra pelo link #i=.
   await A.page.click('[data-testid="btn-create"]');
   await waitPhase(A, 'waiting-peer');
   const sessionId = (await text(A, '[data-testid="session-code"]')).replace('Sessão: ', '');
   check('A criou sessão com ID de 22 caracteres', /^[A-Za-z0-9_-]{22}$/.test(sessionId));
-  await B.page.goto(`${base}/#s=${sessionId}`);
-  check('link de convite preenche o código e limpa o fragmento', (await B.page.inputValue('[data-testid="inp-session"]')) === sessionId && !B.page.url().includes('#'));
+  const invite = await text(A, '[data-testid="invite-token"]');
+  check('convite de 43 caracteres; sem hostname público, sem link nem QR', /^[A-Za-z0-9_-]{43}$/.test(invite) && (await A.page.isHidden('[data-testid="invite-link"]')));
+  await B.page.goto(`${base}/#i=${invite}`);
+  check('link de convite preenche o campo e limpa o fragmento', (await B.page.inputValue('[data-testid="inp-session"]')) === invite && !B.page.url().includes('#'));
   const t0 = Date.now();
   await B.page.click('[data-testid="btn-join"]');
   await Promise.all([waitPhase(A, 'connected'), waitPhase(B, 'connected')]);
@@ -159,13 +167,13 @@ try {
   results.observed.playbackA = playback;
   check('A: reprodução ligada ("tocando (volume …)")', /^tocando \(volume/.test(playback), playback);
 
-  // Terceiro participante é recusado.
-  const C = await openParticipant('chrome', `${base}/#s=${sessionId}`, 'C (Chrome)');
+  // Terceiro participante reutiliza o convite: recusado (uso único).
+  const C = await openParticipant('chrome', `${base}/#i=${invite}`, 'C (Chrome)');
   opened.push(C);
   await C.page.click('[data-testid="btn-join"]');
   await waitPhase(C, 'failed');
   const cError = await text(C, '[data-testid="error"]');
-  check('terceiro participante recusado (sessão cheia)', /dois participantes/.test(cError), cError);
+  check('terceiro participante recusado (convite de uso único já usado)', /Convite inválido/.test(cError), cError);
   check('terceiro participante: microfone liberado', (await cleanupState(C)).tracks.every((t) => t === 'ended'));
   check('A e B seguem conectados após a recusa', (await phaseOf(A)) === 'connected' && (await phaseOf(B)) === 'connected');
 
@@ -181,14 +189,33 @@ try {
   check('B perdeu o par: peer closed, microfone ainda ativo', cleanB.pcs.every((s) => s === 'closed') && cleanB.tracks.every((t) => t === 'live'), cleanB);
   check('A: métricas exibem "indisponível" após encerrar', (await text(A, '[data-testid="packets-sent"]')) === 'indisponível');
 
-  // A volta à mesma sessão (vira host do novo par) e o áudio retoma nos dois sentidos.
-  await A.page.fill('[data-testid="inp-session"]', sessionId);
-  await A.page.click('[data-testid="btn-join"]');
+  // Reentrada do operador: "Voltar à sessão" (chave em memória + ID da sessão).
+  check('"Voltar à sessão" disponível ao operador após encerrar', await A.page.isVisible('[data-testid="btn-rejoin"]'));
+  await A.page.click('[data-testid="btn-rejoin"]');
   await Promise.all([waitPhase(A, 'connected'), waitPhase(B, 'connected')]);
   await wait(2000);
   const rejoin = { AhearsB: await remoteRmsMax(A, 2000), BhearsA: await remoteRmsMax(B, 2000) };
   results.observed.rejoin = rejoin;
-  check('reentrada na mesma sessão: áudio nos dois sentidos de novo', rejoin.AhearsB > THRESHOLD && rejoin.BhearsA > THRESHOLD, rejoin);
+  check('reentrada do operador: áudio nos dois sentidos de novo', rejoin.AhearsB > THRESHOLD && rejoin.BhearsA > THRESHOLD, rejoin);
+
+  // Reentrada do convidado: B sai; o operador emite um NOVO convite; B volta com ele.
+  await B.page.click('[data-testid="btn-end"]');
+  await waitPhase(B, 'ended');
+  await waitPhase(A, 'waiting-peer');
+  await A.page.click('[data-testid="btn-invite"]');
+  await A.page.waitForFunction((old) => {
+    const t = document.querySelector('[data-testid="invite-token"]')?.textContent ?? '';
+    return t.length === 43 && t !== old;
+  }, invite);
+  const invite2 = await text(A, '[data-testid="invite-token"]');
+  check('novo convite emitido e diferente do anterior', /^[A-Za-z0-9_-]{43}$/.test(invite2) && invite2 !== invite);
+  await B.page.goto(`${base}/#i=${invite2}`);
+  await B.page.click('[data-testid="btn-join"]');
+  await Promise.all([waitPhase(A, 'connected'), waitPhase(B, 'connected')]);
+  await wait(1500);
+  const guestBack = { AhearsB: await remoteRmsMax(A, 2000), BhearsA: await remoteRmsMax(B, 2000) };
+  results.observed.guestRejoin = guestBack;
+  check('reentrada do convidado com novo convite: áudio nos dois sentidos', guestBack.AhearsB > THRESHOLD && guestBack.BhearsA > THRESHOLD, guestBack);
 
   // Fim: ambos encerram; o servidor fica sem sessões.
   await B.page.click('[data-testid="btn-end"]');
@@ -200,15 +227,18 @@ try {
   const finalB = await cleanupState(B);
   check('final: todas as tracks ended e peers closed (A e B)', [...finalA.tracks, ...finalB.tracks].every((t) => t === 'ended') && [...finalA.pcs, ...finalB.pcs].every((s) => s === 'closed'), { A: finalA, B: finalB });
   check('servidor sem sessões ativas', server.registry.sessionCount === 0, server.registry.sessionCount);
+  check('nenhum convite pendente no servidor', server.admission.activeInvites === 0, server.admission.activeInvites);
 
   // Privacidade e CSP.
-  const pageLogs = [await text(A, '[data-testid="log"]'), await text(B, '[data-testid="log"]')].join('\n');
+  const pageLogs = [await text(A, '[data-testid="log"]'), await text(B, '[data-testid="log"]'), await text(C, '[data-testid="log"]')].join('\n');
   const consoles = [...A.consoleMessages, ...B.consoleMessages, ...C.consoleMessages].join('\n');
   const leaks = [/a=candidate/i, /a=fingerprint/i, /ice-ufrag/i, /\bv=0\b/, /\b\d{1,3}(\.\d{1,3}){3}\b/, /\.local\b/].filter(
     (re) => re.test(pageLogs) || re.test(consoles) || re.test(serverLogs.join('\n')),
   );
   check('logs (páginas, console, servidor) sem SDP, candidatos ou IPs', leaks.length === 0, leaks.map(String));
   check('logs do servidor sem o ID completo da sessão', !serverLogs.join('\n').includes(sessionId));
+  const everything = [pageLogs, consoles, serverLogs.join('\n')].join('\n');
+  check('chave do operador e convites ausentes de logs, console e servidor', ![operatorKey, invite, invite2].some((sec) => everything.includes(sec)));
   const csp = consoles.split('\n').filter((m) => /Content Security Policy/i.test(m));
   check('sem violações de CSP', csp.length === 0, csp);
   results.observed.serverLogLines = serverLogs.length;

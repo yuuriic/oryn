@@ -34,7 +34,15 @@ export type CallPhase =
   | 'ended'
   | 'failed';
 
-export type StartMode = { kind: 'create' } | { kind: 'join'; sessionId: string };
+/**
+ * - create: operador cria a sessão (chave do operador);
+ * - rejoin: operador volta à própria sessão;
+ * - join: convidado entra com convite de uso único.
+ */
+export type StartMode =
+  | { kind: 'create'; operatorKey: string }
+  | { kind: 'rejoin'; sessionId: string; operatorKey: string }
+  | { kind: 'join'; invite: string };
 
 export interface PeerStates {
   connection: RTCPeerConnectionState;
@@ -79,6 +87,8 @@ export interface CallDeps {
 export interface CallCallbacks {
   onPhase(phase: CallPhase, error?: string): void;
   onSession(info: { sessionId: string; role: Role; epoch: number }): void;
+  /** Somente operador: convite emitido pelo servidor (o token nunca vai para o log). */
+  onInvite(invite: { token: string; expiresAt: number; publicOrigin: string | null }): void;
   onPeerStates(states: PeerStates | null): void;
   onLocalStream(stream: MediaStream | null): void;
   onRemoteStream(stream: MediaStream | null): void;
@@ -95,7 +105,16 @@ export const AUDIO_CONSTRAINTS: MediaTrackConstraints = {
 
 const MAX_PENDING_CANDIDATES = 64;
 /** Erros do servidor que encerram a tentativa (antes de existir sessão ativa). */
-const FATAL_ERRORS: readonly ErrorCode[] = ['not-found', 'session-full', 'server-busy', 'already-in-session', 'rate-limited'];
+const FATAL_ERRORS: readonly ErrorCode[] = [
+  'not-found',
+  'session-full',
+  'server-busy',
+  'already-in-session',
+  'rate-limited',
+  'unauthorized',
+  'invite-invalid',
+  'locked',
+];
 
 export class PeerCall {
   private phaseValue: CallPhase = 'idle';
@@ -186,7 +205,19 @@ export class PeerCall {
     }
     if (this.disposed) return;
     this.cb.onLog('Sinalização conectada.');
-    signaling.send(mode.kind === 'create' ? { type: 'create' } : { type: 'join', sessionId: mode.sessionId });
+    signaling.send(
+      mode.kind === 'create'
+        ? { type: 'create', operatorKey: mode.operatorKey }
+        : mode.kind === 'rejoin'
+          ? { type: 'rejoin', sessionId: mode.sessionId, operatorKey: mode.operatorKey }
+          : { type: 'join', invite: mode.invite },
+    );
+  }
+
+  /** Operador na sessão: pede um novo convite (revoga o anterior). */
+  requestInvite(): void {
+    if (this.disposed || this.role !== 'host') return;
+    this.signaling?.send({ type: 'invite' });
   }
 
   setMuted(muted: boolean): void {
@@ -231,6 +262,10 @@ export class PeerCall {
         return;
       case 'signal':
         this.enqueue(() => this.onSignal(message.epoch, message.payload));
+        return;
+      case 'invite':
+        this.cb.onInvite({ token: message.token, expiresAt: message.expiresAt, publicOrigin: message.publicOrigin });
+        this.cb.onLog('Convite de uso único emitido.');
         return;
       case 'session-closed':
         this.fail(message.reason === 'expired' ? 'A sessão expirou por inatividade.' : 'O servidor foi encerrado.');

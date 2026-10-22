@@ -7,7 +7,7 @@ import net from 'node:net';
 import tls from 'node:tls';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { checkHost, startServer, type RunningServer } from '../server/server.ts';
-import { TestClient, fakeDist } from './helpers/ws-client.ts';
+import { OPERATOR_KEY_HASH, TestClient, createAndInvite, fakeDist } from './helpers/ws-client.ts';
 
 const supportsIpv6 = await new Promise<boolean>((resolve) => {
   const s = net.createServer();
@@ -76,7 +76,7 @@ describe('listener HTTP local (127.0.0.1)', () => {
 
   beforeAll(async () => {
     dist = fakeDist();
-    server = await startServer({ distDir: dist, httpPort: 0, log: () => undefined });
+    server = await startServer({ distDir: dist, httpPort: 0, operatorKeyHash: OPERATOR_KEY_HASH, log: () => undefined });
     port = new URL(server.httpOrigin).port;
   });
   afterAll(async () => {
@@ -127,8 +127,7 @@ describe('listener HTTP local (127.0.0.1)', () => {
     await expect(TestClient.open(ws, server.httpOrigin, { headers: { Host: '127.0.0.1:1' } })).rejects.toThrow('421');
     await expect(TestClient.open(ws, 'https://evil.example', { headers: { Host: `localhost:${port}` } })).rejects.toThrow('403');
     const ok = await TestClient.open(ws, `http://localhost:${port}`, { headers: { Host: `localhost:${port}` } });
-    ok.send({ type: 'create' });
-    expect((await ok.next('session'))['role']).toBe('host');
+    await createAndInvite(ok);
     ok.ws.terminate();
   });
 });
@@ -140,7 +139,7 @@ describe.skipIf(!supportsIpv6)('listener HTTP local em IPv6 (::1)', () => {
 
   beforeAll(async () => {
     dist = fakeDist();
-    server = await startServer({ distDir: dist, httpHost: '::1', httpPort: 0, log: () => undefined });
+    server = await startServer({ distDir: dist, httpHost: '::1', httpPort: 0, operatorKeyHash: OPERATOR_KEY_HASH, log: () => undefined });
     port = new URL(server.httpOrigin).port;
   });
   afterAll(async () => {
@@ -156,8 +155,7 @@ describe.skipIf(!supportsIpv6)('listener HTTP local em IPv6 (::1)', () => {
 
   it('upgrade WebSocket com Host [::1]:porta funciona', async () => {
     const c = await TestClient.open(`ws://[::1]:${port}/ws`, server.httpOrigin);
-    c.send({ type: 'create' });
-    expect((await c.next('session'))['role']).toBe('host');
+    await createAndInvite(c);
     c.ws.terminate();
   });
 });

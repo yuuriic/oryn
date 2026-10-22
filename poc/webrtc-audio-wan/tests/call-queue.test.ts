@@ -9,14 +9,16 @@ interface Probe {
   logs: string[];
   errors: string[];
   session: { sessionId: string } | null;
+  invite: string | null;
   cb: CallCallbacks;
 }
 
 function probe(): Probe {
-  const p: Probe = { logs: [], errors: [], session: null, cb: undefined as unknown as CallCallbacks };
+  const p: Probe = { logs: [], errors: [], session: null, invite: null, cb: undefined as unknown as CallCallbacks };
   p.cb = {
     onPhase: (_phase, error) => error && p.errors.push(error),
     onSession: (info) => (p.session = info),
+    onInvite: (invite) => (p.invite = invite.token),
     onPeerStates: () => undefined,
     onLocalStream: () => undefined,
     onRemoteStream: () => undefined,
@@ -68,9 +70,9 @@ describe('A1 — fila SDP isolada por par', () => {
 
     const host = new PeerCall(hostH.deps, hostP.cb);
     const guest = new PeerCall(guestH.deps, guestP.cb);
-    await host.start({ kind: 'create' });
+    await host.start({ kind: 'create', operatorKey: hub.operatorKey });
     await settle();
-    await guest.start({ kind: 'join', sessionId: hostP.session!.sessionId });
+    await guest.start({ kind: 'join', invite: hostP.invite! });
     await settle();
     expect(guest.phase).toBe('negotiating'); // aplicando a offer do par 1: operação travada
 
@@ -80,10 +82,10 @@ describe('A1 — fila SDP isolada por par', () => {
     expect(guest.phase).toBe('waiting-peer');
     expect(guestH.pcs[0]!.signalingState).toBe('closed');
 
-    // Um novo participante entra (vira host) e a nova negociação roda sem esperar a promessa antiga.
+    // O operador volta à sessão (rejoin, vaga de host) e a nova negociação roda sem esperar a promessa antiga.
     const newH = harness(hub);
     const newcomer = new PeerCall(newH.deps, probe().cb);
-    await newcomer.start({ kind: 'join', sessionId: guestP.session!.sessionId });
+    await newcomer.start({ kind: 'rejoin', sessionId: guestP.session!.sessionId, operatorKey: hub.operatorKey });
     await settle();
     expect(guest.currentEpoch).toBe(2);
     expect(guest.phase).toBe('connected');
@@ -112,12 +114,12 @@ describe('A1 — fila SDP isolada por par', () => {
     const stuck = gate();
     gateNthPeer(hostH, 1, 'createOffer', stuck);
     const host = new PeerCall(hostH.deps, hostP.cb);
-    await host.start({ kind: 'create' });
+    await host.start({ kind: 'create', operatorKey: hub.operatorKey });
     await settle();
 
     const firstH = harness(hub);
     const first = new PeerCall(firstH.deps, probe().cb);
-    await first.start({ kind: 'join', sessionId: hostP.session!.sessionId });
+    await first.start({ kind: 'join', invite: hostP.invite! });
     await settle();
     expect(hostH.pcs[0]!.calls.createOffer).toBe(1);
     expect(signalsOf(hostH, 'offer')).toHaveLength(0); // createOffer travado
@@ -126,9 +128,12 @@ describe('A1 — fila SDP isolada por par', () => {
     await settle();
     expect(host.phase).toBe('waiting-peer');
 
+    // Reentrada de convidado: o operador emite um novo convite (o anterior foi consumido).
+    host.requestInvite();
+    await settle();
     const secondH = harness(hub);
     const second = new PeerCall(secondH.deps, probe().cb);
-    await second.start({ kind: 'join', sessionId: hostP.session!.sessionId });
+    await second.start({ kind: 'join', invite: hostP.invite! });
     await settle();
     expect(host.phase).toBe('connected');
     expect(second.phase).toBe('connected');
@@ -156,9 +161,9 @@ describe('A1 — fila SDP isolada por par', () => {
     gateNthPeer(guestH, 1, 'setRemoteDescription', hold);
     const host = new PeerCall(hostH.deps, hostP.cb);
     const guest = new PeerCall(guestH.deps, guestP.cb);
-    await host.start({ kind: 'create' });
+    await host.start({ kind: 'create', operatorKey: hub.operatorKey });
     await settle();
-    await guest.start({ kind: 'join', sessionId: hostP.session!.sessionId });
+    await guest.start({ kind: 'join', invite: hostP.invite! });
     await settle();
 
     // Uma offer duplicada do mesmo epoch chega enquanto a primeira ainda está sendo aplicada.
@@ -183,9 +188,9 @@ describe('A1 — fila SDP isolada por par', () => {
     gateNthPeer(guestH, 1, 'setRemoteDescription', gate()); // nunca liberado
     const host = new PeerCall(hostH.deps, hostP.cb);
     const guest = new PeerCall(guestH.deps, probe().cb);
-    await host.start({ kind: 'create' });
+    await host.start({ kind: 'create', operatorKey: hub.operatorKey });
     await settle();
-    await guest.start({ kind: 'join', sessionId: hostP.session!.sessionId });
+    await guest.start({ kind: 'join', invite: hostP.invite! });
     await settle();
     expect(guest.phase).toBe('negotiating');
 

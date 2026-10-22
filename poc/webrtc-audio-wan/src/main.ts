@@ -1,6 +1,6 @@
 import { encode } from 'uqr';
-import { PeerCall, type CallPhase, type CallStats, type PeerStates } from './call.ts';
-import { isSessionId, type Role } from './protocol.ts';
+import { PeerCall, type CallPhase, type CallStats, type PeerStates, type StartMode } from './call.ts';
+import { isToken, type Role } from './protocol.ts';
 import { SignalingClient, signalingUrl } from './signaling-client.ts';
 import { describePair, formatCodec, formatMetric, parseFmtp } from './stats.ts';
 
@@ -14,6 +14,12 @@ const ui = {
   env: $<HTMLParagraphElement>('[data-testid="env"]'),
   create: $<HTMLButtonElement>('#btn-create'),
   join: $<HTMLButtonElement>('#btn-join'),
+  rejoin: $<HTMLButtonElement>('#btn-rejoin'),
+  operatorHint: $<HTMLParagraphElement>('#operator-hint'),
+  inviteToken: $<HTMLSpanElement>('#invite-token'),
+  inviteExpiry: $<HTMLParagraphElement>('#invite-expiry'),
+  inviteIntro: $<HTMLParagraphElement>('#invite-intro'),
+  newInvite: $<HTMLButtonElement>('#btn-invite'),
   sessionInput: $<HTMLInputElement>('#inp-session'),
   invite: $<HTMLDivElement>('#invite'),
   qr: $<HTMLDivElement>('#qr'),
@@ -46,6 +52,13 @@ const PHASE_LABEL: Record<CallPhase, string> = {
 const ACTIVE: readonly CallPhase[] = ['requesting-mic', 'connecting-signaling', 'waiting-peer', 'negotiating', 'connected'];
 
 let call: PeerCall | null = null;
+/**
+ * Chave do operador: só em memória (nunca localStorage/sessionStorage), lida do fragmento #op=…
+ * do link exibido no terminal e removida da barra de endereço. Nunca é registrada no log.
+ */
+let operatorKey: string | null = null;
+/** Última sessão criada por este operador (para "Voltar à sessão"). */
+let lastSessionId: string | null = null;
 
 // ---------- log em memória ----------
 
@@ -170,7 +183,8 @@ function renderPhase(phase: CallPhase, error?: string): void {
   ui.phase.textContent = `Estado: ${PHASE_LABEL[phase]}`;
   ui.phase.dataset['phase'] = phase;
   const active = ACTIVE.includes(phase);
-  ui.create.disabled = active;
+  ui.create.disabled = active || operatorKey === null;
+  ui.rejoin.hidden = active || operatorKey === null || lastSessionId === null;
   ui.join.disabled = active;
   ui.sessionInput.disabled = active;
   ui.end.disabled = !active;
@@ -184,6 +198,8 @@ function renderPhase(phase: CallPhase, error?: string): void {
   }
   if (!active) {
     ui.invite.hidden = true;
+    ui.newInvite.hidden = true;
+    ui.inviteToken.textContent = '';
     audio.dispose();
     setMuteButton(false);
   }
@@ -191,17 +207,37 @@ function renderPhase(phase: CallPhase, error?: string): void {
 
 function renderSession(info: { sessionId: string; role: Role; epoch: number }): void {
   setField('field', 'role', info.role === 'host' ? 'anfitrião (cria a offer)' : 'convidado (responde)');
-  ui.sessionCode.hidden = false;
-  ui.sessionCode.textContent = `Sessão: ${info.sessionId}`;
-  // Convite com a origem da própria página. Em loopback (localhost) o celular não alcançaria o link,
-  // então só o código é exibido; pela URL pública do túnel (incremento futuro), o link e o QR aparecem.
-  if (info.role === 'host' && !isLoopbackPage()) {
-    const link = `${location.origin}/#s=${info.sessionId}`;
+  // Só o operador (host) emite convites; o botão vale para a sessão inteira, inclusive após reentrar.
+  ui.newInvite.hidden = info.role !== 'host';
+  if (info.role === 'host') {
+    lastSessionId = info.sessionId;
+    ui.sessionCode.hidden = false;
+    ui.sessionCode.textContent = `Sessão: ${info.sessionId}`;
+  }
+}
+
+/**
+ * Convite de uso único (somente operador). O link usa a origem PÚBLICA informada pelo servidor; sem
+ * hostname público configurado, só o código aparece. O token vai no fragmento (#i=…), que não é
+ * enviado ao servidor nem ao Referer. O token nunca é registrado no log.
+ */
+function renderInvite(invite: { token: string; expiresAt: number; publicOrigin: string | null }): void {
+  ui.inviteToken.textContent = invite.token;
+  ui.inviteExpiry.textContent = `Uso único · expira às ${new Date(invite.expiresAt).toLocaleTimeString('pt-BR', { hour12: false })}`;
+  if (invite.publicOrigin) {
+    const link = `${invite.publicOrigin}/#i=${invite.token}`;
     ui.inviteLink.href = link;
     ui.inviteLink.textContent = link;
+    ui.inviteLink.hidden = false;
     renderQr(link);
-    ui.invite.hidden = false;
+    ui.qr.hidden = false;
+    ui.inviteIntro.textContent = 'Abra no celular lendo o QR code ou o link (uso único):';
+  } else {
+    ui.inviteLink.hidden = true;
+    ui.qr.hidden = true;
+    ui.inviteIntro.textContent = 'Acesso público fechado (nenhum hostname configurado): use o código do convite.';
   }
+  ui.invite.hidden = false;
 }
 
 function renderQr(text: string): void {
@@ -254,7 +290,7 @@ function setMuteButton(muted: boolean): void {
 
 // ---------- ações ----------
 
-function startCall(mode: { kind: 'create' } | { kind: 'join'; sessionId: string }): void {
+function startCall(mode: StartMode): void {
   ui.error.hidden = true;
   ui.sessionCode.hidden = true;
   audio.init();
@@ -268,6 +304,7 @@ function startCall(mode: { kind: 'create' } | { kind: 'join'; sessionId: string 
     {
       onPhase: (phase, error) => call === current && renderPhase(phase, error),
       onSession: (info) => call === current && renderSession(info),
+      onInvite: (invite) => call === current && renderInvite(invite),
       onPeerStates: (s) => call === current && renderPeerStates(s),
       onLocalStream: (s) => call === current && audio.setLocal(s),
       onRemoteStream: (s) => call === current && audio.setRemote(s),
@@ -279,16 +316,25 @@ function startCall(mode: { kind: 'create' } | { kind: 'join'; sessionId: string 
   void current.start(mode);
 }
 
-ui.create.addEventListener('click', () => startCall({ kind: 'create' }));
+ui.create.addEventListener('click', () => {
+  if (operatorKey) startCall({ kind: 'create', operatorKey });
+});
+
+ui.rejoin.addEventListener('click', () => {
+  if (operatorKey && lastSessionId) startCall({ kind: 'rejoin', sessionId: lastSessionId, operatorKey });
+});
+
+ui.newInvite.addEventListener('click', () => call?.requestInvite());
 
 ui.join.addEventListener('click', () => {
-  const sessionId = ui.sessionInput.value.trim();
-  if (!isSessionId(sessionId)) {
-    ui.error.textContent = 'Código de sessão inválido: são 22 caracteres (letras, números, "-" ou "_").';
+  const invite = ui.sessionInput.value.trim();
+  if (!isToken(invite)) {
+    ui.error.textContent = 'Convite inválido: são 43 caracteres (letras, números, "-" ou "_").';
     ui.error.hidden = false;
     return;
   }
-  startCall({ kind: 'join', sessionId });
+  ui.sessionInput.value = ''; // uso único: não manter o convite na página
+  startCall({ kind: 'join', invite });
 });
 
 ui.end.addEventListener('click', () => call?.end());
@@ -304,8 +350,8 @@ ui.listen.addEventListener('change', () => audio.applyOutput());
 ui.volume.addEventListener('input', () => audio.applyOutput());
 
 ui.copy.addEventListener('click', () => {
-  void navigator.clipboard?.writeText(ui.inviteLink.href).then(
-    () => log('Link copiado.'),
+  void navigator.clipboard?.writeText(ui.inviteLink.hidden ? (ui.inviteToken.textContent ?? '') : ui.inviteLink.href).then(
+    () => log('Convite copiado.'),
     () => log('Não foi possível copiar o link.'),
   );
 });
@@ -317,27 +363,37 @@ window.addEventListener('pagehide', () => call?.end());
 
 ui.env.textContent = `${location.origin} · contexto seguro: ${window.isSecureContext ? 'sim' : 'NÃO'} · sinalização: ${signalingUrl(location)}`;
 
-// Convite via fragmento (#s=...): não vai para o servidor nem para o Referer. Removido da barra de endereço.
-function readInviteFromHash(): void {
-  const fromHash = new URLSearchParams(location.hash.slice(1)).get('s');
-  if (!fromHash) return;
+// Segredos via fragmento (#op=… do operador, #i=… do convite): não vão ao servidor nem ao Referer e
+// são removidos da barra de endereço e do histórico (replaceState). Nunca são registrados no log.
+function readSecretsFromHash(): void {
+  const params = new URLSearchParams(location.hash.slice(1));
+  const op = params.get('op');
+  const invite = params.get('i');
+  if (op === null && invite === null) return;
   history.replaceState(null, '', location.pathname);
-  if (!isSessionId(fromHash)) {
-    log('Link de convite com código inválido ignorado.');
-    return;
+  if (op !== null) {
+    if (isToken(op)) {
+      operatorKey = op;
+      log('Modo operador habilitado nesta página.');
+    } else {
+      log('Link de operador inválido ignorado.');
+    }
   }
-  if (call && ACTIVE.includes(call.phase)) return; // não troca o código no meio de uma chamada
-  ui.sessionInput.value = fromHash;
-  log('Código de sessão preenchido pelo link de convite.');
+  if (invite !== null) {
+    if (!isToken(invite)) log('Link de convite inválido ignorado.');
+    else if (!(call && ACTIVE.includes(call.phase))) {
+      ui.sessionInput.value = invite; // não troca o convite no meio de uma chamada
+      log('Convite preenchido pelo link.');
+    }
+  }
+  ui.operatorHint.hidden = operatorKey !== null;
+  if (call === null || !ACTIVE.includes(call.phase)) {
+    ui.create.disabled = operatorKey === null;
+  }
 }
-readInviteFromHash();
+readSecretsFromHash();
 // O link também pode ser aberto numa aba que já está nesta página (só o fragmento muda).
-window.addEventListener('hashchange', readInviteFromHash);
-
-function isLoopbackPage(): boolean {
-  return ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
-}
-if (isLoopbackPage()) log('Página aberta em loopback: o convite mostra só o código (sem acesso externo nesta etapa).');
+window.addEventListener('hashchange', readSecretsFromHash);
 
 renderPhase('idle');
 renderStats(null);

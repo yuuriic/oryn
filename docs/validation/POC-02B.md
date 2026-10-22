@@ -5,8 +5,8 @@
 | Branch | `poc/webrtc-audio-wan`, criada a partir de `main` em `f068509` (PR #3 da POC-02A) |
 | Código | `poc/webrtc-audio-wan/` |
 | Relação com o ARCHITECTURE.md | P02 (§14): travessia de NAT, CGNAT, TURN e UDP bloqueado; credenciais TURN temporárias (§9.1) |
-| Incremento atual | **02B.2A — remoção da CA local e CI** (§7) |
-| Status | **02B.1 aprovado. 02B.2A aguardando revisão do arquiteto.** Exposição pública **proibida** antes da aprovação do 02B.2B (§7.7) |
+| Incremento atual | **02B.2B — segurança da sinalização pública** (§8) |
+| Status | **02B.1 e 02B.2A aprovados. 02B.2B aguardando revisão do arquiteto.** Exposição pública **proibida** até a aprovação e o cumprimento dos critérios de §8.8 |
 
 Legenda:
 - **[Observado]:** medido em execução pelo agente.
@@ -49,9 +49,9 @@ internet.
 | Incremento | Conteúdo | Situação |
 |---|---|---|
 | **02B.1** | Cópia isolada da POC-02A, baseline de testes, este documento | **Concluído e aprovado** |
-| **02B.2A** | Remoção da CA local e do HTTPS local; HTTP só em loopback; CI da POC-02B | **Concluído; em revisão** (§7) |
-| 02B.2B | Configuração por ambiente (falha fechada) e `Host`/`Origin` para o hostname público | Não iniciado |
-| 02B.3 | Admissão e controle de abuso: criação só pelo operador, convite de uso único, tetos, expiração (A2, A8) | Não iniciado |
+| **02B.2A** | Remoção da CA local e do HTTPS local; HTTP só em loopback; CI da POC-02B | **Concluído e aprovado** (§7) |
+| **02B.2B** | Admissão (operador e convites), allowlist pública fechada por padrão, `Host`/`Origin` coerentes, limites contra abuso | **Concluído; em revisão** (§8) |
+| 02B.3 | ~~Admissão e controle de abuso~~ **antecipado para o 02B.2B**; resta a proteção na borda (Access/WAF), a definir com o túnel | Parcial |
 | 02B.4 | Credenciais TURN emitidas no servidor (TTL, revogação, provedor simulado nos testes) | Não iniciado |
 | 02B.5 | Cliente: `iceServers`, modos `auto`/`direto`/`relay`/`relay-tls`, estados `disconnected`/`failed` (A6), métricas de relay | Não iniciado |
 | 02B.6 | Exposição via Cloudflare Tunnel (runbook) | Não iniciado |
@@ -122,7 +122,7 @@ alterados pela cópia.
 | Uso indevido da CA local herdada | — | **Eliminado:** CA removida no 02B.2A |
 | CI ainda não executado no GitHub | Baixa | Lógica testada localmente; aprovação depende de execução real após o push |
 | `poc-02a-ci.yml` marcado como obrigatório (filtro de caminho no PR) | Média, se ocorrer | Não marcar; usar só `POC-02B CI (resultado)` como obrigatório |
-| Limites por cliente atrás do túnel (todas as conexões vêm de `127.0.0.1`) | Média | Tratar no 02B.3 sem confiar em cabeçalhos não verificados |
+| Limites por cliente atrás do túnel (todas as conexões vêm de `127.0.0.1`) | Média | 02B.2B usa limites globais e não confia em cabeçalhos; proteção na borda é critério de exposição (§8.7, §8.8) |
 | Franquia e disponibilidade do TURN da Cloudflare | Média | Confirmados em documentação: 1.000 GB/mês grátis e US$ 0,05/GB. Ainda **não verificados na conta**: se exige forma de pagamento e se há limites da conta |
 
 ## 5. Matriz inicial de testes (a executar nos incrementos seguintes)
@@ -152,7 +152,7 @@ Registradas sem antecipar implementação. Cabem ao arquiteto e ao usuário.
    pagamento.
 2. **Domínio:** túnel nomeado com domínio próprio (URL fixa; permite Cloudflare Access) ou Quick Tunnel (URL
    aleatória, limite de 200 requisições simultâneas, sem garantia de disponibilidade).
-3. **Autenticação mínima:** só criação pelo loopback com convite de uso único, ou também Cloudflare Access.
+3. **Autenticação mínima:** criação pelo operador (chave efêmera + `Host` local) e convite de uso único **implementados no 02B.2B**. Pendente: usar também Cloudflare Access ou rate limiting na borda (critério 4 de §8.8).
 4. ~~Destino do modo HTTPS/CA local herdado.~~ **Resolvida:** removido no 02B.2A.
 5. **ICE restart:** nesta POC ou na seguinte.
 6. **Comportamento na queda da sinalização (teste 8):** encerrar de forma limpa (comportamento atual) ou manter o
@@ -273,3 +273,166 @@ abrir qualquer porta, em vez de ser ignorada.
 
 **Nenhum serviço da POC-02B pode ser exposto na internet antes da aprovação do 02B.2B.** A exposição pelo túnel
 (02B.6) depende também da admissão e do controle de abuso (02B.3), pela severidade do achado A2.
+
+## 8. Incremento 02B.2B — segurança da sinalização pública
+
+**Pré-condições verificadas [Observado]:**
+- branch `poc/webrtc-audio-wan`, working tree limpa;
+- HEAD `87d57d5`, commit assinado do 02B.2A;
+- CI `POC-02B CI` com `success` em `87d57d5` (push e PR).
+
+**Nada foi exposto à internet.** O servidor continua escutando só em loopback.
+
+### 8.1 Modelo de ameaças
+
+| Ator / vetor | Objetivo | Controle no 02B.2B |
+|---|---|---|
+| Visitante remoto pelo hostname público (futuro túnel) | Criar sessões, entrar sem convite, ouvir a chamada | Criação só com chave do operador **e** `Host` local; entrada só com convite de uso único; 2 participantes |
+| Quem recebe, intercepta ou vê o link do convite | Entrar no lugar do convidado | Convite de uso único, 10 min, revogado ao emitir outro ou ao fim da sessão; o operador vê a entrada e pode encerrar (risco residual, §8.7) |
+| Site malicioso no navegador do usuário (CSWSH) | Usar a sinalização com a sessão do usuário | `Origin` obrigatório no WebSocket e coerente com o `Host`; `null` e ausente recusados |
+| DNS rebinding contra o loopback | Ler a página ou a API locais por outro domínio | `Host` exato (loopback:porta ou hostname público da allowlist); desconhecido → 421 |
+| Host spoofing / cabeçalhos de proxy forjados | Fingir ser local ou outro cliente | `X-Forwarded-*` e `CF-Connecting-IP` **nunca lidos**; a zona vem só do `Host` validado |
+| Força bruta da chave do operador ou de convites | Obter acesso | 256 bits; 3 falhas fecham a conexão; 5 falhas locais em 60 s bloqueiam o operador por 60 s |
+| Esgotamento de recursos | Negar serviço | Até 3 sessões e 8 conexões; admissão em 10 s; rate limit com janela deslizante; 16 KiB por mensagem; expiração de sessões ociosas |
+| Vazamento por logs | Expor segredos | Nenhum token, chave, ID completo de sessão, SDP ou IP em logs; recusas amostradas |
+
+**Fronteira de confiança:** atrás do túnel, todas as conexões chegam de `127.0.0.1`. O endereço da conexão, portanto,
+**não identifica cliente nem prova origem local**. O que diferencia o acesso local do público é o `Host` validado,
+desde que o túnel preserve o `Host` público (§8.8). Mesmo assim, a criação de sessões exige também a chave.
+
+### 8.2 Fluxos de admissão
+
+**Operador (PC):**
+1. O servidor gera, a cada início, uma **chave efêmera** de 256 bits e guarda só o SHA-256. A chave aparece uma
+   vez no terminal, no link `http://localhost:5280/#op=<chave>`.
+2. A página lê a chave do fragmento, mantém só em memória (nunca em `localStorage`/`sessionStorage`) e a remove da
+   barra de endereço e do histórico com `history.replaceState`.
+3. `create { operatorKey }`: o servidor exige `Host` local e compara a chave em tempo constante. Cria a sessão
+   (operador = host) e emite **um convite**.
+4. `invite` (operador na sessão): emite um novo convite e **revoga o anterior**. Não é emitido se a vaga de
+   convidado estiver ocupada (`session-full`).
+5. `rejoin { sessionId, operatorKey }`: o operador volta à vaga de host da própria sessão.
+
+**Convidado (celular):**
+1. Recebe `https://<hostname público>/#i=<convite>` (ou o código). O fragmento não vai ao servidor nem ao
+   Referer; a página o remove da URL.
+2. `join { invite }`: o servidor verifica e **consome** o convite na mesma chamada síncrona, que é atômica no
+   Node; o convidado ocupa só a vaga de convidado.
+
+### 8.3 Políticas de expiração, reentrada e limites
+
+| Item | Política (padrão) |
+|---|---|
+| Chave do operador | Válida até o servidor encerrar; trocada a cada início; só o hash em memória |
+| Convite | Uso único; **10 min**; um ativo por sessão; revogado ao emitir outro ou quando a sessão termina |
+| Reentrada do operador | `rejoin` com chave + ID da sessão, se a vaga de host estiver livre |
+| Reentrada do convidado | **Novo convite** do operador (convites não são reaproveitáveis) |
+| Sessão | Até 2 participantes; expira após 10 min com um participante só; termina quando fica vazia |
+| Sessões simultâneas | 3 (`server-busy` acima disso) |
+| Conexões WebSocket simultâneas | 8 (upgrade recusado com 503 acima disso; limite global, não por IP) |
+| Prazo de admissão | 10 s para entrar numa sessão, verificado no heartbeat; vale também para quem sai e continua conectado (1008) |
+| Falhas de autorização | 3 na mesma conexão → fechamento (1008); 5 chaves erradas locais em 60 s → bloqueio do operador por 60 s. Tentativas pelo hostname público não contam para o bloqueio, para não permitir que alguém de fora bloqueie o operador |
+| Mensagens | 16 KiB; token bucket de 60 de rajada e 20/s; 3 violações em 10 s → fechamento (1008). Antes as strikes nunca expiravam (A8) |
+| Logs de recusa | No máximo 1 linha a cada 10 s, com contador de suprimidas |
+
+### 8.4 Configuração de hostnames públicos
+
+- `ORYN_PUBLIC_HOSTNAMES`: lista separada por vírgulas, lida por `server/index.ts`. **Ausente ou vazia = acesso
+  público fechado.**
+- **Validação na partida:** um valor inválido impede o servidor de subir. Só **nomes DNS exatos**, normalizados para
+  minúsculas: sem curinga (`*.`), IP, esquema, porta ou caminho, `localhost` ou nome sem domínio.
+- **`Host` aceito:**
+  - zona **local**: `127.0.0.1:porta`, `[::1]:porta` (conforme o bind) e `localhost:porta`;
+  - zona **pública**: exatamente o hostname, sem porta.
+  - Subdomínios, sufixos enganosos, porta explícita e ponto final são recusados (421).
+- **`Origin`:** zona local exige `http://<Host>`; zona pública exige `https://<Host>`.
+  - **WebSocket:** `Origin` obrigatório.
+  - **HTTP:** pode faltar (navegação), mas, se vier, precisa corresponder ao `Host` (senão 403).
+- O convite emitido ao operador traz `publicOrigin = https://<primeiro hostname>`, usado no link e no QR.
+
+### 8.5 Segurança de tokens
+
+- **Geração:** `crypto.randomBytes(32)` em base64url (43 caracteres).
+- **Armazenamento:** no servidor, só **hashes SHA-256** (chave e convites).
+- **Comparação:** em tempo constante na chave do operador; convites por busca do hash.
+- **Frontend:** nenhum segredo administrativo no bundle; a chave só chega à página do operador pelo fragmento do
+  link do terminal.
+- **Navegador:** sem `localStorage`/`sessionStorage`; fragmento removido com `replaceState`; `Referrer-Policy:
+  no-referrer`; CSP restritiva. O campo do convite é limpo ao entrar.
+- **Mensagens de erro:** genéricas (`unauthorized`, `invite-invalid`). Não revelam se o convite existiu, expirou ou
+  foi usado.
+- **Riscos residuais de convites por URL:** §8.7.
+
+### 8.6 Matriz de testes [Observado, 22/10/2026]
+
+| Requisito | Onde | Casos |
+|---|---|---|
+| Convite válido, expirado, revogado, reutilizado | `admission.test.ts`, `registry.test.ts`, `call.test.ts`, E2E | Unitários e integração; E2E com terceiro participante recusado |
+| Concorrência no consumo do mesmo convite | `admission.test.ts`, `registry.test.ts`, `abuse.test.ts` | 20 consumos simultâneos (1 sucesso); 10 joins; **6 clientes reais** enviando o mesmo convite (1 entra, 5 `invite-invalid`) |
+| Criação sem autorização | `registry.test.ts`, `public-access.test.ts` | Chave errada; chave certa pelo hostname público (via proxy) → `unauthorized` |
+| `Host` e `Origin` válidos e inválidos | `public-access.test.ts`, `host-header.test.ts`, `server.integration.test.ts`, `server-host.test.ts` | Esquema errado, cruzado, `null`, ausente, porta, subdomínio, sufixo, caixa |
+| Configuração pública ausente | `public-access.test.ts`, `server-host.test.ts` | Fechado por padrão, inclusive via proxy com `X-Forwarded-Host` local |
+| Limite de sessões e participantes | `registry.test.ts`, `abuse.test.ts`, `server.integration.test.ts` | `server-busy`; terceiro recusado; `session-full` no novo convite |
+| Rate limiting | `abuse.test.ts`, `server.integration.test.ts` | Janela deslizante (violações espaçadas não fecham; 3 na janela fecham) |
+| Desconexão e limpeza | `abuse.test.ts`, `registry.test.ts` | Sessão e convites somem; admissão vencida; conexões liberadas |
+| Reentrada legítima | `registry.test.ts`, `call.test.ts`, `call-queue.test.ts`, E2E | Operador (`rejoin`) e convidado (novo convite), com áudio nos dois sentidos no E2E |
+| Atrás de proxy local simulado | `public-access.test.ts` | Proxy reverso que reescreve `Host` e injeta `X-Forwarded-*`/`CF-Connecting-IP`; o limite global vale para "IPs" diferentes |
+| DNS rebinding e Host spoofing | `public-access.test.ts`, `host-header.test.ts` | 5 variantes de `Host` + cabeçalhos de proxy ignorados |
+| Segredos fora dos logs | `registry.test.ts`, `abuse.test.ts`, E2E | Chave, convites, IDs, SDP; recusas amostradas |
+
+**Resultados:**
+
+| Verificação | Resultado |
+|---|---|
+| `pnpm install --frozen-lockfile` | OK |
+| `pnpm typecheck` | OK |
+| `pnpm test` | **243/243**, 13 arquivos, nenhum pulado (`abuse` 10, `admission` 14, `public-access` 26 novos; `protocol` 40, `registry` 23 reescrito) |
+| Arquivos sensíveis a tempo (`abuse`, `public-access`) repetidos 3 vezes | 36/36 nas três |
+| `pnpm build` | OK (JS 37,71 kB, 13,50 kB gzip) |
+| `pnpm audit` | Nenhuma vulnerabilidade conhecida |
+| `pnpm e2e` | **35/35** em duas execuções: Chrome 155.0.8059.85 (operador) ↔ Edge 155.0.4283.62 (convidado); convite de uso único; reentrada do operador e do convidado; chave e convites ausentes de logs |
+
+**Mutações (todas detectadas):**
+
+| Mutação | Testes que falharam |
+|---|---|
+| Chave aceita por `Host` público | 5 |
+| Convite reutilizável | 9 |
+| `Origin` sempre aceito | 7 |
+| Sem teto de conexões | 2 |
+| Sem prazo de admissão | 2 |
+| `Host` desconhecido tratado como público | 22 |
+
+**Defeito encontrado pelo E2E e corrigido:** o botão "Novo convite" ficava dentro do bloco do convite, oculto depois
+de "Voltar à sessão"; o operador não conseguia emitir convite. Agora o botão aparece para o operador em sessão.
+
+**CI:** o workflow foi preservado sem alterações. Os novos testes rodam nos jobs `checks` (Ubuntu e Windows) e
+`e2e` (Windows) já existentes. **[Não executado]** a execução no GitHub com estas mudanças depende do commit e do
+push do usuário.
+
+### 8.7 Riscos residuais
+
+| Risco | Severidade | Situação |
+|---|---|---|
+| **Convite por URL:** quem obtiver o link (app de mensagens, captura de tela, QR visto por terceiros, área de transferência) pode entrar antes do convidado legítimo. Não há aprovação manual da entrada | Média | Uso único, 10 min, revogação, 2 vagas. O operador percebe a entrada e pode encerrar. Opção futura: confirmação do operador antes de admitir |
+| **Chave do operador no terminal:** fica no histórico do terminal e pode vazar por compartilhamento de tela ou redirecionamento de saída | Média | Efêmera (troca a cada início), só local; exige também `Host` local. Não compartilhar o link |
+| **Negação de serviço pelo hostname público:** conexões sem convite podem ocupar as 8 vagas por até cerca de 10 s cada, de forma repetida | Média, ao expor | Limite global e prazo de admissão; **proteção na borda (Cloudflare Access ou rate limiting) é critério de exposição** (§8.8) |
+| **Sem limites por cliente:** atrás do túnel não há identidade de cliente confiável | Média, ao expor | `CF-Connecting-IP` só poderia ser usado se a origem fosse comprovadamente o túnel. Fica para avaliação com a configuração real |
+| Túnel configurado para reescrever o `Host` para `localhost` | Alta, se ocorrer | O tráfego público seria classificado como local. A chave continua exigida, mas uma camada se perde. **Critério de exposição** |
+| XSS na página do operador exporia a chave em memória | Baixa | CSP `script-src 'self'`, nenhum HTML dinâmico (`textContent`), sem dependências de UI além de `uqr` |
+| Bloqueio do operador por um processo local malicioso | Baixa | Exige acesso ao próprio PC; bloqueio dura só 60 s |
+
+### 8.8 Critérios para permitir a futura exposição pública (02B.6)
+
+Todos obrigatórios, sujeitos à aprovação do arquiteto:
+
+1. 02B.2B aprovado e `POC-02B CI` verde no GitHub com este código.
+2. Túnel com **um único hostname**, entrada para `http://127.0.0.1:5280` e **sem reescrita do `Host`** (o
+   `cloudflared` deve preservar o hostname público); regra final devolvendo 404 para o resto.
+3. `ORYN_PUBLIC_HOSTNAMES` com exatamente esse hostname, conferido no banner de partida do servidor.
+4. **Proteção na borda:** Cloudflare Access ou, no mínimo, rate limiting/WAF na Cloudflare para o hostname
+   (decisão pendente, §6).
+5. Exposição só durante a janela de teste; túnel e servidor encerrados ao fim.
+6. Link do operador nunca compartilhado; convite enviado por canal privado e entrada conferida pelo operador.
+7. Revisão dos logs do servidor e do túnel após o teste (sem segredos).
+8. TURN não exposto antes do 02B.4.

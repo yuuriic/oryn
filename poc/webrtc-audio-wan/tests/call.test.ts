@@ -11,17 +11,19 @@ interface Probe {
   stats: (CallStats | null)[];
   remote: unknown[];
   session: { sessionId: string; role: string; epoch: number } | null;
+  invite: string | null;
   cb: CallCallbacks;
 }
 
 function probe(): Probe {
-  const p: Probe = { phases: [], errors: [], logs: [], stats: [], remote: [], session: null, cb: undefined as unknown as CallCallbacks };
+  const p: Probe = { phases: [], errors: [], logs: [], stats: [], remote: [], session: null, invite: null, cb: undefined as unknown as CallCallbacks };
   p.cb = {
     onPhase: (phase, error) => {
       p.phases.push(phase);
       if (error) p.errors.push(error);
     },
     onSession: (info) => (p.session = info),
+    onInvite: (invite) => (p.invite = invite.token),
     onPeerStates: () => undefined,
     onLocalStream: () => undefined,
     onRemoteStream: (s) => p.remote.push(s),
@@ -50,10 +52,10 @@ async function connectedPair() {
   const guestP = probe();
   const host = new PeerCall(hostH.deps, hostP.cb);
   const guest = new PeerCall(guestH.deps, guestP.cb);
-  await host.start({ kind: 'create' });
+  await host.start({ kind: 'create', operatorKey: hub.operatorKey });
   await settle();
   expect(host.phase).toBe('waiting-peer');
-  await guest.start({ kind: 'join', sessionId: hostP.session!.sessionId });
+  await guest.start({ kind: 'join', invite: hostP.invite! });
   await settle();
   return { host, guest, hostH, guestH, hostP, guestP };
 }
@@ -119,9 +121,10 @@ describe('negociação simulada (teste 5)', () => {
 
     const newH = harness(hub);
     const newcomer = new PeerCall(newH.deps, probe().cb);
-    await newcomer.start({ kind: 'join', sessionId: guestP.session!.sessionId });
+    // Só o operador ocupa a vaga de host: ele volta à própria sessão (rejoin).
+    await newcomer.start({ kind: 'rejoin', sessionId: guestP.session!.sessionId, operatorKey: hub.operatorKey });
     await settle();
-    expect(newcomer.currentRole).toBe('host'); // vaga do host foi ocupada pelo recém-chegado
+    expect(newcomer.currentRole).toBe('host'); // o operador retomou a vaga de host
     expect(guest.currentEpoch).toBe(2);
     expect(guestH.pcs).toHaveLength(2);
     expect(guest.phase).toBe('connected');
@@ -167,7 +170,7 @@ describe('ciclo de vida de recursos e timers (teste 6)', () => {
     const stream = new FakeStream();
     const h = harness(hub, { gum: async () => (await g.promise, stream) });
     const call = new PeerCall(h.deps, probe().cb);
-    const started = call.start({ kind: 'create' });
+    const started = call.start({ kind: 'create', operatorKey: hub.operatorKey });
     await settle();
     call.end();
     g.release();
@@ -184,7 +187,7 @@ describe('ciclo de vida de recursos e timers (teste 6)', () => {
     const hostP = probe();
     const host = new PeerCall(hostH.deps, hostP.cb);
     const guest = new PeerCall(guestH.deps, probe().cb);
-    await host.start({ kind: 'create' });
+    await host.start({ kind: 'create', operatorKey: hub.operatorKey });
     await settle();
     // Segura a aplicação da offer no guest.
     const hold = gate();
@@ -194,7 +197,7 @@ describe('ciclo de vida de recursos e timers (teste 6)', () => {
       pc.gates['setRemoteDescription'] = hold;
       return pc as unknown as RTCPeerConnection;
     };
-    await guest.start({ kind: 'join', sessionId: hostP.session!.sessionId });
+    await guest.start({ kind: 'join', invite: hostP.invite! });
     await settle();
     expect(guest.phase).toBe('negotiating');
     guest.end();
@@ -210,12 +213,12 @@ describe('ciclo de vida de recursos e timers (teste 6)', () => {
     const hostH = harness(hub);
     const hostP = probe();
     const host = new PeerCall(hostH.deps, hostP.cb);
-    await host.start({ kind: 'create' });
+    await host.start({ kind: 'create', operatorKey: hub.operatorKey });
     await settle();
     // Um guest "mudo": entra na sessão mas nunca responde.
     const silent = hub.create({ onMessage: () => undefined, onDisconnected: () => undefined, onInvalid: () => undefined });
     await silent.connect();
-    silent.send({ type: 'join', sessionId: hostP.session!.sessionId });
+    silent.send({ type: 'join', invite: hostP.invite! });
     await settle();
     expect(host.phase).toBe('negotiating');
     await vi.advanceTimersByTimeAsync(20_000);
@@ -255,37 +258,38 @@ describe('tratamento de erros (teste 8)', () => {
     const h = harness(hub, { gum: () => Promise.reject(Object.assign(new Error('x'), { name: 'NotAllowedError' })) });
     const p = probe();
     const call = new PeerCall(h.deps, p.cb);
-    await call.start({ kind: 'create' });
+    await call.start({ kind: 'create', operatorKey: hub.operatorKey });
     expect(call.phase).toBe('failed');
     expect(p.errors[0]).toMatch(/Permissão de microfone negada/);
     expect(h.signalings).toHaveLength(0);
   });
 
-  it('sessão inexistente ou cheia: falha e libera o microfone', async () => {
+  it('convite inexistente ou já usado: falha e libera o microfone', async () => {
     const h = harness(hub);
     const p = probe();
     const call = new PeerCall(h.deps, p.cb);
-    await call.start({ kind: 'join', sessionId: 'X'.repeat(22) });
+    await call.start({ kind: 'join', invite: 'X'.repeat(43) });
     await settle();
     expect(call.phase).toBe('failed');
-    expect(p.errors[0]).toMatch(/não encontrada/);
+    expect(p.errors[0]).toMatch(/Convite inválido/);
     expect(h.streams[0]!.track.readyState).toBe('ended');
 
     const { hostP } = await connectedPair();
     const thirdH = harness(hub);
     const thirdP = probe();
     const third = new PeerCall(thirdH.deps, thirdP.cb);
-    await third.start({ kind: 'join', sessionId: hostP.session!.sessionId });
+    // O convite já foi consumido pelo convidado: uso único.
+    await third.start({ kind: 'join', invite: hostP.invite! });
     await settle();
     expect(third.phase).toBe('failed');
-    expect(thirdP.errors[0]).toMatch(/dois participantes/);
+    expect(thirdP.errors[0]).toMatch(/Convite inválido/);
   });
 
   it('falha ao conectar na sinalização: falha e libera o microfone', async () => {
     const h = harness(hub, { failConnect: true });
     const p = probe();
     const call = new PeerCall(h.deps, p.cb);
-    await call.start({ kind: 'create' });
+    await call.start({ kind: 'create', operatorKey: hub.operatorKey });
     expect(call.phase).toBe('failed');
     expect(h.streams[0]!.track.readyState).toBe('ended');
   });

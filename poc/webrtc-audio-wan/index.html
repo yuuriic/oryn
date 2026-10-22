@@ -28,22 +28,30 @@
       <section class="card" aria-labelledby="session-title">
         <h2 id="session-title">Sessão</h2>
         <div class="row">
-          <button id="btn-create" type="button" data-testid="btn-create">Criar sessão</button>
+          <button id="btn-create" type="button" data-testid="btn-create" disabled>Criar sessão</button>
+          <button id="btn-rejoin" type="button" data-testid="btn-rejoin" hidden>Voltar à sessão</button>
           <span class="muted">ou</span>
           <label class="grow">
-            <span class="visually-hidden">Código da sessão</span>
-            <input id="inp-session" type="text" inputmode="text" autocomplete="off" spellcheck="false" maxlength="22"
-              placeholder="Código da sessão (22 caracteres)" data-testid="inp-session" />
+            <span class="visually-hidden">Convite</span>
+            <input id="inp-session" type="text" inputmode="text" autocomplete="off" spellcheck="false" maxlength="43"
+              placeholder="Convite (43 caracteres)" data-testid="inp-session" />
           </label>
           <button id="btn-join" type="button" data-testid="btn-join">Entrar</button>
         </div>
+        <p id="operator-hint" class="muted small" data-testid="operator-hint">
+          Para criar uma sessão, abra o link do operador exibido no terminal do servidor (só neste computador).
+        </p>
 
         <div id="invite" class="invite" hidden data-testid="invite">
-          <p>Abra no celular lendo o QR code ou digitando o endereço:</p>
-          <div id="qr" class="qr" aria-label="QR code do convite"></div>
-          <p><a id="invite-link" class="mono break" data-testid="invite-link" rel="noreferrer"></a></p>
-          <button id="btn-copy" type="button">Copiar link</button>
+          <p id="invite-intro">Convite de uso único para o celular:</p>
+          <div id="qr" class="qr" aria-label="QR code do convite" hidden></div>
+          <p><a id="invite-link" class="mono break" data-testid="invite-link" rel="noreferrer" hidden></a></p>
+          <p class="small">Código do convite: <span id="invite-token" class="mono break" data-testid="invite-token"></span></p>
+          <p class="small muted" id="invite-expiry" data-testid="invite-expiry"></p>
+          <button id="btn-copy" type="button">Copiar</button>
         </div>
+        <!-- Fora do bloco do convite: após "Voltar à sessão" não há convite exibido, mas o operador precisa pedir um. -->
+        <button id="btn-invite" type="button" data-testid="btn-invite" hidden>Novo convite</button>
         <p id="session-code" class="mono small" hidden data-testid="session-code"></p>
       </section>
 

@@ -6,6 +6,10 @@
 //   túnel HTTPS público (Cloudflare Tunnel, incremento futuro): o TLS termina na Cloudflare e o túnel
 //   entrega o tráfego a este listener em loopback.
 // - WebSocket no caminho /ws do mesmo host/porta.
+// - 02B.2B: admissão por chave do operador e convites de uso único; hostnames públicos só por allowlist
+//   explícita (fechada por padrão); Origin precisa corresponder ao Host; limites independentes de IP.
+//   Cabeçalhos de proxy (X-Forwarded-*, CF-Connecting-IP) NUNCA são lidos: atrás do túnel todas as
+//   conexões vêm de 127.0.0.1 e esses cabeçalhos não têm fronteira de confiança verificável aqui.
 
 import { randomBytes } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -15,8 +19,9 @@ import { join, relative, sep } from 'node:path';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { MAX_MESSAGE_BYTES, parseClientMessage, type ServerMessage } from '../src/protocol.ts';
+import { Admission, newToken } from './admission.ts';
 import { TokenBucket } from './rate-limit.ts';
-import { SessionRegistry, type Participant } from './registry.ts';
+import { SessionRegistry, type ConnectionContext, type Participant } from './registry.ts';
 
 export interface ServerConfig {
   distDir: string;
@@ -26,16 +31,34 @@ export interface ServerConfig {
    * qualquer outro valor, incluindo "localhost", é rejeitado antes de abrir listeners.
    */
   httpHost?: string;
+  /** SHA-256 da chave efêmera do operador. Ausente = ninguém cria sessões (fechado por padrão). */
+  operatorKeyHash?: Buffer;
+  /**
+   * Hostnames públicos autorizados (ex.: o do túnel). Ausente/vazio = nenhum acesso público.
+   * Somente nomes DNS exatos: sem curingas, IPs, portas ou "localhost".
+   */
+  publicHostnames?: readonly string[];
   maxSessions?: number;
+  /** Conexões WebSocket simultâneas (todas chegam de 127.0.0.1 atrás do túnel; limite global). */
+  maxConnections?: number;
+  /** Prazo para uma conexão entrar numa sessão (create/rejoin/join); depois disso é encerrada. */
+  admissionTimeoutMs?: number;
+  inviteTtlMs?: number;
+  /** Falhas de autorização por conexão antes de encerrá-la. */
+  maxAuthFailures?: number;
   idleTimeoutMs?: number;
   heartbeatMs?: number;
-  rateLimit?: { capacity: number; refillPerSecond: number };
+  /** violationWindowMs: janela das violações do rate limit (3 na janela encerram a conexão). Padrão 10 s. */
+  rateLimit?: { capacity: number; refillPerSecond: number; violationWindowMs?: number };
   log?: (line: string) => void;
 }
 
 export interface RunningServer {
   httpOrigin: string;
+  /** https://<primeiro hostname público>, ou null quando o acesso público está fechado. */
+  publicOrigin: string | null;
   registry: SessionRegistry;
+  admission: Admission;
   close(): Promise<void>;
 }
 
@@ -146,6 +169,41 @@ export function checkHost(host: string | undefined, allowed: ReadonlySet<string>
   return allowed.has(host.toLowerCase()) ? 'ok' : 'unknown';
 }
 
+const DNS_LABEL = /^(?!-)[a-z0-9-]{1,63}(?<!-)$/;
+
+/**
+ * Valida um hostname público da allowlist e devolve a forma normalizada (minúscula).
+ * Recusa curingas, IPs, portas, "localhost", nomes sem domínio e caracteres inválidos.
+ */
+export function validatePublicHostname(raw: string): string {
+  const host = raw.trim().toLowerCase();
+  const fail = (why: string): never => {
+    throw new Error(`Hostname público inválido "${raw}": ${why}.`);
+  };
+  if (host === '' || host.length > 253) fail('vazio ou longo demais');
+  if (host.includes('*')) fail('curingas não são permitidos');
+  if (host.includes(':') || host.includes('/')) fail('informe só o nome, sem esquema, porta ou caminho');
+  if (isIP(host) !== 0) fail('IPs não são permitidos; use o nome DNS do túnel');
+  if (host === 'localhost' || host.endsWith('.localhost')) fail('"localhost" não é público');
+  const labels = host.split('.');
+  if (labels.length < 2 || !labels.every((l) => DNS_LABEL.test(l))) fail('nome DNS inválido');
+  return host;
+}
+
+export type Zone = 'local' | 'public';
+export type OriginCheck = 'ok' | 'missing' | 'mismatch';
+
+/**
+ * O Origin deve corresponder exatamente ao Host da mesma requisição: http://<host local> ou
+ * https://<host público>. "null" e combinações cruzadas (Host público com Origin local e vice-versa)
+ * são recusadas. Origin ausente só é aceito quando a semântica da requisição permite (navegação HTTP).
+ */
+export function checkOrigin(origin: string | undefined, host: string, zone: Zone, required: boolean): OriginCheck {
+  if (origin === undefined || origin === '') return required ? 'missing' : 'ok';
+  const expected = `${zone === 'local' ? 'http' : 'https'}://${host.toLowerCase()}`;
+  return origin.toLowerCase() === expected ? 'ok' : 'mismatch';
+}
+
 export async function startServer(config: ServerConfig): Promise<RunningServer> {
   const log = config.log ?? ((line: string) => console.log(line));
   const httpHost = config.httpHost ?? '127.0.0.1';
@@ -155,28 +213,72 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
     throw new Error('Opção "https" removida na POC-02B: não há TLS local nem CA própria; o acesso externo será pelo túnel público.');
   }
   assertLoopbackHttpHost(httpHost);
+  // Allowlist pública validada antes de abrir qualquer listener (configuração inválida = não sobe).
+  const publicHosts = new Set((config.publicHostnames ?? []).map(validatePublicHostname));
+  const publicOrigin = publicHosts.size > 0 ? `https://${[...publicHosts][0]}` : null;
   const files = loadStaticFiles(config.distDir);
 
+  const admission = new Admission({
+    operatorKeyHash: config.operatorKeyHash ?? null,
+    inviteTtlMs: config.inviteTtlMs ?? 10 * 60_000,
+    maxOperatorFailures: 5,
+    failureWindowMs: 60_000,
+    lockoutMs: 60_000,
+    now: Date.now,
+    randomToken: newToken,
+  });
   const registry = new SessionRegistry({
-    maxSessions: config.maxSessions ?? 20,
+    maxSessions: config.maxSessions ?? 3,
     idleTimeoutMs: config.idleTimeoutMs ?? 10 * 60_000,
+    maxAuthFailures: config.maxAuthFailures ?? 3,
+    admission,
+    publicOrigin,
     now: Date.now,
     randomId: newSessionId,
     log: (event) => log(`[sinalização] ${event}`),
   });
+  const maxConnections = config.maxConnections ?? 8;
+  const admissionTimeoutMs = config.admissionTimeoutMs ?? 10_000;
 
-  const allowedOrigins = new Set<string>();
-  // Hosts aceitos, preenchidos após o bind (com a porta efetiva). Antes disso, tudo é recusado.
+  // Hosts locais aceitos, preenchidos após o bind (com a porta efetiva). Antes disso, tudo é recusado.
   const httpHosts = new Set<string>();
+
+  /** Zona do Host validado: local (loopback:porta) ou público (allowlist exata, sem porta). */
+  const zoneOf = (host: string | undefined): Zone | 'missing' | 'unknown' => {
+    if (host === undefined || host === '') return 'missing';
+    const h = host.toLowerCase();
+    if (httpHosts.has(h)) return 'local';
+    if (publicHosts.has(h)) return 'public';
+    return 'unknown';
+  };
+
+  // Log de recusas amostrado: no máximo uma linha a cada 10 s (evita inundação de log).
+  let refusalsSuppressed = 0;
+  let lastRefusalLog = 0;
+  const logRefusal = (reason: string): void => {
+    const now = Date.now();
+    if (now - lastRefusalLog < 10_000) {
+      refusalsSuppressed += 1;
+      return;
+    }
+    log(`[sinalização] upgrade recusado (${reason})${refusalsSuppressed ? ` (+${refusalsSuppressed} suprimidos)` : ''}`);
+    refusalsSuppressed = 0;
+    lastRefusalLog = now;
+  };
 
   const requestHandler = (req: http.IncomingMessage, res: http.ServerResponse): void => {
     for (const [k, v] of Object.entries(SECURITY_HEADERS)) res.setHeader(k, v);
     // Host antes de qualquer conteúdo.
-    const host = checkHost(req.headers.host, httpHosts);
-    if (host !== 'ok') {
+    const zone = zoneOf(req.headers.host);
+    if (zone === 'missing' || zone === 'unknown') {
       res
-        .writeHead(host === 'missing' ? 400 : 421, { 'Content-Type': 'text/plain; charset=utf-8' })
-        .end(host === 'missing' ? 'Host ausente' : 'Host não reconhecido');
+        .writeHead(zone === 'missing' ? 400 : 421, { 'Content-Type': 'text/plain; charset=utf-8' })
+        .end(zone === 'missing' ? 'Host ausente' : 'Host não reconhecido');
+      return;
+    }
+    // Navegação não envia Origin; se vier, precisa corresponder ao Host (bloqueia uso cruzado).
+    if (checkOrigin(req.headers.origin, req.headers.host!, zone, false) !== 'ok') {
+      res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' }).end('Origin não permitido');
       return;
     }
     if (req.method !== 'GET' && req.method !== 'HEAD') {
@@ -199,40 +301,50 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES, perMessageDeflate: false });
   const alive = new WeakMap<WebSocket, boolean>();
 
-  const onUpgrade = (req: http.IncomingMessage, socket: Duplex, head: Buffer): void => {
-    // Política de Host verificada separadamente e antes do Origin.
-    const host = checkHost(req.headers.host, httpHosts);
-    if (host !== 'ok') {
-      socket.end(`HTTP/1.1 ${host === 'missing' ? '400 Bad Request' : '421 Misdirected Request'}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
-      log(`[sinalização] upgrade recusado (host)`);
-      return;
-    }
-    const path = new URL(req.url ?? '/', 'http://x').pathname;
-    const origin = req.headers.origin;
-    // Origin obrigatório e exato: impede que páginas de outros sites usem a sinalização (CSWSH).
-    if (path !== '/ws' || !origin || !allowedOrigins.has(origin)) {
-      socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
-      log(`[sinalização] upgrade recusado (${path !== '/ws' ? 'caminho' : 'origin'})`);
-      return;
-    }
-    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
+  const refuse = (socket: Duplex, status: string, reason: string): void => {
+    socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+    logRefusal(reason);
   };
 
-  wss.on('connection', (ws: WebSocket) => {
+  // Conexões ainda sem sessão e desde quando (admissão obrigatória dentro do prazo).
+  const unadmittedSince = new Map<WebSocket, number>();
+  const participants = new Map<WebSocket, Participant>();
+
+  const onUpgrade = (req: http.IncomingMessage, socket: Duplex, head: Buffer): void => {
+    // Política de Host verificada separadamente e antes do Origin.
+    const zone = zoneOf(req.headers.host);
+    if (zone === 'missing') return refuse(socket, '400 Bad Request', 'host ausente');
+    if (zone === 'unknown') return refuse(socket, '421 Misdirected Request', 'host');
+    const path = new URL(req.url ?? '/', 'http://x').pathname;
+    if (path !== '/ws') return refuse(socket, '403 Forbidden', 'caminho');
+    // Origin obrigatório, exato e coerente com o Host: impede uso por outros sites (CSWSH) e
+    // combinações cruzadas (Host público com Origin local e vice-versa). "null" é recusado.
+    if (checkOrigin(req.headers.origin, req.headers.host!, zone, true) !== 'ok') return refuse(socket, '403 Forbidden', 'origin');
+    // Limite global de conexões (atrás do túnel todas vêm de 127.0.0.1: não há limite "por IP").
+    if (wss.clients.size >= maxConnections) return refuse(socket, '503 Service Unavailable', 'capacidade');
+    const context: ConnectionContext = { local: zone === 'local' };
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, context));
+  };
+
+  wss.on('connection', (ws: WebSocket, context: ConnectionContext) => {
     alive.set(ws, true);
     ws.on('pong', () => alive.set(ws, true));
+    unadmittedSince.set(ws, Date.now());
     const bucket = new TokenBucket({
       capacity: config.rateLimit?.capacity ?? 60,
       refillPerSecond: config.rateLimit?.refillPerSecond ?? 20,
       now: Date.now,
     });
-    let strikes = 0;
+    // Violações do rate limit numa janela deslizante de 10 s (antes, as strikes nunca expiravam — A8).
+    let violations: number[] = [];
     const participant: Participant = {
       id: randomBytes(9).toString('base64url'),
       send: (message: ServerMessage) => {
         if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(message));
       },
+      close: (code, reason) => ws.close(code, reason),
     };
+    participants.set(ws, participant);
 
     ws.on('message', (data, isBinary) => {
       // A sinalização é só texto JSON. Binário nunca é aceito: o servidor não transporta mídia.
@@ -243,7 +355,10 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
       }
       if (!bucket.take()) {
         participant.send({ type: 'error', code: 'rate-limited' });
-        if (++strikes >= 3) ws.close(1008, 'rate limited');
+        const now = Date.now();
+        violations = violations.filter((t) => t > now - (config.rateLimit?.violationWindowMs ?? 10_000));
+        violations.push(now);
+        if (violations.length >= 3) ws.close(1008, 'rate limited');
         return;
       }
       const parsed = parseClientMessage(data.toString());
@@ -251,24 +366,40 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
         participant.send({ type: 'error', code: parsed.code });
         return;
       }
-      registry.handle(participant, parsed.value);
+      registry.handle(participant, parsed.value, context);
+      if (registry.sessionOf(participant) !== null) unadmittedSince.delete(ws);
+      else if (!unadmittedSince.has(ws)) unadmittedSince.set(ws, Date.now());
     });
-    ws.on('close', () => registry.disconnect(participant));
+    ws.on('close', () => {
+      unadmittedSince.delete(ws);
+      participants.delete(ws);
+      registry.disconnect(participant);
+    });
     ws.on('error', () => ws.terminate());
   });
 
-  // Heartbeat: conexões que não respondem ao ping são encerradas (e saem da sessão).
+  // Heartbeat: conexões que não respondem ao ping são encerradas (e saem da sessão); conexões que
+  // não entram numa sessão dentro do prazo (ou ficam sem sessão depois de sair) também.
   const heartbeat = setInterval(() => {
+    const now = Date.now();
     for (const ws of wss.clients) {
       if (alive.get(ws) === false) {
         ws.terminate();
+        continue;
+      }
+      const participant = participants.get(ws);
+      if (participant && registry.sessionOf(participant) !== null) unadmittedSince.delete(ws);
+      else if (!unadmittedSince.has(ws)) unadmittedSince.set(ws, now);
+      const since = unadmittedSince.get(ws);
+      if (since !== undefined && now - since >= admissionTimeoutMs) {
+        ws.close(1008, 'admission timeout');
         continue;
       }
       alive.set(ws, false);
       ws.ping();
     }
     registry.sweep();
-  }, config.heartbeatMs ?? 15_000);
+  }, config.heartbeatMs ?? Math.min(15_000, admissionTimeoutMs));
 
   httpServer.on('upgrade', onUpgrade);
 
@@ -291,9 +422,7 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
     }
     // URL/Origin a partir do endereço canônico do bind (ex.: "::1" → "http://[::1]:porta").
     httpOrigin = `http://${hostForUrl(bound.address)}:${bound.port}`;
-    allowedOrigins.add(httpOrigin);
-    // localhost aponta para o loopback no navegador do próprio PC; o Origin enviado é "http://localhost:porta".
-    allowedOrigins.add(`http://localhost:${bound.port}`);
+    // localhost aponta para o loopback no navegador do próprio PC.
     httpHosts.add(`${hostForUrl(bound.address)}:${bound.port}`.toLowerCase());
     httpHosts.add(`localhost:${bound.port}`);
   } catch (error) {
@@ -302,5 +431,5 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
     throw error;
   }
 
-  return { httpOrigin, registry, close: shutdown };
+  return { httpOrigin, publicOrigin, registry, admission, close: shutdown };
 }

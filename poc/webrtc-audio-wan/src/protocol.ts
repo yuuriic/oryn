@@ -13,6 +13,10 @@ export const MAX_MID_LENGTH = 32;
 export const MAX_UFRAG_LENGTH = 256;
 /** 128 bits aleatórios em base64url sem padding = 22 caracteres. */
 export const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{22}$/;
+/** Segredos de admissão (chave do operador e convites): 256 bits em base64url sem padding = 43 caracteres. */
+export const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+/** Origem pública informada ao operador para montar o link do convite. */
+const PUBLIC_ORIGIN_PATTERN = /^https:\/\/[a-z0-9.-]{1,253}$/;
 
 export type Role = 'host' | 'guest';
 
@@ -29,8 +33,14 @@ export type SignalPayload =
   | { kind: 'candidate'; candidate: CandidatePayload | null };
 
 export type ClientMessage =
-  | { type: 'create' }
-  | { type: 'join'; sessionId: string }
+  /** Operador: cria sessão (exige a chave do operador e Host local). */
+  | { type: 'create'; operatorKey: string }
+  /** Operador: volta à própria sessão (vaga de host). */
+  | { type: 'rejoin'; sessionId: string; operatorKey: string }
+  /** Operador já na sessão: emite um novo convite (revoga o anterior). */
+  | { type: 'invite' }
+  /** Convidado: entra com um convite de uso único. */
+  | { type: 'join'; invite: string }
   | { type: 'signal'; epoch: number; payload: SignalPayload }
   | { type: 'leave' };
 
@@ -45,7 +55,10 @@ export type ErrorCode =
   | 'stale-epoch'
   | 'unexpected-signal'
   | 'rate-limited'
-  | 'server-busy';
+  | 'server-busy'
+  | 'unauthorized'
+  | 'invite-invalid'
+  | 'locked';
 
 export type ServerMessage =
   | { type: 'session'; sessionId: string; role: Role; epoch: number; peerPresent: boolean }
@@ -53,6 +66,8 @@ export type ServerMessage =
   | { type: 'peer-left'; epoch: number }
   | { type: 'signal'; epoch: number; payload: SignalPayload }
   | { type: 'session-closed'; reason: 'expired' | 'server-shutdown' }
+  /** Somente ao operador: convite de uso único e a origem pública configurada (ou null). */
+  | { type: 'invite'; token: string; expiresAt: number; publicOrigin: string | null }
   | { type: 'error'; code: ErrorCode };
 
 export type ParseResult<T> = { ok: true; value: T } | { ok: false; code: ErrorCode };
@@ -73,6 +88,10 @@ const isEpoch = (v: unknown): v is number => Number.isSafeInteger(v) && (v as nu
 
 export function isSessionId(v: unknown): v is string {
   return typeof v === 'string' && SESSION_ID_PATTERN.test(v);
+}
+
+export function isToken(v: unknown): v is string {
+  return typeof v === 'string' && TOKEN_PATTERN.test(v);
 }
 
 function isSdp(v: unknown): v is string {
@@ -129,12 +148,20 @@ export function parseClientMessage(raw: string): ParseResult<ClientMessage> {
   const v = parseJson(raw);
   if (!isObj(v)) return { ok: false, code: 'invalid-message' };
   switch (v['type']) {
-    case 'create':
+    case 'invite':
     case 'leave':
       return hasOnlyKeys(v, ['type']) ? { ok: true, value: { type: v['type'] } } : { ok: false, code: 'invalid-message' };
+    case 'create':
+      return hasOnlyKeys(v, ['type', 'operatorKey']) && isToken(v['operatorKey'])
+        ? { ok: true, value: { type: 'create', operatorKey: v['operatorKey'] } }
+        : { ok: false, code: 'invalid-message' };
+    case 'rejoin':
+      return hasOnlyKeys(v, ['type', 'sessionId', 'operatorKey']) && isSessionId(v['sessionId']) && isToken(v['operatorKey'])
+        ? { ok: true, value: { type: 'rejoin', sessionId: v['sessionId'], operatorKey: v['operatorKey'] } }
+        : { ok: false, code: 'invalid-message' };
     case 'join':
-      return hasOnlyKeys(v, ['type', 'sessionId']) && isSessionId(v['sessionId'])
-        ? { ok: true, value: { type: 'join', sessionId: v['sessionId'] } }
+      return hasOnlyKeys(v, ['type', 'invite']) && isToken(v['invite'])
+        ? { ok: true, value: { type: 'join', invite: v['invite'] } }
         : { ok: false, code: 'invalid-message' };
     case 'signal':
       return hasOnlyKeys(v, ['type', 'epoch', 'payload']) && isEpoch(v['epoch']) && isSignalPayload(v['payload'])
@@ -157,6 +184,9 @@ const ERROR_CODES: readonly ErrorCode[] = [
   'unexpected-signal',
   'rate-limited',
   'server-busy',
+  'unauthorized',
+  'invite-invalid',
+  'locked',
 ];
 
 /** Valida uma mensagem recebida pelo navegador (defesa em profundidade contra servidor/proxy). */
@@ -184,6 +214,13 @@ export function parseServerMessage(raw: string): ServerMessage | null {
       return hasOnlyKeys(v, ['type', 'reason']) && (v['reason'] === 'expired' || v['reason'] === 'server-shutdown')
         ? (v as ServerMessage)
         : null;
+    case 'invite':
+      return hasOnlyKeys(v, ['type', 'token', 'expiresAt', 'publicOrigin']) &&
+        isToken(v['token']) &&
+        isEpoch(v['expiresAt']) &&
+        (v['publicOrigin'] === null || (typeof v['publicOrigin'] === 'string' && PUBLIC_ORIGIN_PATTERN.test(v['publicOrigin'])))
+        ? (v as ServerMessage)
+        : null;
     case 'error':
       return hasOnlyKeys(v, ['type', 'code']) && ERROR_CODES.includes(v['code'] as ErrorCode) ? (v as ServerMessage) : null;
     default:
@@ -204,4 +241,7 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   'unexpected-signal': 'Sinal fora da ordem esperada foi descartado.',
   'rate-limited': 'Muitas mensagens em pouco tempo; a conexão foi limitada.',
   'server-busy': 'O servidor atingiu o limite de sessões simultâneas.',
+  unauthorized: 'Não autorizado.',
+  'invite-invalid': 'Convite inválido, expirado ou já utilizado. Peça um novo convite ao anfitrião.',
+  locked: 'Muitas tentativas de autorização. Aguarde e tente novamente.',
 };

@@ -4,7 +4,7 @@ import { rmSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { MAX_MESSAGE_BYTES } from '../src/protocol.ts';
 import { CONTENT_SECURITY_POLICY, startServer, type RunningServer } from '../server/server.ts';
-import { TestClient, fakeDist } from './helpers/ws-client.ts';
+import { OPERATOR_KEY, OPERATOR_KEY_HASH, TestClient, createAndInvite, fakeDist } from './helpers/ws-client.ts';
 
 const SDP = 'v=0\r\no=- 1 2 IN IP4 0.0.0.0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=ice-ufrag:SEGREDO\r\n';
 
@@ -23,13 +23,12 @@ async function client(o: string | null = origin): Promise<TestClient> {
 
 async function pair() {
   const host = await client();
-  host.send({ type: 'create' });
-  const session = await host.next('session');
+  const { sessionId, invite } = await createAndInvite(host);
   const guest = await client();
-  guest.send({ type: 'join', sessionId: session['sessionId'] });
+  guest.send({ type: 'join', invite });
   await guest.next('session');
   await host.next('peer-joined');
-  return { host, guest, sessionId: session['sessionId'] as string };
+  return { host, guest, sessionId, invite };
 }
 
 beforeEach(async () => {
@@ -39,6 +38,7 @@ beforeEach(async () => {
     distDir: dist,
     httpPort: 0,
     heartbeatMs: 150,
+    operatorKeyHash: OPERATOR_KEY_HASH,
     rateLimit: { capacity: 20, refillPerSecond: 5 },
     log: (l) => logs.push(l),
   });
@@ -79,16 +79,20 @@ describe('WebSocket: origem e caminho (segurança, teste 9)', () => {
     await expect(TestClient.open(wsUrl, null)).rejects.toThrow('403');
     await expect(TestClient.open(wsUrl, 'https://evil.example')).rejects.toThrow('403');
     await expect(TestClient.open(wsUrl, 'http://localhost:1')).rejects.toThrow('403');
+    await expect(TestClient.open(wsUrl, 'null')).rejects.toThrow('403');
     await expect(TestClient.open(wsUrl.replace('/ws', '/outro'), origin)).rejects.toThrow('403');
     const localhostOrigin = origin.replace('127.0.0.1', 'localhost');
-    const ok = await client(localhostOrigin);
+    // localhost é aceito quando Host e Origin são coerentes; cruzado (Host 127.0.0.1 + Origin localhost) é recusado.
+    await expect(TestClient.open(wsUrl, localhostOrigin)).rejects.toThrow('403');
+    const ok = await TestClient.open(wsUrl, localhostOrigin, { headers: { Host: localhostOrigin.replace('http://', '') } });
+    clients.push(ok);
     expect(ok.ws.readyState).toBe(ok.ws.OPEN);
   });
 });
 
 describe('sessão via WebSocket (testes 1–4)', () => {
   it('cria, entra, encaminha sinais e recusa o terceiro', async () => {
-    const { host, guest, sessionId } = await pair();
+    const { host, guest, sessionId, invite } = await pair();
     expect(sessionId).toMatch(/^[A-Za-z0-9_-]{22}$/);
 
     host.send({ type: 'signal', epoch: 1, payload: { kind: 'offer', sdp: SDP } });
@@ -96,18 +100,21 @@ describe('sessão via WebSocket (testes 1–4)', () => {
     guest.send({ type: 'signal', epoch: 1, payload: { kind: 'answer', sdp: SDP } });
     expect((await host.next('signal'))['payload']).toEqual({ kind: 'answer', sdp: SDP });
 
+    // O convite já foi usado (uso único) e o operador não obtém outro com a sessão cheia.
     const third = await client();
-    third.send({ type: 'join', sessionId });
-    expect(await third.next('error')).toEqual({ type: 'error', code: 'session-full' });
+    third.send({ type: 'join', invite });
+    expect(await third.next('error')).toEqual({ type: 'error', code: 'invite-invalid' });
+    host.send({ type: 'invite' });
+    expect(await host.next('error')).toEqual({ type: 'error', code: 'session-full' });
   });
 
   it('IDs de sessão são imprevisíveis (128 bits, sem repetição em 10 sessões)', async () => {
     const ids = new Set<string>();
     for (let i = 0; i < 10; i++) {
       const c = await client();
-      c.send({ type: 'create' });
-      ids.add((await c.next('session'))['sessionId'] as string);
+      ids.add((await createAndInvite(c)).sessionId);
       c.send({ type: 'leave' });
+      c.ws.terminate(); // respeita o limite de conexões simultâneas
     }
     expect(ids.size).toBe(10);
     for (const id of ids) expect(Buffer.from(id, 'base64url')).toHaveLength(16);
@@ -136,7 +143,7 @@ describe('sessão via WebSocket (testes 1–4)', () => {
     await server.close();
     expect(await host.next('session-closed')).toEqual({ type: 'session-closed', reason: 'server-shutdown' });
     expect((await closed).map((c) => c.code)).toEqual([1001, 1001]);
-    server = await startServer({ distDir: dist, httpPort: 0, log: () => undefined }); // para o afterEach
+    server = await startServer({ distDir: dist, httpPort: 0, operatorKeyHash: OPERATOR_KEY_HASH, log: () => undefined }); // para o afterEach
   });
 });
 

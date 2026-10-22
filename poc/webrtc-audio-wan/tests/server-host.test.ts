@@ -6,7 +6,7 @@ import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { assertLoopbackHttpHost, isLoopbackLiteral, startServer, type RunningServer } from '../server/server.ts';
-import { TestClient, fakeDist } from './helpers/ws-client.ts';
+import { OPERATOR_KEY_HASH, TestClient, createAndInvite, fakeDist } from './helpers/ws-client.ts';
 
 const REJECTED: [string, string][] = [
   ['0.0.0.0', 'todas as interfaces IPv4'],
@@ -144,45 +144,45 @@ describe('startServer: nenhum listener com configuração inválida', () => {
 });
 
 describe('startServer: loopback aceito', () => {
-  it('IPv4: 127.0.0.1 serve HTTP e WebSocket; origens 127.0.0.1 e localhost aceitas', async () => {
-    const server = await startServer({ distDir: dist(), httpPort: 0, log: () => undefined });
+  it('IPv4: 127.0.0.1 serve HTTP e WebSocket; origens 127.0.0.1 e localhost aceitas quando coerentes com o Host', async () => {
+    const server = await startServer({ distDir: dist(), httpPort: 0, operatorKeyHash: OPERATOR_KEY_HASH, log: () => undefined });
     running.push(server);
     expect(server.httpOrigin).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     expect((await fetch(`${server.httpOrigin}/`)).status).toBe(200);
     const port = new URL(server.httpOrigin).port;
-    for (const origin of [server.httpOrigin, `http://localhost:${port}`]) {
-      const c = await TestClient.open(`ws://127.0.0.1:${port}/ws`, origin);
-      c.send({ type: 'create' });
-      expect((await c.next('session'))['role']).toBe('host');
+    for (const host of [`127.0.0.1:${port}`, `localhost:${port}`]) {
+      const c = await TestClient.open(`ws://127.0.0.1:${port}/ws`, `http://${host}`, { headers: { Host: host } });
+      await createAndInvite(c);
       c.ws.terminate();
     }
+    // Origin e Host locais, mas diferentes entre si: combinação inconsistente.
+    await expect(TestClient.open(`ws://127.0.0.1:${port}/ws`, `http://localhost:${port}`)).rejects.toThrow('403');
     await expect(TestClient.open(`ws://127.0.0.1:${port}/ws`, `http://192.168.0.23:${port}`)).rejects.toThrow('403');
   });
 
   it.skipIf(!supportsIpv6)('IPv6: ::1 (inclusive forma longa) gera URL "[::1]" e aceita a origem correspondente', async () => {
-    const server = await startServer({ distDir: dist(), httpHost: '0:0:0:0:0:0:0:1', httpPort: 0, log: () => undefined });
+    const server = await startServer({ distDir: dist(), httpHost: '0:0:0:0:0:0:0:1', httpPort: 0, operatorKeyHash: OPERATOR_KEY_HASH, log: () => undefined });
     running.push(server);
     expect(server.httpOrigin).toMatch(/^http:\/\/\[::1\]:\d+$/);
     expect((await fetch(`${server.httpOrigin}/`)).status).toBe(200);
     const port = new URL(server.httpOrigin).port;
     const c = await TestClient.open(`ws://[::1]:${port}/ws`, server.httpOrigin);
-    c.send({ type: 'create' });
-    expect((await c.next('session'))['role']).toBe('host');
+    await createAndInvite(c);
     c.ws.terminate();
     // O loopback IPv4 não está escutando nessa porta (bind apenas em ::1, sem fallback).
     expect(await isListening('127.0.0.1', Number(port))).toBe(false);
   });
 
   it('funciona sem CA nem certificado: sessão completa (create, join, signal) só em HTTP loopback', async () => {
-    const server = await startServer({ distDir: dist(), httpPort: 0, log: () => undefined });
+    const server = await startServer({ distDir: dist(), httpPort: 0, operatorKeyHash: OPERATOR_KEY_HASH, log: () => undefined });
     running.push(server);
-    expect(Object.keys(server).sort()).toEqual(['close', 'httpOrigin', 'registry']); // sem httpsOrigin
+    expect(Object.keys(server)).not.toContain('httpsOrigin');
+    expect(server.publicOrigin).toBeNull(); // acesso público fechado por padrão
     const ws = `${server.httpOrigin.replace('http', 'ws')}/ws`;
     const host = await TestClient.open(ws, server.httpOrigin);
-    host.send({ type: 'create' });
-    const session = await host.next('session');
+    const { invite } = await createAndInvite(host);
     const guest = await TestClient.open(ws, server.httpOrigin);
-    guest.send({ type: 'join', sessionId: session['sessionId'] });
+    guest.send({ type: 'join', invite });
     expect((await guest.next('session'))['role']).toBe('guest');
     await host.next('peer-joined');
     host.send({ type: 'signal', epoch: 1, payload: { kind: 'offer', sdp: 'v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n' } });
