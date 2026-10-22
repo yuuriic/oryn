@@ -425,7 +425,7 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
         .verify(req.headers[ACCESS_HEADER])
         .then((result) => {
           if (result.ok) return serve(kind, req, res);
-          logRefusal(`access: ${result.reason}`);
+          logRefusal(`access (http): ${result.reason}`);
           const denied = accessDenied(result.reason);
           res.writeHead(denied.status, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }).end(denied.text);
         })
@@ -490,7 +490,9 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
         .verify(req.headers[ACCESS_HEADER])
         .then((result) => {
           if (socket.destroyed) return;
-          if (!result.ok) return refuse(socket, accessDenied(result.reason).text, `access: ${result.reason}`);
+          if (!result.ok) return refuse(socket, accessDenied(result.reason).text, `access (upgrade): ${result.reason}`);
+          // Diagnóstico do handshake real (02B.3B): confirma que o JWT chegou no upgrade, sem registrá-lo.
+          log(`[access] upgrade WebSocket autenticado (kid ${result.kid.slice(0, 8)}…, expira em ${Math.round((result.expiresAt - Date.now()) / 60_000)} min)`);
           accept(kind, req, socket, head, result.expiresAt);
         })
         .catch(() => socket.destroy())

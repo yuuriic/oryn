@@ -14,7 +14,8 @@
     "test": "vitest run",
     "serve": "node server/index.ts",
     "start": "vite build && node server/index.ts",
-    "e2e": "node scripts/e2e-two-browsers.mjs"
+    "e2e": "node scripts/e2e-two-browsers.mjs",
+    "preflight:cloudflare": "node server/preflight-cli.ts"
   },
   "dependencies": {
     "jose": "6.2.13",
@@ -27,6 +28,7 @@
     "playwright-core": "1.64.1",
     "typescript": "7.0.2",
     "vite": "8.3.5",
-    "vitest": "5.0.5"
+    "vitest": "5.0.5",
+    "yaml": "2.9.1"
   }
 }

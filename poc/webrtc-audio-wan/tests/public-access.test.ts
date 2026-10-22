@@ -2,10 +2,10 @@
 // comportamento atrás de um proxy local que simula o túnel (sem Cloudflare e sem expor nada).
 import { rmSync } from 'node:fs';
 import http from 'node:http';
-import net from 'node:net';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { checkOrigin, startServer, validatePublicHostname, type RunningServer } from '../server/server.ts';
 import { testIssuer } from './helpers/access.ts';
+import { startTunnel } from './helpers/tunnel.ts';
 import { TestClient, createAndInvite, fakeDist, openOperator, post } from './helpers/ws-client.ts';
 
 const PUBLIC = 'oryn-poc.example.com';
@@ -33,50 +33,16 @@ async function server(options: { publicHostnames?: string[]; maxConnections?: nu
   return s;
 }
 
-/**
- * Proxy reverso local que imita o túnel: reescreve o Host para o hostname público e injeta
- * cabeçalhos de proxy (inclusive um X-Forwarded-Host forjado apontando para o loopback).
- */
+/** Túnel simulado (helpers/tunnel.ts): Host público, cabeçalhos de proxy forjados e o JWT injetado pela borda. */
 async function tunnelProxy(
   target: RunningServer,
   publicHost: string,
   clientIp = '203.0.113.9',
   targetOrigin: string = target.httpOrigin,
 ): Promise<string> {
-  const port = Number(new URL(targetOrigin).port);
-  const rewrite = (headers: http.IncomingHttpHeaders): http.OutgoingHttpHeaders => ({
-    ...headers,
-    host: publicHost,
-    'x-forwarded-for': clientIp,
-    'cf-connecting-ip': clientIp,
-    'x-forwarded-host': `localhost:${port}`,
-    'x-forwarded-proto': 'https',
-    'cf-access-jwt-assertion': issuer.jwt, // a borda injeta o JWT do Access em toda requisição
-  });
-  const proxy = http.createServer((req, res) => {
-    const upstream = http.request({ host: '127.0.0.1', port, method: req.method, path: req.url, headers: rewrite(req.headers) }, (r) => {
-      res.writeHead(r.statusCode ?? 502, r.headers);
-      r.pipe(res);
-    });
-    upstream.on('error', () => res.destroy());
-    req.pipe(upstream);
-  });
-  proxy.on('upgrade', (req, socket, head) => {
-    const upstream = net.connect(port, '127.0.0.1', () => {
-      const lines = [`${req.method} ${req.url} HTTP/1.1`];
-      for (const [k, v] of Object.entries(rewrite(req.headers))) {
-        for (const value of Array.isArray(v) ? v : [v]) if (value !== undefined) lines.push(`${k}: ${value}`);
-      }
-      upstream.write(`${lines.join('\r\n')}\r\n\r\n`);
-      if (head.length) upstream.write(head);
-      socket.pipe(upstream).pipe(socket);
-    });
-    upstream.on('error', () => socket.destroy());
-    socket.on('error', () => upstream.destroy());
-  });
-  const proxyPort = await new Promise<number>((r) => proxy.listen(0, '127.0.0.1', () => r((proxy.address() as net.AddressInfo).port)));
-  running.push({ close: () => new Promise<void>((r) => (proxy.closeAllConnections(), proxy.close(() => r()))) });
-  return `127.0.0.1:${proxyPort}`;
+  const tunnel = await startTunnel({ targetPort: Number(new URL(targetOrigin).port), host: publicHost, jwt: issuer.jwt, clientIp });
+  running.push(tunnel);
+  return tunnel.address;
 }
 
 function get(hostPort: string, headers: Record<string, string> = {}): Promise<number> {

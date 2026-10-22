@@ -74,7 +74,7 @@ describe('validação do JWT', () => {
   it('JWT válido → ok, com o prazo do exp', async () => {
     const t = await sign(k1, { expiresInSec: 300 });
     const r = await verifier().verify(t);
-    expect(r).toEqual({ ok: true, expiresAt: (Math.floor(clock / 1000) + 300) * 1000 });
+    expect(r).toEqual({ ok: true, expiresAt: (Math.floor(clock / 1000) + 300) * 1000, kid: 'kid-1' });
   });
 
   it('aceita aud como string única', async () => {

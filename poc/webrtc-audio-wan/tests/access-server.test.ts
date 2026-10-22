@@ -280,7 +280,8 @@ describe('logs', () => {
     const c = await openPublic(s, jwt);
     c.ws.terminate();
     const all = logs.join('\n');
-    expect(all).toContain('access: invalid');
+    expect(all).toContain('access (http): invalid');
+    expect(all).toContain('[access] upgrade WebSocket autenticado (kid kid-a…');
     for (const secret of [jwt, 'convidado@example.com', 'test-user-id']) expect(all).not.toContain(secret);
   });
 });

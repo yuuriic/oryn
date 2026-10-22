@@ -4,7 +4,7 @@ Prova de conceito **descartável** do Oryn. Objetivo final: chamada de áudio We
 Wi-Fi residencial e um iPhone (Safari) em rede móvel 4G/5G, com sinalização pública HTTPS/WSS (Cloudflare
 Tunnel) e STUN/TURN gerenciado (Cloudflare). Plano, decisões e evidências em `docs/validation/POC-02B.md`.
 
-## Estado atual: incremento 02B.3A
+## Estado atual: incremento 02B.3B
 
 - Baseline copiado da POC-02A (`poc/webrtc-audio-lan/`, conteúdo de `f068509`), isolado no 02B.1.
 - **CA local e HTTPS local removidos** no 02B.2A.
@@ -17,8 +17,14 @@ Tunnel) e STUN/TURN gerenciado (Cloudflare). Plano, decisões e evidências em `
 - **02B.3A:** validação criptográfica, na origem, do JWT do **Cloudflare Access** (`Cf-Access-Jwt-Assertion`)
   em toda requisição HTTP e todo upgrade WebSocket da sinalização. Com hostname público, o Access é
   **obrigatório**. Nada da Cloudflare foi configurado. Detalhes em `POC-02B.md` §10.
+- **02B.3B:** prontidão Cloudflare **offline**. Inclui:
+  - modelos `cloudflare/config.example.yml` e `cloudflare/server.env.example`;
+  - pré-validação `pnpm preflight:cloudflare`, que recusa configurações inseguras sem imprimir segredos;
+  - runbook com checklist, protocolo de teste real e rollback em `cloudflare/README.md`.
+
+  Nada foi ativado. Detalhes em `POC-02B.md` §11.
 - **Ainda não há** Cloudflare Tunnel nem STUN/TURN. **Nenhum serviço desta POC deve ser exposto na internet**
-  até a aprovação arquitetural dos critérios de exposição (`POC-02B.md` §9.8 e §10.10).
+  até a aprovação arquitetural dos critérios de exposição (`POC-02B.md` §9.8, §10.10 e §11.8).
 
 ## Uso local (operador e convidado no mesmo PC)
 
@@ -84,6 +90,7 @@ pnpm test        # unitários e integração
 pnpm build
 pnpm audit
 pnpm e2e         # Chrome ↔ Edge no próprio PC, microfones sintéticos, via http://localhost
+pnpm preflight:cloudflare -- --config=<config.yml> --env-file=<arquivo>   # offline; ver cloudflare/README.md
 pnpm serve       # requer pnpm build; sinalização em :5280 e administração em :5281 (--http-port=N, --admin-port=N)
 ```
 

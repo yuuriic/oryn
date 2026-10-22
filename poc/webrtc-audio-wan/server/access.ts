@@ -270,7 +270,8 @@ async function parseKeySet(value: unknown): Promise<Map<string, CryptoKey>> {
 }
 
 export type AccessFailure = 'missing' | 'malformed' | 'invalid' | 'unavailable';
-export type AccessResult = { ok: true; expiresAt: number } | { ok: false; reason: AccessFailure };
+/** kid só para diagnóstico (identifica a chave, não o usuário); o JWT nunca sai daqui. */
+export type AccessResult = { ok: true; expiresAt: number; kid: string } | { ok: false; reason: AccessFailure };
 
 export interface AccessVerifierOptions {
   config: ResolvedAccessConfig;
@@ -337,7 +338,7 @@ export class AccessVerifier {
         clockTolerance: this.config.clockToleranceSec,
         currentDate: new Date(this.now()),
       });
-      return { ok: true, expiresAt: (payload.exp as number) * 1000 };
+      return { ok: true, expiresAt: (payload.exp as number) * 1000, kid };
     } catch {
       return { ok: false, reason: 'invalid' };
     }

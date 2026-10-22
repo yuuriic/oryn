@@ -5,8 +5,8 @@
 | Branch | `poc/webrtc-audio-wan`, criada a partir de `main` em `f068509` (PR #3 da POC-02A) |
 | Código | `poc/webrtc-audio-wan/` |
 | Relação com o ARCHITECTURE.md | P02 (§14): travessia de NAT, CGNAT, TURN e UDP bloqueado; credenciais TURN temporárias (§9.1) |
-| Incremento atual | **02B.3A — validação do JWT do Cloudflare Access** (§10) |
-| Status | **02B.1, 02B.2A e 02B.2C aprovados (02B.2C em `b3e1bf2`, informado pelo usuário). 02B.3A aguardando revisão do arquiteto.** Exposição pública **proibida** até a aprovação e o cumprimento dos critérios de §9.8 e §10.10 |
+| Incremento atual | **02B.3B — prontidão da infraestrutura Cloudflare, offline** (§11) |
+| Status | **02B.1, 02B.2A e 02B.2C aprovados (02B.2C em `b3e1bf2`, informado pelo usuário). 02B.3A publicado em `ed4d948` com CI verde. 02B.3B aguardando revisão do arquiteto.** Exposição pública **proibida** até a aprovação e o cumprimento dos critérios de §9.8, §10.10 e §11.8 |
 
 Legenda:
 - **[Observado]:** medido em execução pelo agente.
@@ -52,7 +52,8 @@ internet.
 | **02B.2A** | Remoção da CA local e do HTTPS local; HTTP só em loopback; CI da POC-02B | **Concluído e aprovado** (§7) |
 | **02B.2B** | Admissão (operador e convites), allowlist pública fechada por padrão, `Host`/`Origin` coerentes, limites contra abuso | **Concluído; em revisão** (§8) |
 | **02B.2C** | Listener administrativo separado, pareamento do operador por código de uso único, análise do Cloudflare Access | **Concluído e aprovado** (§9) |
-| **02B.3A** | Validação criptográfica do JWT do Cloudflare Access na origem (HTTP e WebSocket), JWKS com cache e falha fechada | **Concluído; em revisão** (§10) |
+| **02B.3A** | Validação criptográfica do JWT do Cloudflare Access na origem (HTTP e WebSocket), JWKS com cache e falha fechada | **Concluído** (§10); `ed4d948`, CI verde |
+| **02B.3B** | Prontidão Cloudflare offline: modelos, pré-validação, fronteira de confiança, runbook e protocolo de teste real | **Concluído; em revisão** (§11) |
 | 02B.3 | ~~Admissão e controle de abuso~~ **antecipado para o 02B.2B**; resta a proteção na borda (Access/WAF), a definir com o túnel | Parcial |
 | 02B.4 | Credenciais TURN emitidas no servidor (TTL, revogação, provedor simulado nos testes) | Não iniciado |
 | 02B.5 | Cliente: `iceServers`, modos `auto`/`direto`/`relay`/`relay-tls`, estados `disconnected`/`failed` (A6), métricas de relay | Não iniciado |
@@ -917,6 +918,183 @@ Respostas de recusa não trazem conteúdo da página e não indicam o motivo ao 
 | Chaves antigas sem limite após falha | 1 |
 | Sem limite de validações pendentes | 1 (detectada após o teste passar a exigir recusa imediata) |
 | Sem lista de algoritmos **ou** sem recusa antecipada de `alg` (isoladas e combinadas) | 0. **Mutação equivalente:** a chave é importada vinculada a RS256 (`importJWK(…, 'RS256')`), e a biblioteca recusa HS256, ES256, RS512 e `none` mesmo sem as duas checagens explícitas. Os testes negativos de algoritmo continuam passando por essa terceira camada. As checagens explícitas ficam como defesa em profundidade e evitam buscar chaves para algoritmos proibidos |
+
+**CI:** workflow inalterado; os novos testes rodam nos jobs existentes. **[Não executado]** a execução no GitHub
+depende do commit e do push do usuário.
+
+## 11. Incremento 02B.3B — prontidão da infraestrutura Cloudflare (offline)
+
+**Pré-condições verificadas [Observado]:**
+- branch `poc/webrtc-audio-wan`, working tree limpa;
+- HEAD `ed4d948` (02B.3A) igual a `origin/poc/webrtc-audio-wan`;
+- `POC-02B CI` com **success** em push e pull_request para `ed4d948`, consultado pela API pública do GitHub;
+- suíte local 374/374 antes das mudanças.
+
+**Nada foi ativado:** sem túnel, sem DNS, sem aplicação Access, sem `cloudflared` instalado ou iniciado e sem porta
+exposta. Os testes não usam rede pública.
+
+O runbook operacional está em [`poc/webrtc-audio-wan/cloudflare/README.md`](../../poc/webrtc-audio-wan/cloudflare/README.md).
+
+### 11.1 Arquitetura de integração
+
+```text
+ Navegador ─HTTPS/WSS─► Borda (Access: app self-hosted do hostname inteiro, política por e-mails)
+                          │ injeta Cf-Access-Jwt-Assertion
+                          ▼
+                       cloudflared (túnel nomeado, local; access.required; Host preservado)
+                          │ <HOSTNAME> → http://127.0.0.1:5280   ·   catch-all → http_status:404
+                          ▼
+                       Node :5280 (JWT + Host/Origin + convite + limites)      Node :5281: nunca no túnel
+```
+
+| Decisão | Motivo |
+|---|---|
+| F1. Túnel **nomeado e gerenciado localmente** | `config.yml` validável offline (pré-validação própria, `ingress validate`/`ingress rule`); sem token na linha de comando; suporta `originRequest.access` |
+| F2. Túnel remoto (token) e Quick Tunnel **recusados** | Ingress no painel não é validável offline, e `--token` aparece em argumentos. Quick Tunnel não tem Access |
+| F3. **JWT validado três vezes**: borda (login), `cloudflared` (`access.required`, `teamName`, `audTag`) e origem (02B.3A) | Defesa em profundidade; um erro de configuração numa camada não libera o acesso |
+| F4. **Uma regra + catch-all 404**, sem `path` | O Access e o túnel cobrem o hostname inteiro, inclusive `/ws`; nenhum outro serviço |
+| F5. **Sem `httpHostHeader`** | Preserva o `Host` público, coerente com o `Origin` `https://<HOSTNAME>` exigido pela origem |
+| F6. `loglevel` só `info`/`warn`/`error`/`fatal` | [Informado pela documentação] em `debug`, o `cloudflared` registra todos os cabeçalhos, inclusive o JWT |
+| F7. Cookies do Access: HttpOnly, SameSite **Lax**, Binding Cookie ligado | [Informado pela documentação] o padrão do SameSite é `None`; Lax basta para a navegação e para o WebSocket de mesma origem. O Binding Cookie impede o reuso de um cookie roubado. Efeito no WebSocket **[Não verificado]** (P6/P8) |
+| F8. Configuração real e credenciais **fora do repositório**; `.gitignore` reforçado (`.cloudflared/`, `<UUID>.json`) | Nada secreto versionado, mesmo por engano |
+| F9. Diagnóstico do handshake **sem JWT**: o servidor registra `[access] upgrade WebSocket autenticado (kid <8 caracteres>…, expira em N min)`; as recusas do Access indicam `http` ou `upgrade` | Permite comprovar a injeção do JWT no upgrade real sem registrar o token |
+| F10. **Nenhum fallback por cookie** implementado | Depende de aprovação (§10.3) |
+
+### 11.2 Arquivos versionados (só exemplos)
+
+| Arquivo | Conteúdo |
+|---|---|
+| `cloudflare/config.example.yml` | Modelo do `config.yml` (UUID de zeros, `oryn-poc.example.com`, equipe `oryn-example`, AUD de zeros) |
+| `cloudflare/server.env.example` | Modelo do ambiente do servidor (`ORYN_*`) com os mesmos valores de exemplo |
+| `cloudflare/README.md` | Runbook: arquitetura, dependências do usuário, checklist, ativação, protocolo de teste real e rollback |
+| `server/cloudflare-preflight.ts`, `server/preflight-cli.ts` | Pré-validação offline (`pnpm preflight:cloudflare`) |
+
+Os valores de exemplo passam no modo `template` (estrutura) e são **recusados** no modo `activation`. Assim, os
+modelos nunca podem ser ativados sem a troca dos valores.
+
+### 11.3 Pré-validação offline
+
+`pnpm preflight:cloudflare -- --config=<config.yml> --env-file=<arquivo>` (modo `activation` por padrão).
+
+- **Entrada só por arquivos.** Argumentos desconhecidos (ex.: `--aud=…`, `--token=…`) são recusados com saída 2,
+  para que nada sensível passe pela linha de comando ou pelo histórico.
+- **Sem rede**, sem iniciar nada. Saída 0 = OK; 1 = violação.
+- **Nunca imprime segredos:**
+  - o segredo do túnel só tem presença e coerência conferidas;
+  - a AUD aparece mascarada (`4f2a9c…(64)`);
+  - mensagens citam a regra violada, não o conteúdo.
+- **Regras:**
+
+| Código | Recusa |
+|---|---|
+| `PORTS` | Portas de sinalização e administrativa iguais |
+| `ENV_HOSTNAMES`, `ENV_PLACEHOLDER` | Hostname ausente, múltiplo, inválido, de exemplo, reservado (`.example`, `.test`, `.invalid`, `.local`…) ou `trycloudflare.com` |
+| `ENV_ACCESS_MODE`, `ENV_ACCESS` | Access diferente de `required`; equipe/AUD/opcionais inválidos (mesma validação do servidor) |
+| `ENV_UNKNOWN`, `ENV_FILE` | Variáveis `ORYN_*` desconhecidas; arquivo de ambiente real versionado ou não ignorado |
+| `CFG_PARSE`, `CFG_ALIAS`, `CFG_KEYS` | YAML inválido ou com chaves duplicadas; âncoras e aliases; chaves de topo fora da lista |
+| `CFG_TOKEN`, `CFG_WARP`, `CFG_LEGACY`, `CFG_QUICK_TUNNEL`, `CFG_TUNNEL` | Token (túnel remoto), `warp-routing`, modos legados (`url`, `hello-world`, `bastion`), Quick Tunnel, ausência de UUID |
+| `CFG_CREDENTIALS`, `CFG_FILE`, `CFG_PLACEHOLDER` | Credenciais relativas, dentro do repositório, ilegíveis, sem segredo ou de outro túnel; `config.yml` real versionado; UUID de exemplo |
+| `CFG_INGRESS`, `CFG_RULE`, `CFG_HOSTNAME`, `CFG_SERVICE`, `CFG_CATCHALL` | Ingress diferente de [hostname → `http://127.0.0.1:5280`, `http_status:404`]; `path`; curinga; hostname divergente do ambiente |
+| `CFG_ADMIN_PORT`, `CFG_SERVICE_TYPE` | Porta 5281 em **qualquer** campo; serviços ssh/rdp/tcp/unix/bastion/hello_world |
+| `CFG_HOST_HEADER`, `CFG_ORIGIN_REQUEST`, `CFG_ACCESS` | `httpHostHeader`; `noTLSVerify`, `proxyType` e outros fora da lista; `access` ausente, não obrigatório, com equipe diferente ou AUD diferente/extra |
+| `CFG_LOGLEVEL`, `CFG_METRICS` | `debug`/`trace`; métricas fora do loopback |
+
+**Limites:**
+- a pré-validação não substitui `cloudflared tunnel ingress validate` (T4), porque não conhece todas as regras do
+  `cloudflared`;
+- ela não enxerga o painel da Cloudflare (aplicação Access, política, DNS). Por isso esses itens têm checklist
+  manual com evidência (runbook §4.1).
+
+### 11.4 Fronteira de confiança: casos e evidência offline
+
+O `tests/helpers/tunnel.ts` simula a borda e o `cloudflared` com um proxy local: destino, `Host` preservado ou
+reescrito, JWT injetado ou não e cabeçalhos extras.
+
+| Caso | Resultado | Onde |
+|---|---|---|
+| Túnel apontado para 5281 com `Host` público | 421 em HTTP, WebSocket e `/admin/pair` | `trust-boundary`, `public-access` |
+| Túnel para 5281 com `Host` reescrito para `localhost` | O `Origin` do navegador (`https://<HOSTNAME>`) é recusado (403); o pareamento também; o código não é consumido | `trust-boundary` |
+| `Host` reescrito para `localhost:5280` | Navegador recusado (403); `/admin/pair` → 405 | `trust-boundary`, `public-access` |
+| Hostname desconhecido (mesmo com JWT válido) | 421 | `trust-boundary` |
+| `Origin` incompatível | 403 | `trust-boundary`, `access-server` |
+| JWT ausente, expirado, outra chave, outra AUD, outra equipe | 403 em HTTP e WebSocket | `trust-boundary`, `access-server`, `access` |
+| Cabeçalhos de proxy e de "autorização" forjados (`X-Forwarded-Host`, `Forwarded`, `X-Original-Host`, `X-Real-IP`, `Authorization: Bearer <token administrativo>`, cookie `CF_Authorization`, `X-Oryn-Admin`) | 403 | `trust-boundary` |
+| WebSocket não autenticado | 403 antes do upgrade | `trust-boundary`, `access-server` |
+| Convite inválido ou reutilizado pelo túnel autenticado | `invite-invalid` | `trust-boundary` |
+| **Matriz** destino {5280, 5281} × `Host` {público, `localhost`, `127.0.0.1`, porta trocada} × JWT {válido, ausente} × `Origin` {público, local}: 32 combinações | Nenhuma autoriza `create` sem token administrativo; toda recusa é 403/421 (não 503) | `trust-boundary` |
+| Token administrativo **vazado** | Só uma combinação o aceitaria: túnel para 5281 + `Host` reescrito + `Origin` local, que um navegador nunca envia pelo hostname. Essa configuração é recusada pela pré-validação (`CFG_SERVICE`, `CFG_ADMIN_PORT`, `CFG_HOST_HEADER`) | `trust-boundary` |
+
+### 11.5 Compatibilidade com WebSocket
+
+- [Informado pela documentação]:
+  - a Cloudflare suporta WebSockets via proxy em todos os planos; o 101 inicial passa pelo WAF;
+  - o Tunnel encaminha WebSockets;
+  - toda requisição encaminhada à origem leva `Cf-Access-Jwt-Assertion`.
+- [Não verificado] a injeção do cabeçalho no **upgrade** real. O protocolo do runbook §6 (P5–P8) verifica isso no
+  Chrome e no Safari do iPhone pela linha `[access] upgrade WebSocket autenticado (kid …)`, sem registrar o JWT.
+  Se aparecer `access (upgrade): missing`, o teste é **interrompido** para decisão (§10.3), e nenhum fallback é
+  implementado sem aprovação.
+
+### 11.6 Testes [Observado, 22/10/2026]
+
+| Verificação | Resultado |
+|---|---|
+| `pnpm install --frozen-lockfile` | OK (`yaml` 2.9.1 como devDependency exata, só para a pré-validação) |
+| `pnpm typecheck` | OK |
+| `pnpm test` | **442/442**, 21 arquivos. Novos: `cloudflare-preflight` 59, `trust-boundary` 9. `public-access` usa o túnel simulado compartilhado. `access`/`access-server` cobrem as novas linhas de diagnóstico |
+| Arquivos de fronteira (`trust-boundary`, `cloudflare-preflight`, `access-server`, `public-access`, `abuse`) repetidos 3 vezes | 130/130 nas três |
+| `pnpm build` | OK; bundle com o **mesmo hash** (frontend inalterado) |
+| `pnpm audit` | Nenhuma vulnerabilidade conhecida |
+| `pnpm e2e` | **41/41** em duas execuções, Chrome 155.0.8059.85 ↔ Edge 155.0.4283.62 (modo local; funcionamento local preservado) |
+| Modelos versionados | `template` → OK (saída 0); `activation` → 7 violações (saída 1) |
+
+### 11.7 Riscos residuais
+
+| Risco | Severidade | Situação |
+|---|---|---|
+| Borda não injeta o JWT no upgrade (ou o Binding Cookie interfere) | Alta para o uso; falha fechada | [Não verificado]; P6–P8 do protocolo; decisão em §10.3 |
+| Configuração no painel (aplicação, política, cookies, DNS) fora da validação automática | Média | Checklist A1–A7 e T7 com evidência (prints); política por e-mails explícitos |
+| Sintaxe exata dos comandos `cloudflared` (`ingress validate/rule`, `run`) | Baixa | [Inferido] da documentação; nenhum comando foi executado aqui. Conferir com `cloudflared --help` na versão instalada |
+| Credenciais do túnel (`<UUID>.json`) e `cert.pem` no PC do usuário | Média, se vazarem | Fora do repositório, `.gitignore` reforçado, pré-validação, rollback R5 |
+| Logs do `cloudflared` | Baixa | `loglevel` restrito pela pré-validação; busca por `eyJ` no protocolo (P11) |
+| Token administrativo vazado + túnel mal configurado para 5281 com reescrita | Baixa | Exigiria duas falhas e um cliente fora do navegador; a configuração é recusada pela pré-validação |
+| Nova dependência de desenvolvimento (`yaml`) | Baixa | Versão exata, lockfile, `pnpm audit`; não entra no servidor em produção nem no bundle |
+
+### 11.8 Critérios de ativação e de rollback
+
+**Ativação (02B.6), todos obrigatórios:**
+1. 02B.3B aprovado; `POC-02B CI` verde com este código.
+2. Aprovação explícita do arquiteto para a janela de ativação, que inclui T1, T2 e T7, criação de DNS público.
+3. Checklist do runbook §4 completo, com evidências.
+4. `pnpm preflight:cloudflare` (modo `activation`) com saída 0 sobre os arquivos reais.
+5. `cloudflared tunnel ingress validate` OK e `ingress rule` conferindo T5 e T6.
+6. Banner do servidor: hostname correto e `Cloudflare Access (sinalização): OBRIGATÓRIO`.
+7. Protocolo P1–P4 aprovado **antes** de enviar qualquer convite; P5–P12 em seguida.
+8. Critérios de §9.8 e §10.10 continuam valendo; TURN fora até o 02B.4.
+
+**Rollback:** gatilhos e passos R1–R6 do runbook §7. R1 (Ctrl+C no `cloudflared`) encerra a exposição
+imediatamente.
+
+### 11.9 Resultados das execuções repetidas e mutações
+
+**Mutações na pré-validação (todas detectadas; código restaurado após cada uma):**
+
+| Mutação | Testes que falharam |
+|---|---|
+| Porta administrativa não detectada | 4 |
+| Catch-all não verificado | 4 |
+| `httpHostHeader` permitido | 3 |
+| `access` do `cloudflared` opcional | 2 |
+| AUD do `cloudflared` não conferida | 2 |
+| `loglevel` `debug`/`trace` permitido | 2 |
+| Credenciais dentro do repositório aceitas | 1 (detectada após isolar o teste da regra de leitura) |
+| Serviço não conferido | 5 |
+| Hostname da regra não conferido com o ambiente | 1 |
+| Valores de exemplo aceitos na ativação | 3 |
+| Access desligado aceito | 2 |
+| `path` na regra aceito | 1 |
+| Métricas em qualquer interface | 1 |
+| Token (túnel remoto) aceito | 1 |
 
 **CI:** workflow inalterado; os novos testes rodam nos jobs existentes. **[Não executado]** a execução no GitHub
 depende do commit e do push do usuário.
