@@ -1,0 +1,72 @@
+# --- Dependencies ---
+node_modules/
+.pnpm-store/
+.pnpm-debug.log*
+
+# --- Build output (Vite / Tauri / Rust) ---
+dist/
+dist-ssr/
+build/
+out/
+*.tsbuildinfo
+.vite/
+target/
+**/src-tauri/target/
+**/src-tauri/gen/schemas/
+
+# --- Environment and secrets ---
+.env
+.env.*
+!.env.example
+*.local
+*.pem
+*.key
+*.p12
+*.pfx
+*.cer
+*.crt
+*.jks
+*.keystore
+*.secret
+secrets/
+.tauri/
+*.tauri-updater.key
+supabase/.temp/
+supabase/.branches/
+.vercel/
+
+# --- Logs ---
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# --- Test and coverage ---
+coverage/
+playwright-report/
+test-results/
+.nyc_output/
+
+# --- Caches ---
+.cache/
+.eslintcache
+.stylelintcache
+
+# --- Editors ---
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+*.swp
+*~
+
+# --- Windows ---
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# --- macOS (contributors) ---
+.DS_Store
