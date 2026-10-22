@@ -6,10 +6,10 @@
 | Branch | `poc/webrtc-audio-lan`, criada a partir de `main` em `ad8059d` (merge do PR #2) |
 | Pull Request | [#3](https://github.com/yuuriic/oryn/pull/3) (`poc/webrtc-audio-lan` → `main`), em revisão arquitetural |
 | Commit de referência | `4b6ac1d` (`4b6ac1da090882cdb5b169db55cc11ff82a92a87`): implementação **originalmente submetida** no PR #3. As validações de 22/10/2026 (§5, §6 e §6.1) foram feitas sobre esse conteúdo |
-| HEAD atual | **Não fixado neste documento:** muda com as correções da revisão (§12). Consulte o PR #3 ou `git log` da branch |
+| HEAD atual | **Não fixado neste documento:** muda com as correções da revisão (§12) e da auditoria (§13). Consulte o PR #3 ou `git log` da branch |
 | Código | `poc/webrtc-audio-lan/` |
 | Relação com o ARCHITECTURE.md | Primeiro passo da P02 (§14): dois pares reais com sinalização; sem TURN, sem mesh de N pares |
-| Status | **Testes automatizados aprovados; validação manual PC ↔ iPhone informada e confirmada pelo usuário e métricas de uma chamada real registradas a partir de captura de tela, em 22/10/2026 (§6). Correções da revisão do PR #3 aplicadas (§12). Aguardando encerramento arquitetural formal; PR não integrado** |
+| Status | **Testes automatizados aprovados; validação manual PC ↔ iPhone informada e confirmada pelo usuário e métricas de uma chamada real registradas a partir de captura de tela, em 22/10/2026 (§6). Correções da revisão do PR #3 aplicadas (§12). Correções A1 e A3 da auditoria técnica aplicadas (§13); auditoria não encerrada. Aguardando encerramento arquitetural formal; PR não integrado** |
 
 Legenda:
 - **[Observado]:** medido em execução automatizada nesta máquina.
@@ -474,8 +474,9 @@ Mesma sequência do CI, executada localmente no Windows (Node 24.19.0, pnpm 12.6
 | `pnpm e2e` | **27/27**, Chrome 155.0.8059.85 ↔ Edge 155.0.4283.62, conexão em 1350 ms, RMS recebido ≈ 0,31 nos dois sentidos |
 | Passo "Verificar Chrome e Edge do runner" (rodado localmente) | Encontrou chrome.exe 155.0.8059.85 e msedge.exe 155.0.4283.62 |
 
-**[Não executado]** O workflow **não foi executado no GitHub**. Ele só será considerado aprovado depois de uma
-execução real concluída. Pontos que só essa execução confirma:
+**[Não executado na data desta seção]** O workflow ainda **não tinha sido executado no GitHub**. Ele só seria
+considerado aprovado depois de uma execução real concluída. **Atualização:** as execuções em `d5e346e` foram
+concluídas com sucesso (§13.1). Pontos que só essa execução confirma:
 - o ajuste das inputs das actions fixadas, como `package_json_file` do `pnpm/action-setup` e o cache do
   `setup-node` com pnpm 12;
 - a execução dos testes no Linux, que não foi feita localmente;
@@ -485,3 +486,126 @@ execução real concluída. Pontos que só essa execução confirma:
 
 A sintaxe YAML foi checada apenas estruturalmente (indentação, ausência de tabs, comandos e permissões esperados),
 sem `actionlint`, que não está disponível localmente.
+
+## 13. Auditoria técnica do PR #3 — correções A1 e A3 (22/10/2026)
+
+**Ressalva de independência:** a auditoria foi feita sobre `d5e346e` **pelo mesmo agente que escreveu o código**.
+Por isso, não é uma auditoria independente. Os achados principais foram confirmados empiricamente.
+
+### 13.1 Evidência de CI confirmada na auditoria
+
+**[Observado via API pública do GitHub]** As duas execuções do workflow `POC-02A CI` para `d5e346e` (`push` e
+`pull_request`) terminaram com `success`, e nelas rodaram:
+- `Verificações (ubuntu-24.04)`, com testes e audit;
+- `Verificações (windows-2025)`, com testes;
+- `E2E Chrome ↔ Edge (windows-2025)`, com a verificação dos navegadores e o E2E.
+
+Isso resolve as pendências de §12.4, inclusive o áudio sintético no runner Windows. As correções desta seção
+**ainda não passaram pelo CI**: isso depende do commit e do push, que são do usuário.
+
+### 13.2 A1 — fila de operações SDP isolada por par (`src/call.ts`)
+
+- **Causa-raiz:**
+  - a `PeerCall` tinha **uma única cadeia de promises** (`queue`) durante toda a vida da chamada;
+  - no **Chrome 155 real**, `setRemoteDescription`, `createOffer` e `setLocalDescription` em andamento ficam
+    **pendentes para sempre** após `pc.close()` **[Observado na auditoria]**;
+  - se o par fosse desfeito durante uma dessas operações (o outro saiu ou entrou de novo), a cadeia travava: a
+    negociação do par seguinte nunca rodava, estourava o timeout de 20 s e a chamada falhava.
+- **Por que os testes não pegaram:** os fakes resolviam ou rejeitavam as operações depois do `close()`, e por isso
+  não reproduziam o caso.
+- **Correção:**
+  1. **Geração por par:** `teardownPeer()` incrementa `generation` e inicia uma **cadeia nova**
+     (`queue = Promise.resolve()`), sem depender de o `close()` resolver promises antigas;
+  2. **`enqueue`** captura a geração. Uma operação de geração antiga **não executa**, e o erro tardio dela é
+     **ignorado** em vez de chamar `fail()`;
+  3. **`stale(pc, epoch)`** verifica `disposed`, a identidade da `RTCPeerConnection` **e** o `epoch` depois de cada
+     `await` (em `makeOffer`, `onSignal`, `flushCandidates` e `collectStats`).
+- **Preservado:** a serialização dentro do mesmo par e o fluxo de saída e reentrada. Nenhum timer ou listener novo.
+- **Testes de regressão** (`tests/call-queue.test.ts`, 4 casos; o fake ganhou contadores de chamadas):
+
+  | Caso | Antes | Depois |
+  |---|---|---|
+  | `setRemoteDescription` antigo **pendente para sempre** + saída + novo participante: o novo par negocia sem esperar; a **rejeição tardia** da operação antiga não afeta o novo par | **Falhava** (preso em `negotiating`) | Passa |
+  | `createOffer` antigo pendente: o novo par oferta; a **resolução tardia** não envia offer antiga nem toca o par novo | **Falhava** | Passa |
+  | Mesmo par: uma segunda offer espera a primeira terminar (sem `setRemoteDescription` em paralelo) | Passava | Passa |
+  | Encerrar com operação pendente para sempre: 0 timers, conexão fechada, microfone liberado | Passava | Passa |
+
+- **Mutações:**
+  - sem a cadeia nova por geração: 2 testes falham;
+  - sem o filtro de erros de geração antiga: 1 teste falha, porque o novo par vai para `failed`.
+
+### 13.3 A3 — validação do cabeçalho Host (`server/server.ts`)
+
+- **Problema:** com `Host: rebind.attacker.example`, o servidor respondia 200 em `/` e em `/api/info`. Isso abria
+  caminho para DNS rebinding contra o listener HTTP local **[Observado na auditoria]**.
+- **Política implementada:**
+
+  | Listener | `Host` aceito |
+  |---|---|
+  | HTTP local | `<endereço do bind>:<porta>` (`127.0.0.1:porta` ou `[::1]:porta`) e `localhost:porta` |
+  | HTTPS da LAN | Somente `<IP da LAN configurado>:<porta>` |
+
+  - Comparação exata e sem diferenciar maiúsculas. A porta é obrigatória e precisa ser a efetiva.
+  - `Host` **ausente** recebe **400**. Desconhecido, com porta errada, sem porta ou malformado recebe
+    **421 Misdirected Request**, sem conteúdo.
+  - `X-Forwarded-Host` **nunca** é considerado.
+  - Os listeners não compartilham hosts.
+- **Ordem da verificação:** antes de qualquer conteúdo, inclusive `/api/info`. No upgrade WebSocket, a política do
+  listener é aplicada **separadamente e antes** da checagem de `Origin`, que **não mudou**.
+- **Testes de regressão** (`tests/host-header.test.ts`, 23 casos):
+  - **HTTP local:** Host válido (`127.0.0.1`, `localhost` e `LOCALHOST`); externo, sem porta, porta errada, IP da
+    LAN, `[::1]` sem bind e malformado recusados; `/api/info` inacessível com Host inválido; Host ausente → 400;
+    `X-Forwarded-Host` ignorado.
+  - **IPv6:** `[::1]` válido com bind em `::1`, executado nesta máquina.
+  - **HTTPS da LAN:** IP configurado válido; localhost, externo e porta do HTTP recusados; listeners isolados.
+  - **Upgrade WebSocket e WSS:** Host inválido recusado mesmo com `Origin` válido; `Origin` inválido continua
+    recusado com 403.
+- Os testes HTTPS verificam a cadeia com a CA local e conferem a identidade do certificado contra o endereço
+  realmente conectado. Nenhuma verificação TLS é desabilitada.
+- **Mutação:** com `checkHost` sempre aceitando, 16 testes falham.
+
+### 13.4 Resultados após as correções [Observado, execução local]
+
+| Verificação | Resultado |
+|---|---|
+| `pnpm install --frozen-lockfile` | OK |
+| `pnpm typecheck` | OK |
+| `pnpm test` | **184/184**, 11 arquivos, nenhum pulado (157 anteriores + 4 da A1 + 23 da A3) |
+| `pnpm build` | OK |
+| `pnpm audit` | Nenhuma vulnerabilidade conhecida |
+| `pnpm e2e` | **27/27**, Chrome 155.0.8059.85 ↔ Edge 155.0.4283.62, incluindo a nova entrada na mesma sessão (troca de par) |
+
+### 13.5 Achados mantidos como limitação ou dívida técnica
+
+Não corrigidos nesta POC, por decisão do arquiteto. São **requisitos da implementação definitiva**, não da POC:
+
+| # | Severidade | Achado | Tratamento no produto |
+|---|---|---|---|
+| A2 | Média (produto) / Baixa (POC) | Sem limite de conexões por cliente; `Origin` forjável fora do navegador; um aparelho da LAN esgota as 20 sessões (confirmado) | Autenticação, limites por usuário/IP, admissão no backend (ARCHITECTURE §8 e §11.3) |
+| A4 | Baixa | ID da sessão como única credencial; o primeiro a chegar ocupa a vaga livre | Convites e associação ao espaço (ARCHITECTURE §11.1) |
+| A5 | Baixa | SDP malformado de um participante encerra a chamada do outro (a falha deveria desfazer só o par) | Tratar erro de negociação como falha do par, com nova tentativa |
+| A6 | Baixa | `connectionState: disconnected` não muda a fase exibida | Estado `reconnecting` (ARCHITECTURE §9.2) |
+| A7 | Baixa | `collectStats` sem proteção contra sobreposição | Coleta serializada |
+| A8 | Baixa | As strikes do rate limit não expiram; upgrades recusados geram log sem limite | Janela deslizante e log amostrado |
+| A9 | Informativa | `share-ca --minutes` inválido vira `NaN` e encerra na hora | Validar o argumento |
+| A10 | Informativa | O teste de vazamento em log não procura IPv6; o teste de heartbeat usa a propriedade privada `_socket` do `ws` | Endurecer os testes |
+
+### 13.6 POC validada × requisitos de produção
+
+- **A POC-02A demonstra:**
+  - áudio WebRTC bidirecional real Windows ↔ iPhone na LAN (relato e captura do usuário, §6);
+  - sinalização validada, HTTPS/WSS com CA local restrita, isolamento de pares (A1) e proteção de `Host` (A3);
+  - testes automatizados e CI.
+- **A POC-02A não demonstra, e o produto ainda exige:**
+  - autenticação e autorização;
+  - TURN/STUN e redes externas;
+  - resistência a abuso (A2, A8);
+  - reconexão e ICE restart;
+  - medição de latência ponta a ponta;
+  - Android;
+  - estabilidade prolongada.
+
+  A CA local, o ID de sessão como convite e o servidor de sinalização local são **instrumentos de teste**, não
+  componentes de produção.
+
+**A auditoria não está formalmente encerrada e o PR #3 não está integrado.** Ambos aguardam a revisão do arquiteto.

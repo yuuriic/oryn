@@ -142,6 +142,18 @@ export function assertLoopbackHttpHost(host: string): void {
   }
 }
 
+export type HostCheck = 'ok' | 'missing' | 'unknown';
+
+/**
+ * Valida o cabeçalho Host contra o conjunto exato esperado para um listener ("host:porta",
+ * minúsculo). Bloqueia DNS rebinding: um domínio externo que resolva para este computador
+ * chega com Host diferente e é recusado. X-Forwarded-Host nunca é considerado.
+ */
+export function checkHost(host: string | undefined, allowed: ReadonlySet<string>): HostCheck {
+  if (host === undefined || host === '') return 'missing';
+  return allowed.has(host.toLowerCase()) ? 'ok' : 'unknown';
+}
+
 export async function startServer(config: ServerConfig): Promise<RunningServer> {
   const log = config.log ?? ((line: string) => console.log(line));
   const httpHost = config.httpHost ?? '127.0.0.1';
@@ -158,10 +170,21 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
   });
 
   const allowedOrigins = new Set<string>();
+  // Hosts aceitos por listener, preenchidos após o bind (com a porta efetiva). Antes disso, tudo é recusado.
+  const httpHosts = new Set<string>();
+  const httpsHosts = new Set<string>();
   let httpsOrigin: string | null = null;
 
   const requestHandler = (req: http.IncomingMessage, res: http.ServerResponse, isLocal: boolean): void => {
     for (const [k, v] of Object.entries(SECURITY_HEADERS)) res.setHeader(k, v);
+    // Host antes de qualquer conteúdo (inclusive /api/info).
+    const host = checkHost(req.headers.host, isLocal ? httpHosts : httpsHosts);
+    if (host !== 'ok') {
+      res
+        .writeHead(host === 'missing' ? 400 : 421, { 'Content-Type': 'text/plain; charset=utf-8' })
+        .end(host === 'missing' ? 'Host ausente' : 'Host não reconhecido');
+      return;
+    }
     if (req.method !== 'GET' && req.method !== 'HEAD') {
       res.writeHead(405, { Allow: 'GET, HEAD' }).end();
       return;
@@ -193,7 +216,14 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES, perMessageDeflate: false });
   const alive = new WeakMap<WebSocket, boolean>();
 
-  const onUpgrade = (req: http.IncomingMessage, socket: Duplex, head: Buffer): void => {
+  const onUpgrade = (req: http.IncomingMessage, socket: Duplex, head: Buffer, hosts: ReadonlySet<string>): void => {
+    // Política de Host do listener que recebeu o upgrade, verificada separadamente e antes do Origin.
+    const host = checkHost(req.headers.host, hosts);
+    if (host !== 'ok') {
+      socket.end(`HTTP/1.1 ${host === 'missing' ? '400 Bad Request' : '421 Misdirected Request'}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+      log(`[sinalização] upgrade recusado (host)`);
+      return;
+    }
     const path = new URL(req.url ?? '/', 'http://x').pathname;
     const origin = req.headers.origin;
     // Origin obrigatório e exato: impede que páginas de outros sites usem a sinalização (CSWSH).
@@ -257,8 +287,8 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
     registry.sweep();
   }, config.heartbeatMs ?? 15_000);
 
-  httpServer.on('upgrade', onUpgrade);
-  httpsServer?.on('upgrade', onUpgrade);
+  httpServer.on('upgrade', (req, socket, head) => onUpgrade(req, socket, head, httpHosts));
+  httpsServer?.on('upgrade', (req, socket, head) => onUpgrade(req, socket, head, httpsHosts));
 
   const stop = (s: http.Server | null) =>
     new Promise<void>((resolve) => {
@@ -286,11 +316,15 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
     allowedOrigins.add(httpOrigin);
     // localhost aponta para o loopback no navegador do próprio PC; o Origin enviado é "http://localhost:porta".
     allowedOrigins.add(`http://localhost:${bound.port}`);
+    httpHosts.add(`${hostForUrl(bound.address)}:${bound.port}`.toLowerCase());
+    httpHosts.add(`localhost:${bound.port}`);
 
     if (httpsServer && config.https) {
       const tls = await listen(httpsServer, config.https.port, config.https.host);
       httpsOrigin = `https://${hostForUrl(config.https.host)}:${tls.port}`;
       allowedOrigins.add(httpsOrigin);
+      // HTTPS da LAN: somente o IP configurado (o mesmo do certificado) e a porta efetiva.
+      httpsHosts.add(`${hostForUrl(config.https.host)}:${tls.port}`.toLowerCase());
     }
   } catch (error) {
     // Falha ao abrir qualquer listener: fecha o que já abriu e para o heartbeat (sem recursos órfãos).

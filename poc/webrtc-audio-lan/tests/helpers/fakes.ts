@@ -81,6 +81,8 @@ export class FakePeerConnection {
   readonly setCodecPreferences = vi.fn();
   /** Pontos de pausa opcionais para testes de corrida. */
   gates: Partial<Record<'setRemoteDescription' | 'createOffer', Gate>> = {};
+  /** Contagem de chamadas por método (para provar serialização e ausência de reexecução). */
+  readonly calls = { createOffer: 0, setRemoteDescription: 0 };
   statsEntries: unknown[] = [];
 
   addTrack(track: FakeTrack): void {
@@ -90,6 +92,8 @@ export class FakePeerConnection {
     return [{ sender: this.senders[0], setCodecPreferences: this.setCodecPreferences }];
   }
   async createOffer(): Promise<RTCSessionDescriptionInit> {
+    this.calls.createOffer += 1;
+    // Como no Chrome real, uma operação em andamento NÃO se resolve só porque close() foi chamado.
     await this.gates.createOffer?.promise;
     return { type: 'offer', sdp: `v=0\r\no=- ${this.id} 1 IN IP4 0.0.0.0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n` };
   }
@@ -105,6 +109,7 @@ export class FakePeerConnection {
     this.maybeConnect();
   }
   async setRemoteDescription(desc: RTCSessionDescriptionInit): Promise<void> {
+    this.calls.setRemoteDescription += 1;
     await this.gates.setRemoteDescription?.promise;
     if (this.signalingState === 'closed') throw new DOMException('fechada', 'InvalidStateError');
     this.remoteDescription = desc;

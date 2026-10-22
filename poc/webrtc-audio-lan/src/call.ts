@@ -106,7 +106,14 @@ export class PeerCall {
   private signaling: SignalingLike | null = null;
   private pc: RTCPeerConnection | null = null;
   private pending: RTCIceCandidateInit[] = [];
+  /**
+   * Fila de operações SDP do par ATUAL. Cada par (geração) tem a sua: operações de um par
+   * desfeito podem ficar pendentes para sempre após pc.close() (comportamento observado no
+   * Chrome) e não podem bloquear a negociação do par seguinte.
+   */
   private queue: Promise<void> = Promise.resolve();
+  /** Incrementada sempre que o par atual é desfeito; invalida operações e erros antigos. */
+  private generation = 0;
 
   private sessionId: string | null = null;
   private role: Role | null = null;
@@ -259,7 +266,7 @@ export class PeerCall {
         this.fail('Tempo de negociação esgotado: a conexão WebRTC não foi estabelecida.');
       }
     }, this.deps.negotiationTimeoutMs ?? 20_000);
-    this.statsTimer = setInterval(() => void this.collectStats(pc), this.deps.statsIntervalMs ?? 1000);
+    this.statsTimer = setInterval(() => void this.collectStats(pc, epoch), this.deps.statsIntervalMs ?? 1000);
 
     if (this.role === 'host') this.enqueue(() => this.makeOffer(pc));
   }
@@ -320,10 +327,11 @@ export class PeerCall {
   }
 
   private async makeOffer(pc: RTCPeerConnection): Promise<void> {
+    const epoch = this.epoch;
     const offer = await pc.createOffer();
-    if (this.stale(pc)) return;
+    if (this.stale(pc, epoch)) return;
     await pc.setLocalDescription(offer);
-    if (this.stale(pc)) return;
+    if (this.stale(pc, epoch)) return;
     this.sendSignal({ kind: 'offer', sdp: pc.localDescription?.sdp ?? '' });
     this.cb.onLog('Offer enviada.');
   }
@@ -342,13 +350,13 @@ export class PeerCall {
           return;
         }
         await pc.setRemoteDescription({ type: 'offer', sdp: payload.sdp });
-        if (this.stale(pc)) return;
+        if (this.stale(pc, epoch)) return;
         this.applyCodecPreferences(pc);
-        await this.flushCandidates(pc);
+        await this.flushCandidates(pc, epoch);
         const answer = await pc.createAnswer();
-        if (this.stale(pc)) return;
+        if (this.stale(pc, epoch)) return;
         await pc.setLocalDescription(answer);
-        if (this.stale(pc)) return;
+        if (this.stale(pc, epoch)) return;
         this.sendSignal({ kind: 'answer', sdp: pc.localDescription?.sdp ?? '' });
         this.cb.onLog('Offer recebida; answer enviada.');
         return;
@@ -359,8 +367,8 @@ export class PeerCall {
           return;
         }
         await pc.setRemoteDescription({ type: 'answer', sdp: payload.sdp });
-        if (this.stale(pc)) return;
-        await this.flushCandidates(pc);
+        if (this.stale(pc, epoch)) return;
+        await this.flushCandidates(pc, epoch);
         this.cb.onLog('Answer recebida.');
         return;
       }
@@ -386,10 +394,10 @@ export class PeerCall {
     }
   }
 
-  private async flushCandidates(pc: RTCPeerConnection): Promise<void> {
+  private async flushCandidates(pc: RTCPeerConnection, epoch: number): Promise<void> {
     const queued = this.pending.splice(0);
     for (const c of queued) {
-      if (this.stale(pc)) return;
+      if (this.stale(pc, epoch)) return;
       await this.addCandidate(pc, c);
     }
   }
@@ -402,12 +410,16 @@ export class PeerCall {
     }
   }
 
-  /** Serializa operações SDP; um erro em uma operação não bloqueia as seguintes. */
+  /**
+   * Serializa operações SDP do par atual; um erro em uma operação não bloqueia as seguintes.
+   * Operações e erros de uma geração anterior (par já desfeito) são descartados.
+   */
   private enqueue(op: () => Promise<void>): void {
+    const generation = this.generation;
     this.queue = this.queue
-      .then(op)
+      .then(() => (this.disposed || generation !== this.generation ? undefined : op()))
       .catch((error: unknown) => {
-        if (this.disposed) return;
+        if (this.disposed || generation !== this.generation) return;
         const name = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
         this.fail(`Falha na negociação WebRTC — ${name}`);
       });
@@ -417,22 +429,22 @@ export class PeerCall {
     this.signaling?.send({ type: 'signal', epoch: this.epoch, payload });
   }
 
-  /** true quando a sessão foi encerrada ou o par foi substituído durante uma operação assíncrona. */
-  private stale(pc: RTCPeerConnection): boolean {
-    return this.disposed || this.pc !== pc;
+  /** true quando a sessão foi encerrada ou o par (conexão ou epoch) mudou durante uma operação assíncrona. */
+  private stale(pc: RTCPeerConnection, epoch: number): boolean {
+    return this.disposed || this.pc !== pc || this.epoch !== epoch;
   }
 
   // ---------- métricas ----------
 
-  private async collectStats(pc: RTCPeerConnection): Promise<void> {
-    if (this.stale(pc)) return;
+  private async collectStats(pc: RTCPeerConnection, epoch: number): Promise<void> {
+    if (this.stale(pc, epoch)) return;
     let entries;
     try {
       entries = toEntries(await pc.getStats());
     } catch {
       return;
     }
-    if (this.stale(pc)) return;
+    if (this.stale(pc, epoch)) return;
     const out = outboundAudio(entries);
     const inn = inboundAudio(entries);
     const remote = remoteInboundAudio(entries);
@@ -481,6 +493,9 @@ export class PeerCall {
 
   /** Fecha a RTCPeerConnection atual e para seus timers; mantém microfone e sinalização. */
   private teardownPeer(): void {
+    // Nova geração com fila própria: operações pendentes do par anterior não bloqueiam o próximo.
+    this.generation += 1;
+    this.queue = Promise.resolve();
     if (this.statsTimer !== null) clearInterval(this.statsTimer);
     this.statsTimer = null;
     this.clearNegotiationTimer();
