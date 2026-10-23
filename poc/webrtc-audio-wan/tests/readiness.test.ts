@@ -1,6 +1,7 @@
 // Prontidão WAN (02B.5): mapeamento PASS/FAIL/NOT_VERIFIED, nada de operador vira PASS, diagnóstico local
 // simulado e CLI consolidada (sem rede, sem túnel, sem credenciais reais).
 import { spawnSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -116,13 +117,16 @@ describe('CLI readiness', () => {
     expect(r.out).toContain('NÃO ativar');
   });
 
-  it('configuração real fictícia fora do repositório, TURN habilitado → sem FAIL, sem imprimir segredos; JSON gerado', () => {
+  /**
+   * Configuração "real" fictícia fora do repositório. Os segredos são GERADOS em execução (randomBytes):
+   * um literal que imita segredo, uma vez versionado, seria encontrado pela própria busca de P-SECRETS
+   * (foi o que reprovou a CI do cfb72d5).
+   */
+  function realSetup(secrets: { tunnelSecret: string; turnToken: string }) {
     const TUNNEL = '6f1d2c3b-4a59-4e8f-9a7b-1c2d3e4f5a6b';
-    const SECRET = 'U0VHUkVETy1ETy1UVU5FTC1GSUNUSUNJTw==';
-    const TOKEN = 'TOKEN-TURN-FICTICIO-0123456789';
     const AUD = '4f2a9c1e7b3d5f60817293a4b5c6d7e8f9a0b1c2d3e4f5061728394a5b6c7d8e';
     const creds = join(dir, `${TUNNEL}.json`);
-    writeFileSync(creds, JSON.stringify({ AccountTag: 'conta', TunnelSecret: SECRET, TunnelID: TUNNEL }));
+    writeFileSync(creds, JSON.stringify({ AccountTag: 'conta', TunnelSecret: secrets.tunnelSecret, TunnelID: TUNNEL }));
     const cfg = join(dir, 'config.yml');
     writeFileSync(cfg, stringify({
       tunnel: TUNNEL,
@@ -141,17 +145,39 @@ describe('CLI readiness', () => {
       `ORYN_ACCESS_AUD=${AUD}`,
       'ORYN_TURN_PROVIDER=cloudflare',
       'ORYN_TURN_KEY_ID=turnkey0123456789',
-      `ORYN_TURN_API_TOKEN=${TOKEN}`,
+      `ORYN_TURN_API_TOKEN=${secrets.turnToken}`,
     ].join('\n'));
+    return { cfg, env, AUD };
+  }
+
+  it('configuração real fictícia fora do repositório, TURN habilitado → sem FAIL, sem imprimir segredos; JSON gerado', () => {
+    // Valores únicos por execução, nos formatos aceitos pelos validadores (segredo base64; token [A-Za-z0-9._-]{16,}).
+    const SECRET = randomBytes(32).toString('base64');
+    const TOKEN = `tok_${randomBytes(24).toString('base64url')}`;
+    const { cfg, env, AUD } = realSetup({ tunnelSecret: SECRET, turnToken: TOKEN });
     const json = join(dir, 'readiness.json');
     const r = exec([`--config=${cfg}`, `--env-file=${env}`, '--skip-diagnostics', `--json=${json}`]);
     expect(r.out).toContain('nenhum FAIL');
+    expect(r.out).toMatch(/PASS\s+P-SECRETS/);
     expect(r.status).toBe(0);
     for (const secret of [SECRET, TOKEN, AUD]) expect(r.out).not.toContain(secret);
     expect(r.out).toMatch(/NOT_VERIFIED\s+N-APPROVAL/);
     const saved = readFileSync(json, 'utf8');
     for (const secret of [SECRET, TOKEN, AUD]) expect(saved).not.toContain(secret);
     expect(JSON.parse(saved).totais.fail).toBe(0);
+  });
+
+  it('segredos que REALMENTE estão versionados são detectados (P-SECRETS FAIL), sem imprimir os valores', () => {
+    // Valor que de fato existe em arquivos rastreados pelo git (é o ID de chave TURN usado nos testes);
+    // usado aqui como "segredo" para provar a detecção de ponta a ponta (CLI → git grep pela entrada padrão).
+    const VERSIONED = 'turnkey0123456789';
+    expect(trackedContains(repoRoot(), VERSIONED)).toBe(true);
+    const { cfg, env } = realSetup({ tunnelSecret: VERSIONED, turnToken: VERSIONED });
+    const r = exec([`--config=${cfg}`, `--env-file=${env}`, '--skip-diagnostics']);
+    expect(r.status).toBe(1);
+    expect(r.out).toMatch(/FAIL\s+P-SECRETS\s.*token da API TURN, segredo do túnel/);
+    expect(r.out).toMatch(/FAIL\s+P-TURN-SERVER/);
+    expect(r.out).not.toContain(VERSIONED);
   });
 
   it('recusa argumentos com valores sensíveis', () => {

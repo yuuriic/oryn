@@ -1454,7 +1454,7 @@ Saída 0 = nenhum FAIL; o texto lembra que isso **não** autoriza a ativação.
 | N-TURNS-REAL e N-* | Resposta real com `turns:`; CI do commit; aplicação Access; política; DNS; `ingress validate`; JWT no WebSocket real; chave TURN real; rollback; janela; aprovação | Operador / ambiente real |
 
 **Execução observada [Observado]:**
-- modelos versionados em modo `template`, com diagnóstico: 40 PASS · **1 FAIL** · 12 NOT VERIFIED. O FAIL é
+- modelos versionados em modo `template`, com diagnóstico: 38 PASS · **1 FAIL** · 14 NOT VERIFIED. O FAIL é
   `P-TURN-ON`, porque o exemplo tem `ORYN_TURN_PROVIDER=off`. É o resultado esperado: o modelo não está pronto para
   R4–R7;
 - configuração real **fictícia** fora do repositório, com TURN habilitado: nenhum FAIL, nenhum segredo impresso,
@@ -1545,7 +1545,7 @@ A restrição é aplicada **no PC**. No iPhone em 4G não há controle de rede e
 | `pnpm audit` | Nenhuma vulnerabilidade conhecida |
 | `pnpm e2e` | **54/54** em três execuções (Chrome 155.0.8059.85 ↔ Edge 155.0.4283.62): as 51 verificações anteriores e mais 3 de evidência |
 | `pnpm diagnose` | 24 PASS, 0 FAIL |
-| `pnpm readiness` (modelos, template) | 40 PASS · 1 FAIL (TURN desligado no exemplo, esperado) · 12 NOT VERIFIED |
+| `pnpm readiness` (modelos, template) | 38 PASS · 1 FAIL (TURN desligado no exemplo, esperado) · 14 NOT VERIFIED |
 
 ### 13.9 Riscos residuais
 
