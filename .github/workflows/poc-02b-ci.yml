@@ -1,0 +1,196 @@
+# CI da POC-02B (poc/webrtc-audio-wan): verificações estáticas, testes, build, audit e
+# E2E com dois navegadores reais (Chrome ↔ Edge, processos separados, microfones sintéticos).
+#
+# Segurança: somente leitura do repositório, sem segredos, sem tokens Cloudflare, sem certificados,
+# sem deploy e sem merge.
+#
+# Checks obrigatórios × filtros de caminho: um workflow com "paths" no gatilho de PR nem é criado
+# quando o PR não toca esses caminhos, e um check obrigatório ficaria pendente para sempre. Por isso:
+# - PRs para main NÃO têm filtro de caminho; o job "changes" decide se a POC-02B foi alterada;
+# - os jobs pesados só rodam quando há mudança relevante;
+# - o job "result" roda SEMPRE e é o único indicado como check obrigatório: passa quando nada
+#   relevante mudou e falha se qualquer job necessário falhar ou for cancelado.
+
+name: POC-02B CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [poc/webrtc-audio-wan]
+    paths:
+      - 'poc/webrtc-audio-wan/**'
+      - '.github/workflows/poc-02b-ci.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: poc-02b-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '24.19.0'
+
+jobs:
+  changes:
+    name: Mudanças na POC-02B
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      relevant: ${{ steps.detect.outputs.relevant }}
+    steps:
+      - name: Checkout (histórico completo para comparar com a base)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Detectar arquivos da POC-02B alterados
+        id: detect
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            # Push: o gatilho já filtrou por caminho.
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Três pontos: mudanças do PR desde o ponto de divergência com a base.
+          changed="$(git diff --name-only "$BASE_SHA...$HEAD_SHA")"
+          if printf '%s\n' "$changed" | grep -qE '^(poc/webrtc-audio-wan/|\.github/workflows/poc-02b-ci\.yml$)'; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  checks:
+    name: Verificações (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+        working-directory: poc/webrtc-audio-wan
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: pnpm (versão do packageManager)
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: poc/webrtc-audio-wan/package.json
+
+      - name: Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: poc/webrtc-audio-wan/pnpm-lock.yaml
+
+      - name: Instalação reproduzível
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Testes unitários e de integração
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+      - name: Audit de dependências
+        if: runner.os == 'Linux'
+        run: pnpm audit
+
+  e2e:
+    name: E2E Chrome ↔ Edge (windows-2025)
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
+    # Usa o Google Chrome e o Microsoft Edge pré-instalados na imagem do runner; as versões ficam
+    # registradas no log. O Edge NÃO é substituído por Chromium: se faltar, o job falha.
+    runs-on: windows-2025
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+        working-directory: poc/webrtc-audio-wan
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: pnpm (versão do packageManager)
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: poc/webrtc-audio-wan/package.json
+
+      - name: Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: poc/webrtc-audio-wan/pnpm-lock.yaml
+
+      - name: Instalação reproduzível
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Verificar Chrome e Edge do runner
+        shell: pwsh
+        run: |
+          $browsers = @(
+            'C:\Program Files\Google\Chrome\Application\chrome.exe',
+            'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'
+          )
+          foreach ($path in $browsers) {
+            if (-not (Test-Path $path)) { Write-Error "Navegador ausente no runner: $path"; exit 1 }
+            "{0} {1}" -f (Split-Path $path -Leaf), (Get-Item $path).VersionInfo.ProductVersion
+          }
+
+      - name: E2E com dois navegadores reais (microfones sintéticos)
+        # O script termina com código 1 se qualquer verificação falhar.
+        run: pnpm e2e
+
+  result:
+    name: POC-02B CI (resultado)
+    # Sempre executa: é o check indicado como obrigatório na proteção da main.
+    if: always()
+    needs: [changes, checks, e2e]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Consolidar resultado
+        shell: bash
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          RELEVANT: ${{ needs.changes.outputs.relevant }}
+          CHECKS: ${{ needs.checks.result }}
+          E2E: ${{ needs.e2e.result }}
+        run: |
+          echo "changes=$CHANGES relevant=$RELEVANT checks=$CHECKS e2e=$E2E"
+          if [ "$CHANGES" != "success" ]; then
+            echo "Falha ao detectar mudanças."; exit 1
+          fi
+          if [ "$RELEVANT" = "true" ]; then
+            if [ "$CHECKS" != "success" ] || [ "$E2E" != "success" ]; then
+              echo "Verificações da POC-02B não aprovadas."; exit 1
+            fi
+          else
+            echo "Nenhuma mudança na POC-02B: verificações não necessárias."
+          fi
