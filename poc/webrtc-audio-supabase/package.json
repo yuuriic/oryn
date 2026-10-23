@@ -1,0 +1,23 @@
+{
+  "name": "@oryn/poc-webrtc-audio-supabase",
+  "private": true,
+  "version": "0.0.0",
+  "description": "POC-02C: sinalização WebRTC por Supabase Realtime (fundação local 02C.1A; descartável)",
+  "type": "module",
+  "packageManager": "pnpm@12.6.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:remote": "vitest run --config vitest.remote.config.ts"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.11",
+    "@supabase/supabase-js": "2.118.0",
+    "@types/node": "24.19.2",
+    "typescript": "7.0.2",
+    "vitest": "5.0.5"
+  }
+}
