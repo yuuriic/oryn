@@ -14,6 +14,7 @@ import { join } from 'node:path';
 import { formatPairingCode } from '../server/admin-auth.ts';
 import { startServer } from '../server/server.ts';
 import { SimulatedTurnProvider } from '../server/turn.ts';
+import { validateEvidence } from '../src/evidence.ts';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const headless = !process.argv.includes('--headed');
@@ -184,6 +185,19 @@ try {
   results.observed.A = a;
   results.observed.B = b;
   check('codec Opus nos dois lados', /audio\/opus/.test(a.codec) && /audio\/opus/.test(b.codec), { A: a.codec, B: b.codec });
+
+  // Evidência sanitizada (02B.5): cada lado copia a sua; o mesmo validador do `pnpm evidence:check` aprova.
+  const evidenceOf = async (p) => {
+    await p.page.click('[data-testid="btn-evidence"]');
+    await p.page.waitForSelector('[data-testid="evidence"]:not([hidden])');
+    return JSON.parse(await text(p, '[data-testid="evidence"]'));
+  };
+  const evA = await evidenceOf(A);
+  const evB = await evidenceOf(B);
+  results.observed.evidence = { A: evA, B: evB };
+  check('evidência sanitizada dos dois lados válida (sem IPs, tokens, credenciais)', validateEvidence(evA).length === 0 && validateEvidence(evB).length === 0, { A: validateEvidence(evA), B: validateEvidence(evB) });
+  check('evidência coerente: mesma sessão (prefixo), papéis, caminho direto pelo par selecionado', evA.sessao === evB.sessao && evA.papel === 'anfitrião' && evB.papel === 'convidado' && evA.caminho === 'direto' && evA.parSelecionado.local === 'host' && evA.audio.recebidoNesteLado === 'sim' && evB.audio.recebidoNesteLado === 'sim', { A: evA.caminho, B: evB.caminho });
+  check('evidência não traz ID de sessão completo, convite ou token administrativo', ![sessionId, invite, operatorToken].some((sec) => JSON.stringify([evA, evB]).includes(sec)));
   check('A envia e recebe pacotes', a.packetsSent > 0 && a.packetsReceived > 0, { sent: a.packetsSent, received: a.packetsReceived });
   check('B envia e recebe pacotes', b.packetsSent > 0 && b.packetsReceived > 0, { sent: b.packetsSent, received: b.packetsReceived });
   check('par ICE identificado sem endereços', /host|srflx|prflx|relay/.test(a.pair) && !/\d+\.\d+\.\d+\.\d+/.test(a.pair + b.pair), { A: a.pair, B: b.pair });

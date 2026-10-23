@@ -4,7 +4,7 @@ Prova de conceito **descartável** do Oryn. Objetivo final: chamada de áudio We
 Wi-Fi residencial e um iPhone (Safari) em rede móvel 4G/5G, com sinalização pública HTTPS/WSS (Cloudflare
 Tunnel) e STUN/TURN gerenciado (Cloudflare). Plano, decisões e evidências em `docs/validation/POC-02B.md`.
 
-## Estado atual: incremento 02B.4
+## Estado atual: incremento 02B.5
 
 - Baseline copiado da POC-02A (`poc/webrtc-audio-lan/`, conteúdo de `f068509`), isolado no 02B.1.
 - **CA local e HTTPS local removidos** no 02B.2A.
@@ -33,6 +33,13 @@ Tunnel) e STUN/TURN gerenciado (Cloudflare). Plano, decisões e evidências em `
     limites e revogação. O segredo do provedor fica só no servidor.
   - **Caminho de mídia** comprovado pelo par ICE selecionado, nunca pela configuração.
   - **Sem TURN real nesta etapa:** relay e relay-tls não foram comprovados em rede real.
+- **02B.5:** prontidão para os testes WAN, **sem ativar nada**. Detalhes em `POC-02B.md` §13 e no runbook
+  `cloudflare/README.md`.
+  - Matriz R1–R8 com critérios objetivos (todos não executados).
+  - Botão **"Copiar evidência (sanitizada)"** na página.
+  - `pnpm evidence:check`: valida as evidências sem imprimir valores.
+  - `pnpm diagnose`: diagnóstico local simulado, sem rede.
+  - `pnpm readiness`: relatório PASS / FAIL / NOT VERIFIED. **Não autoriza a ativação.**
 - **Ainda não há** Cloudflare Tunnel nem STUN/TURN. **Nenhum serviço desta POC deve ser exposto na internet**
   até a aprovação arquitetural dos critérios de exposição (`POC-02B.md` §9.8, §10.10 e §11.8).
 
@@ -104,6 +111,9 @@ pnpm build
 pnpm audit
 pnpm e2e         # Chrome ↔ Edge no próprio PC, microfones sintéticos, via http://localhost
 pnpm preflight:cloudflare -- --config=<config.yml> --env-file=<arquivo>   # offline; ver cloudflare/README.md
+pnpm readiness -- --config=<config.yml> --env-file=<arquivo>             # prontidão consolidada (offline)
+pnpm diagnose                                                            # diagnóstico local simulado
+pnpm evidence:check -- <evidência.json> ...                              # valida evidências sanitizadas
 pnpm serve       # requer pnpm build; sinalização em :5280 e administração em :5281 (--http-port=N, --admin-port=N)
 ```
 

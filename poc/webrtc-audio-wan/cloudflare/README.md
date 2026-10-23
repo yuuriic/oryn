@@ -1,7 +1,8 @@
-# Cloudflare Tunnel + Access: runbook da POC-02B (02B.3B)
+# Cloudflare Tunnel + Access + TURN: runbook da POC-02B (02B.3B, 02B.4, 02B.5)
 
 > **Estado:** preparação offline. **Nada aqui autoriza ativar o túnel, criar DNS ou expor o servidor.**
-> A ativação depende de aprovação arquitetural explícita (`docs/validation/POC-02B.md` §11.8).
+> A ativação depende de aprovação explícita (`docs/validation/POC-02B.md` §11.8 e §13.5). Nenhum resultado das
+> ferramentas (`preflight:cloudflare`, `diagnose`, `readiness`) autoriza a ativação.
 
 ## 1. Arquitetura
 
@@ -101,9 +102,23 @@ o segredo do túnel nunca. O validador recusa, entre outros:
 - valores de exemplo;
 - Access desligado, hostname reservado e arquivos reais versionados.
 
+### 4.5 Prontidão consolidada (02B.5, obrigatória, sem rede)
+
+```powershell
+pnpm readiness -- --config="$env:USERPROFILE\.cloudflared\config.yml" --env-file="<arquivo de ambiente>" --json="<pasta fora do repo>\readiness.json"
+```
+
+A ferramenta junta a pré-validação (§4.4, agora com TURN), o diagnóstico local simulado (`pnpm diagnose`) e a
+busca de segredos reais versionados. Os segredos vão ao `git grep` pela entrada padrão, nunca em argumentos. Os
+itens do operador ficam **NOT VERIFIED**.
+
+- **Exige:** zero FAIL.
+- **NOT VERIFIED nunca vira PASS:** cada item é conferido manualmente com a evidência indicada.
+- **Critérios de ativação:** checklist de 10 itens em `POC-02B.md` §13.5.
+
 ## 5. Ativação: somente após aprovação
 
-1. §4 completo e pré-validação "OK".
+1. §4 completo, pré-validação "OK", prontidão sem FAIL e checklist de `POC-02B.md` §13.5 assinado pelo usuário.
 2. Iniciar o servidor (S4) e conferir o banner.
 3. Iniciar o túnel **sem token na linha de comando**:
    `cloudflared tunnel --config "$env:USERPROFILE\.cloudflared\config.yml" run oryn-poc-02b`
@@ -132,6 +147,21 @@ Regras:
 | P11 | Logs: buscar `eyJ` (início de JWT) e e-mails nos logs do servidor e do `cloudflared` | Nenhuma ocorrência | Resultado da busca |
 | P12 | Encerrar o túnel (Ctrl+C) e repetir P3 | Erro da Cloudflare (túnel indisponível), nunca a página | Código |
 
+### 6.1 Matriz WAN R1–R8 e evidências (02B.5)
+
+A matriz completa, com critérios objetivos, está em `docs/validation/POC-02B.md` §13.1. Para cada cenário:
+1. Em cada participante, ao fim do cenário (antes ou depois de "Encerrar"), clicar em **"Copiar evidência
+   (sanitizada)"** e salvar o JSON **fora do repositório**. Ex.: `R5-pc.json`, `R5-iphone.json`.
+2. Preencher `audio.bidirecional` e `seguranca` (aprovado, reprovado ou não se aplica) depois de ouvir os dois
+   lados e cumprir o roteiro de segurança do cenário.
+3. Validar: `pnpm evidence:check -- R5-pc.json R5-iphone.json`. A saída deve ser 0, com "mesma sessão, os dois
+   papéis presentes".
+4. Registrar no `POC-02B.md` o status (APROVADO, REPROVADO ou INCONCLUSIVO) segundo o critério da matriz.
+   **relay e TLS só são comprovados pelo par selecionado**; dados `indisponível` não contam como aprovação.
+
+**R7 (UDP restrito):** método, prova independente e remoção das regras de firewall em `POC-02B.md` §13.6. Exige
+autorização do usuário por alterar o sistema.
+
 ## 7. Rollback
 
 **Gatilhos (qualquer um → rollback imediato):**
@@ -149,3 +179,20 @@ Regras:
 | R4 | Painel DNS: remover o CNAME de `<HOSTNAME>` | Hostname deixa de existir |
 | R5 | Se as credenciais vazaram: `cloudflared tunnel delete oryn-poc-02b` e apagar `<UUID>.json` | Credenciais inutilizadas |
 | R6 | Registrar o ocorrido em `POC-02B.md` | Evidência |
+
+### 7.1 Incidentes (02B.5)
+
+Procedimento completo em `POC-02B.md` §13.7. Pontos essenciais:
+- **Ordem:** Ctrl+C no `cloudflared` → "Encerrar" nas páginas e Ctrl+C no servidor → revogar sessões do Access →
+  remover o DNS.
+- **Revogar uma credencial TURN não encerra instantaneamente uma chamada já estabelecida:** encerre as chamadas e
+  o servidor.
+- **Suspeita de exposição de segredo:** identificar qual, sem copiá-lo para lugar nenhum. Depois **rotacionar**:
+  - chave TURN;
+  - túnel (excluir e recriar);
+  - sessões do Access.
+
+  Segredo que chegou a ser versionado é tratado como comprometido. Confirme com `pnpm readiness` (P-SECRETS PASS).
+- **Confirmar o fim da exposição de fora:** do iPhone em 4G, o hostname não serve a POC; `cloudflared tunnel info`
+  sem conectores.
+- **Preservar** só evidências sanitizadas (`pnpm evidence:check` OK) e linhas de log sem segredos.

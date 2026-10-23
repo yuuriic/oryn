@@ -5,8 +5,8 @@
 | Branch | `poc/webrtc-audio-wan`, criada a partir de `main` em `f068509` (PR #3 da POC-02A) |
 | Código | `poc/webrtc-audio-wan/` |
 | Relação com o ARCHITECTURE.md | P02 (§14): travessia de NAT, CGNAT, TURN e UDP bloqueado; credenciais TURN temporárias (§9.1) |
-| Incremento atual | **02B.4 — integração STUN/TURN** (§12) |
-| Status | **02B.1, 02B.2A e 02B.2C aprovados (02B.2C em `b3e1bf2`, informado pelo usuário). 02B.3A publicado em `ed4d948` com CI verde. 02B.3B publicado em `4b765fe` + `44c82e4` com CI verde. 02B.4 aguardando revisão do arquiteto.** Exposição pública **proibida** até a aprovação e o cumprimento dos critérios de §9.8, §10.10, §11.8 e §12.11 |
+| Incremento atual | **02B.5 — prontidão e validação de segurança para os testes WAN** (§13) |
+| Status | **02B.1, 02B.2A e 02B.2C aprovados (02B.2C em `b3e1bf2`, informado pelo usuário). 02B.3A publicado em `ed4d948` com CI verde. 02B.3B publicado em `4b765fe` + `44c82e4` com CI verde. 02B.4 publicado em `6daeb99` com CI verde. 02B.5 aguardando revisão do arquiteto.** Exposição pública **proibida** até a aprovação e o cumprimento dos critérios de §9.8, §10.10, §11.8, §12.11 e §13.5 |
 
 Legenda:
 - **[Observado]:** medido em execução pelo agente.
@@ -55,7 +55,8 @@ internet.
 | **02B.3A** | Validação criptográfica do JWT do Cloudflare Access na origem (HTTP e WebSocket), JWKS com cache e falha fechada | **Concluído** (§10); `ed4d948`, CI verde |
 | **02B.3B** | Prontidão Cloudflare offline: modelos, pré-validação, fronteira de confiança, runbook e protocolo de teste real | **Concluído** (§11); `4b765fe` + `44c82e4`, CI verde |
 | 02B.3 | ~~Admissão e controle de abuso~~ **antecipado para o 02B.2B**; resta a proteção na borda (Access/WAF), a definir com o túnel | Parcial |
-| **02B.4** | Modos ICE (auto/direct/relay/relay-tls), credenciais TURN temporárias emitidas no servidor (adaptador, limites, revogação), estatísticas do par selecionado | **Concluído; em revisão** (§12) |
+| **02B.4** | Modos ICE (auto/direct/relay/relay-tls), credenciais TURN temporárias emitidas no servidor (adaptador, limites, revogação), estatísticas do par selecionado | **Concluído** (§12); `6daeb99`, CI verde |
+| **02B.5** | Prontidão WAN: matriz R1–R8, evidência sanitizada, prontidão consolidada (PASS/FAIL/NOT VERIFIED), diagnóstico local, checklist de ativação, rollback e incidentes | **Concluído; em revisão** (§13) |
 | 02B.5 | ~~Modos ICE e métricas de relay~~ **antecipados para o 02B.4**; resta o tratamento de `disconnected`/`failed` (A6) e o ICE restart (§6, item 5) | Parcial |
 | 02B.6 | Exposição via Cloudflare Tunnel (runbook) | Não iniciado |
 | 02B.7 | E2E opcional com TURN real em ambiente local (o CI sem segredos foi antecipado para o 02B.2A) | Não iniciado |
@@ -1349,3 +1350,243 @@ execução no GitHub depende do commit e do push do usuário.
 3. Exposição (02B.6) com os critérios de §9.8, §10.10 e §11.8, mais a configuração TURN real validada pela
    pré-validação.
 4. Execução de R1–R6 com evidências do **par selecionado**. Só então declarar relay ou relay-tls comprovados.
+
+## 13. Incremento 02B.5 — prontidão e validação de segurança para os testes WAN
+
+**Pré-condições verificadas [Observado]:**
+- branch `poc/webrtc-audio-wan`, working tree limpa;
+- HEAD `6daeb9948016da66f958824f5ef0efb1ad6b114a` igual a `origin`;
+- `POC-02B CI` com **success** em push e pull_request para `6daeb99`. Estava em andamento no início; aguardei o
+  término;
+- PR #4 aberto e em Draft.
+
+**Escopo:** offline. Sem conta ou recurso Cloudflare, DNS, túnel, chamada à API TURN, porta pública ou segredo
+real. **Nenhum cenário R1–R8 foi executado em ambiente real; todos estão "não executado".** Nenhum resultado deste
+incremento autoriza a ativação (02B.6).
+
+**Funcionalidade:** sem ampliação de escopo. A única mudança na página é observabilidade: o botão "Copiar
+evidência (sanitizada)", §13.2.
+
+### 13.1 Matriz de testes WAN (R1–R8)
+
+**Convenções:**
+- **PC** = Windows em Wi-Fi residencial (Chrome);
+- **iPhone** = Safari em 4G/5G, com Wi-Fi desligado;
+- **Evidência** = arquivo JSON sanitizado de cada lado (§13.2), validado por `pnpm evidence:check`, mais as linhas
+  do log do servidor citadas. Nunca prints com IPs, JWT, cookies ou credenciais.
+
+**Status permitidos:** NÃO EXECUTADO, APROVADO, REPROVADO, INCONCLUSIVO. Nesta etapa, **todos** estão em NÃO
+EXECUTADO.
+
+| ID | Cenário | Critério objetivo de aprovação (todos os itens) | Evidência | Cobertura offline (simulada) | Status |
+|---|---|---|---|---|---|
+| **R1** | Access HTTP | (a) janela anônima → página de login do Access, nunca a da POC; (b) e-mail fora da política → negado pelo Access; (c) e-mail autorizado → página da POC; (d) log do servidor sem `access (http): invalid` para o usuário autorizado (iss, aud e assinatura conferidos na origem); (e) `curl` sem sessão → nunca `200` | Prints do login/negação (sem e-mail visível), linhas do log, código do `curl` | `access`, `access-server`, `trust-boundary`; diagnóstico D-A1–A6, D-J1–J2 | NÃO EXECUTADO |
+| **R2** | Access WebSocket | (a) Chrome autenticado: log `[access] upgrade WebSocket autenticado (kid …)`; (b) idem no Safari; (c) upgrade sem sessão (`curl` do runbook P4) → nunca `101`; (d) nenhum `access (upgrade): missing` para usuário autenticado; (e) **nenhum fallback por cookie** (não existe no código; o log mostra só o cabeçalho) | Linhas do log com prefixo do `kid`, código do `curl` | `access-server`, `trust-boundary`; D-W1–W2 | NÃO EXECUTADO |
+| **R3** | WebRTC direct | (a) PC `direct` ↔ iPhone `direct`; (b) se conectar: áudio nos dois sentidos confirmado pelo operador e par selecionado sem `relay` nas duas evidências; (c) se não conectar: falha registrada (estado ICE final e mensagem). **Falha não reprova a POC**; registrar como "rede impede rota direta" | 2 evidências + relato | `ice`, `call-ice`, E2E (direct local) | NÃO EXECUTADO |
+| **R4** | WebRTC auto | (a) TURN habilitado ("TURN configurado" na página); (b) áudio nos dois sentidos; (c) `caminho` de cada evidência coerente com `parSelecionado` (o validador recusa `relay` sem candidato relay); (d) se o par for direto, a página **não** diz relay ("TURN configurado (não implica uso)") | 2 evidências | `ice`, `call-ice`, E2E (auto com TURN inalcançável → direto) | NÃO EXECUTADO |
+| **R5** | WebRTC relay | (a) iPhone em `relay` (e PC em `relay` ou `auto`); (b) evidência do lado em `relay`: `parSelecionado.local = relay`; (c) áudio nos dois sentidos; (d) log da página sem candidatos locais host/srflx (sem fallback) | 2 evidências + log da página (sem endereços) | `ice`, `call-ice`, `ice-server`, E2E (relay inalcançável → falha fechada) | NÃO EXECUTADO |
+| **R6** | WebRTC relay-tls | (a) iPhone em `relay-tls` (só `turns:` sobre TCP; resumo "TURN n (tls)"); (b) evidência: `local = relay` e `relayProtocol = tls`. Se o navegador não expuser `relayProtocol`, registrar `indisponível` e marcar INCONCLUSIVO para (b); (c) áudio nos dois sentidos; (d) nenhuma URL `turn:` (UDP/TCP) na configuração do modo | 2 evidências | `ice`, `call-ice`, D-T2–T3, E2E (relay-tls sem TURN → falha fechada) | NÃO EXECUTADO |
+| **R7** | UDP restrito | (a) bloqueio de UDP no PC por regra de firewall controlada (§13.6); (b) **prova independente** da restrição: consulta DNS por UDP a um resolvedor externo falha e a mesma consulta por TCP funciona; (c) PC em `relay-tls` conecta, com evidência `relayProtocol = tls`; (d) PC em `direct` não estabelece par UDP (registrar). **O modo ICE sozinho nunca prova bloqueio de UDP** | Saídas dos comandos (sem IPs), 2 evidências | — (exige rede real) | NÃO EXECUTADO |
+| **R8** | Segurança e encerramento | (a) convite reutilizado e inválido → "Convite inválido"; (b) `/admin/pair` pelo hostname → 405; nenhuma operação administrativa pelo túnel; (c) sessão Access vencida → conexão encerrada e nova conexão recusada (com duração curta configurada para o teste); (d) "Encerrar" e desconexão → log "credencial revogada"; (e) rollback: Ctrl+C no `cloudflared` → hostname deixa de servir a POC (verificado de fora, pelo 4G) | Linhas do log, códigos HTTP, relato | `trust-boundary`, `admin-listener`, `ice-server`, `access-server`; D-B1–B2, D-I1–I2, D-T6, D-L1 | NÃO EXECUTADO |
+
+**Regras de julgamento:**
+- relay e TLS são comprovados **apenas** pelo par selecionado registrado na evidência;
+- áudio bidirecional e segurança são julgados pelo operador nos campos próprios (`audio.bidirecional`,
+  `seguranca`), nunca deduzidos pela página;
+- dado ausente fica `indisponível` e não conta como aprovação.
+
+### 13.2 Formato de evidência sanitizada
+
+Gerado pela página, com o botão "Copiar evidência (sanitizada)", a partir do que ela já mede. É validado **antes**
+de sair da página e de novo por `pnpm evidence:check <arquivos>`, sem rede, sem imprimir o conteúdo encontrado.
+
+| Campo | Conteúdo | Indisponível quando |
+|---|---|---|
+| `formato` | `oryn-poc-02b-evidencia/1` | — |
+| `sessao` | Prefixo de 4 caracteres + "…" (efêmero; nunca o ID completo) | Antes de entrar numa sessão |
+| `papel` | anfitrião, convidado | Idem |
+| `navegador`, `plataforma` | Família e versão principal (ex.: "Safari 18", "iPhone (iOS)"); nunca o user agent completo | Não reconhecido |
+| `modoIce`, `estadoIce`, `estadoConexao` | Modo e estados do `RTCPeerConnection` | Sem conexão |
+| `parSelecionado` | Tipos local/remoto, protocolo, `relayProtocol` (só se local = relay), estado | Navegador não expõe ou sem par |
+| `caminho` | `relay` ou `direto`, **só** pelo par selecionado | Sem par `succeeded` |
+| `turnConfigurado` | sim, não (configuração, não uso) | Sem configuração ICE |
+| `rttMs`, `rttFonte`, `jitterMs`, `perdaRecebidoPct`, `perdaEnviadoPct`, `pacotesEnviados`, `pacotesRecebidos` | Valores do `getStats` | Não exposto pelo navegador |
+| `audio.recebidoNesteLado` | sim/não (pacotes e nível acima do limiar) | Sem medição |
+| `audio.bidirecional`, `seguranca` | `pendente (operador)` → aprovado, reprovado ou não se aplica | — (o operador preenche) |
+| `timestamp` | ISO 8601 (UTC) | — |
+
+**O validador recusa:**
+- IPv4 e IPv6, JWT, tokens longos (convites, chaves), e-mails;
+- candidatos ICE, SDP, cookies e cabeçalhos do Access, URLs STUN/TURN;
+- campos como `username`, `credential`, `token`, `cookie`, `email`, `ip`, `url`;
+- ID de sessão completo e números escritos como texto;
+- `caminho = relay` sem candidato relay no par, e `relayProtocol` sem candidato local relay.
+
+### 13.3 Pré-validação integrada e relatório de prontidão
+
+`pnpm readiness -- --config=<config.yml> --env-file=<arquivo> [--mode=activation|template] [--skip-diagnostics] [--json=<saída>]`
+consolida, sem rede, quatro fontes:
+1. a pré-validação do 02B.3B, ampliada com TURN;
+2. o diagnóstico local (§13.4);
+3. a busca de segredos **reais** em arquivos versionados. Os valores do token TURN e do segredo do túnel são
+   passados ao `git grep` pela entrada padrão, nunca em argumentos; também procura JWT literal;
+4. os itens que só o ambiente real ou o operador confirmam.
+
+**Status:**
+- **PASS:** requisito verificado offline;
+- **FAIL:** requisito violado;
+- **NOT_VERIFIED:** exige ambiente real ou o operador. **Nunca é convertido em PASS.** No modo `template`, os
+  itens que dependem de arquivos reais ficam NOT_VERIFIED.
+
+Saída 0 = nenhum FAIL; o texto lembra que isso **não** autoriza a ativação.
+
+| ID | Requisito | Origem |
+|---|---|---|
+| P-HOST | Hostname público explícito e único | Pré-validação |
+| P-ACCESS / P-ACCESS-CFG | Access obrigatório; AUD e equipe consistentes (servidor e `cloudflared`) | Pré-validação |
+| P-5280 / P-5281 / P-404 | Só 5280; nenhuma referência a 5281; catch-all 404 | Pré-validação |
+| P-BYPASS / P-LOGS | Sem `httpHostHeader`, `noTLSVerify`, WARP, token, Quick Tunnel ou serviços extras; sem logs de cabeçalhos | Pré-validação |
+| P-CREDS / P-REAL / P-ENV | Credenciais fora do repositório; valores reais; variáveis conhecidas | Pré-validação |
+| P-TURN-FMT / P-TURN-ON / P-TURN-TTL / P-STUN | Formato TURN; provedor habilitado (R4–R7); validade ≥ 1 h; STUN sem porta 53 | Pré-validação + ambiente |
+| P-TURN-LIMITS | Limites e timeout do emissor | Código (testado) |
+| P-SECRETS / P-TURN-SERVER | Nenhum segredo real versionado; segredo TURN só no servidor | Busca no git + testes |
+| D-* | 24 cenários simulados (§13.4) | Diagnóstico |
+| N-TURNS-REAL e N-* | Resposta real com `turns:`; CI do commit; aplicação Access; política; DNS; `ingress validate`; JWT no WebSocket real; chave TURN real; rollback; janela; aprovação | Operador / ambiente real |
+
+**Execução observada [Observado]:**
+- modelos versionados em modo `template`, com diagnóstico: 40 PASS · **1 FAIL** · 12 NOT VERIFIED. O FAIL é
+  `P-TURN-ON`, porque o exemplo tem `ORYN_TURN_PROVIDER=off`. É o resultado esperado: o modelo não está pronto para
+  R4–R7;
+- configuração real **fictícia** fora do repositório, com TURN habilitado: nenhum FAIL, nenhum segredo impresso,
+  JSON sem segredos.
+
+### 13.4 Diagnóstico operacional local (`pnpm diagnose`)
+
+**Ambiente:** servidor real em portas efêmeras de 127.0.0.1, com:
+- emissor Access **simulado** (chaves geradas na hora);
+- túnel **simulado** (`server/sim/`, compartilhado com os testes);
+- provedor TURN **real** (`CloudflareTurnProvider`) com transporte **simulado**.
+
+Nenhuma rede pública, nenhuma credencial real. Resultado observado: **24 PASS, 0 FAIL**.
+
+| Área | Cenários |
+|---|---|
+| Access HTTP | D-A1 sem JWT → 403; D-A2 válido → 200; D-A3 expirado, D-A4 AUD de outra aplicação, D-A5 outra chave com o mesmo `kid`, D-A6 outra equipe → 403; D-J1 JWKS indisponível e D-J2 JWKS sem resposta → 503 no prazo |
+| Access WebSocket e Host/Origin | D-W1 sem JWT → 403; D-W2 válido → aberto; D-W3 Origin incompatível → 403; D-W4 hostname desconhecido → 421; D-W5 túnel apontado para 5281 → 421 |
+| Administração | D-B1 `/admin/pair` pelo túnel → 405 (código intacto); D-B2 `create` com token administrativo válido pelo túnel → `unauthorized` |
+| Convites | D-I1 reutilizado e D-I2 inválido → `invite-invalid` |
+| TURN | D-T1 sem admissão → `unauthorized`, provedor não chamado; D-T2 `turns:` entregue; D-T3 porta 53 removida; D-T4 erro do provedor e D-T5 provedor sem resposta → `turn-unavailable` (sem credencial fictícia; 300 ms); D-T6 desconexão → revogação |
+| Logs | D-L1 nenhum JWT, token, convite, credencial TURN, e-mail, IP ou URL TURN nos logs |
+
+### 13.5 Critérios de ativação (checklist para autorizar o 02B.6)
+
+**O 02B.5 não autoriza a ativação.** Todos os itens são obrigatórios e registrados no POC-02B.md antes da janela:
+
+| # | Item | Como verificar |
+|---|---|---|
+| 1 | CI verde (push e pull_request) no commit a executar | GitHub Actions; SHA anotado |
+| 2 | `pnpm readiness` (modo `activation`, arquivos reais) **sem FAIL** | Saída e JSON (sem segredos) arquivados fora do repositório |
+| 3 | Configuração Access revisada (self-hosted, hostname inteiro, cookies HttpOnly/SameSite Lax/Binding) | Runbook §4.1 A1, A5, A7; prints |
+| 4 | Hostname e domínio confirmados | Runbook §4.2 T5–T7; banner do servidor |
+| 5 | Política só com e-mails explicitamente autorizados | Runbook §4.1 A2; print |
+| 6 | Credenciais TURN protegidas (token só no arquivo de ambiente fora do repositório; P-SECRETS PASS) | `pnpm readiness` |
+| 7 | Túnel apontando somente para 5280 (P-5280/P-5281/P-404 PASS e `ingress rule` conferido) | `pnpm readiness` + runbook T5/T6 |
+| 8 | Rollback preparado e ensaiado | Runbook §7, R1–R6 |
+| 9 | Janela de teste definida (início, fim, participantes, cenários R1–R8 a executar) | Registro no POC-02B.md |
+| 10 | **Aprovação explícita do usuário** para a janela | Mensagem do usuário; nenhum automatismo substitui |
+
+### 13.6 Método para R7 (UDP restrito) — só na janela aprovada, com autorização do usuário
+
+A restrição é aplicada **no PC**. No iPhone em 4G não há controle de rede equivalente.
+
+1. **Aplicar** (PowerShell como administrador; alteração de sistema que exige autorização):
+   - bloquear UDP de saída para todos os destinos: `New-NetFirewallRule -DisplayName "Oryn-R7-bloqueia-UDP" -Direction Outbound -Protocol UDP -Action Block`;
+   - permitir só o DNS do sistema: `New-NetFirewallRule -DisplayName "Oryn-R7-permite-DNS" -Direction Outbound -Protocol UDP -RemotePort 53 -RemoteAddress <resolvedor do sistema> -Action Allow`.
+
+   O endereço do resolvedor não é registrado na evidência.
+2. **Prova independente**, sem o navegador:
+   - `Resolve-DnsName example.com -Server 1.1.1.1 -DnsOnly` → deve **falhar** (UDP a resolvedor externo
+     bloqueado);
+   - `Resolve-DnsName example.com -Server 1.1.1.1 -TcpOnly` → deve **funcionar** (TCP liberado).
+
+   Registrar só "falhou" e "funcionou", e a lista de regras: `Get-NetFirewallRule -DisplayName "Oryn-R7-*" | Select DisplayName, Action, Enabled`.
+3. **Testar:** PC em `relay-tls` (evidência com `relayProtocol = tls`) e PC em `direct` (registrar a falha ou o par
+   obtido).
+4. **Remover** ao final, obrigatoriamente: `Remove-NetFirewallRule -DisplayName "Oryn-R7-*"`. Confirmar com o
+   `Get-NetFirewallRule` vazio.
+
+### 13.7 Rollback e incidentes
+
+| Situação | Ações imediatas | Confirmação |
+|---|---|---|
+| **Encerrar a exposição** (qualquer gatilho do runbook §7) | 1) Ctrl+C no `cloudflared`; 2) "Encerrar" nas páginas e Ctrl+C no servidor (sessões, convites e token administrativo revogados; nada persiste) | De fora (iPhone em 4G): o hostname não serve a POC (erro da Cloudflare ou falha de DNS). `cloudflared tunnel info` sem conectores ativos |
+| **Credenciais e sessões** | Revogar as sessões do Access (painel Zero Trust → usuários); as credenciais TURN são revogadas ao encerrar as conexões, mas **revogar não encerra instantaneamente uma chamada estabelecida**: encerrar as chamadas e o servidor | Log "credencial revogada"; nenhuma chamada ativa |
+| **Remover a rota** | Apagar o CNAME do hostname no DNS; se necessário, `cloudflared tunnel delete` | Consulta DNS ao hostname sem resposta |
+| **Suspeita de exposição de segredo** | 1) Encerrar a exposição; 2) identificar **qual** segredo, sem copiá-lo para tickets ou chat; 3) **rotacionar**: token TURN (excluir/recriar a chave TURN no painel), credenciais do túnel (excluir o túnel e criar outro), sessões Access (revogar); 4) se foi versionado, tratar como comprometido mesmo após remoção do histórico; 5) `pnpm readiness` para confirmar P-SECRETS PASS | Segredo antigo inutilizado; relatório sem FAIL |
+| **Preservar evidências** | Guardar só as evidências sanitizadas (`pnpm evidence:check` OK), as linhas de log sem segredos e o relatório de prontidão; registrar horário e ações no POC-02B.md | Arquivos validados; nenhum segredo nos registros |
+
+### 13.8 Ferramentas e testes [Observado, 23/10/2026]
+
+| Item | Arquivo | Cobertura |
+|---|---|---|
+| Evidência | `src/evidence.ts`, `server/evidence-cli.ts` | `evidence.test.ts` (26): montagem, "indisponível", navegadores (Chrome, Edge, Safari e Chrome no iPhone), 15 recusas de sanitização/coerência, CLI (par coerente, recusa sem ecoar o valor, uso) |
+| Prontidão | `server/readiness.ts`, `server/readiness-cli.ts`, `server/preflight-io.ts` | `readiness.test.ts` (22): mapeamento de 11 regras, regra não mapeada reprova, modo template, TURN/validade/STUN, segredo versionado, diagnóstico ausente ou com falha, busca no git sem argumento sensível, CLI em template e com configuração fictícia (sem segredos no texto e no JSON), argumento sensível recusado |
+| Diagnóstico | `server/diagnostics.ts`, `server/diagnostics-cli.ts`, `server/sim/` | `readiness.test.ts` (24 cenários sem FAIL) |
+| Página | `index.html`, `src/main.ts` | E2E: evidência dos dois lados válida, coerente (mesma sessão, papéis, caminho direto pelo par, áudio recebido) e sem ID completo, convite ou token |
+
+**Resultados:**
+
+| Verificação | Resultado |
+|---|---|
+| `pnpm typecheck` | OK |
+| `pnpm test` | **595/595**, 27 arquivos (novos: `evidence` 26, `readiness` 22) |
+| Arquivos de fronteira, falha fechada e sanitização (`readiness`, `evidence`, `trust-boundary`, `ice-server`, `access-server`, `cloudflare-preflight`) repetidos 3 vezes | 152/152 nas três |
+| `pnpm build` | OK (JS 50,32 kB, 17,83 kB gzip) |
+| `pnpm audit` | Nenhuma vulnerabilidade conhecida |
+| `pnpm e2e` | **54/54** em três execuções (Chrome 155.0.8059.85 ↔ Edge 155.0.4283.62): as 51 verificações anteriores e mais 3 de evidência |
+| `pnpm diagnose` | 24 PASS, 0 FAIL |
+| `pnpm readiness` (modelos, template) | 40 PASS · 1 FAIL (TURN desligado no exemplo, esperado) · 12 NOT VERIFIED |
+
+### 13.9 Riscos residuais
+
+| Risco | Severidade | Situação |
+|---|---|---|
+| Todos os cenários R1–R8 sem execução real (Access no WebSocket, Safari, 4G/5G, relay, TLS, UDP restrito) | Alta para o objetivo da POC | Matriz com critérios objetivos; 02B.6 e 02B.8 |
+| Navegadores podem não expor `relayProtocol` ou outras estatísticas | Média | Evidência registra `indisponível`; R6 vira INCONCLUSIVO nesse item, nunca aprovado por dedução |
+| Validador de sanitização baseado em padrões (falso negativo possível em formatos inesperados) | Baixa | A evidência é construída por listas fechadas; o validador é uma segunda barreira; revisão humana antes de arquivar |
+| Simulações (Access, túnel, TURN) podem divergir do comportamento real | Média | Itens N-* NOT_VERIFIED; comprovação real exigida |
+| R7 altera o firewall do PC | Média, se esquecido | Regras com prefixo `Oryn-R7-`, remoção obrigatória e verificada |
+| `relay-tls` interpretado como prova de bloqueio de UDP | — | Explicitamente proibido no critério de R7 |
+
+### 13.10 Execuções repetidas e mutações
+
+**Mutações (todas detectadas; código restaurado após cada uma):**
+
+| Mutação | Falhas |
+|---|---|
+| Evidência: caminho inferido pela configuração TURN | 1 |
+| Evidência: sem detecção de IPv4 | 3 |
+| Evidência: campos proibidos aceitos | 2 |
+| Evidência: `relay` sem candidato relay aceito | 1 |
+| Evidência: ID de sessão completo | 3 |
+| Evidência: dado ausente vira 0 (número inventado) | 2 |
+| Prontidão: modo template conta como PASS | 1 |
+| Prontidão: itens do operador como PASS | 3 |
+| Prontidão: regra não mapeada ignorada | 1 |
+| Prontidão: TURN desligado aceito | 2 |
+| Prontidão: segredo versionado ignorado | 1 |
+| Prontidão: diagnóstico ausente vira PASS | 1 |
+| Busca no git nunca encontra | 1 |
+| Servidor sem Access no HTTP (o diagnóstico acusa) | 1 |
+| Servidor sem `Origin` no upgrade (o diagnóstico acusa) | 1 |
+
+**CI:** workflow inalterado; os novos testes e o E2E ampliado rodam nos jobs existentes. **[Não executado]** a
+execução no GitHub depende do commit e do push do usuário.
+
+### 13.11 Critérios para a próxima etapa (02B.6)
+
+1. 02B.5 aprovado e `POC-02B CI` verde com este código.
+2. Checklist de §13.5 completo (itens 1–10), com a **aprovação explícita do usuário** para uma janela definida.
+3. Execução da matriz R1–R8 na ordem: R1 → R2 (se R2 falhar, parar e decidir §10.3) → R8 (a, b) → R3 → R4 → R5 →
+   R6 → R7 (com autorização) → R8 (c, d, e).
+4. Registro de cada cenário com as evidências validadas e status segundo os critérios de §13.1.

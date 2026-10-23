@@ -1,5 +1,6 @@
 import { encode } from 'uqr';
 import { PeerCall, type CallPhase, type CallStats, type IceInfo, type PeerStates, type StartMode } from './call.ts';
+import { buildEvidence, validateEvidence } from './evidence.ts';
 import { isIceMode } from './ice.ts';
 import { isToken, type Role } from './protocol.ts';
 import { SignalingClient, signalingUrl } from './signaling-client.ts';
@@ -35,6 +36,8 @@ const ui = {
   volume: $<HTMLInputElement>('#rng-volume'),
   end: $<HTMLButtonElement>('#btn-end'),
   iceMode: $<HTMLSelectElement>('#sel-ice'),
+  evidenceButton: $<HTMLButtonElement>('#btn-evidence'),
+  evidence: $<HTMLPreElement>('#evidence'),
   phase: $<HTMLParagraphElement>('#phase'),
   error: $<HTMLParagraphElement>('#error'),
   meterLocal: $<HTMLMeterElement>('#meter-local'),
@@ -65,6 +68,19 @@ let call: PeerCall | null = null;
 let operatorKey: string | null = null;
 /** Última sessão criada por este operador (para "Voltar à sessão"). */
 let lastSessionId: string | null = null;
+
+/**
+ * Últimos valores observados na chamada atual, só para a evidência sanitizada (02B.5). Mantidos após o fim
+ * da chamada para que a evidência possa ser copiada depois de encerrar.
+ */
+const observed: {
+  sessionId: string | null;
+  role: Role | null;
+  peer: PeerStates | null;
+  stats: CallStats | null;
+  ice: IceInfo | null;
+  remoteMax: number | null;
+} = { sessionId: null, role: null, peer: null, stats: null, ice: null, remoteMax: null };
 
 // ---------- log em memória ----------
 
@@ -177,6 +193,7 @@ class AudioMonitor {
     const remote = this.rms(this.remote);
     ui.meterRemote.value = remote;
     ui.meterRemote.dataset['raw'] = remote.toFixed(5);
+    if (remote > 0) observed.remoteMax = Math.max(observed.remoteMax ?? 0, remote);
     this.frame = requestAnimationFrame(this.tick);
   };
 }
@@ -213,6 +230,8 @@ function renderPhase(phase: CallPhase, error?: string): void {
 }
 
 function renderSession(info: { sessionId: string; role: Role; epoch: number }): void {
+  observed.sessionId = info.sessionId;
+  observed.role = info.role;
   setField('field', 'role', info.role === 'host' ? 'anfitrião (cria a offer)' : 'convidado (responde)');
   // Só o operador (host) emite convites; o botão vale para a sessão inteira, inclusive após reentrar.
   ui.newInvite.hidden = info.role !== 'host';
@@ -264,12 +283,14 @@ function renderQr(text: string): void {
 }
 
 function renderPeerStates(states: PeerStates | null): void {
+  if (states) observed.peer = states;
   for (const key of ['connection', 'ice', 'gathering', 'signaling'] as const) {
     setField('peer', key, states ? states[key] : '—');
   }
 }
 
 function renderStats(stats: CallStats | null): void {
+  if (stats) observed.stats = stats;
   if (!stats) {
     for (const key of ['codec', 'sendKbps', 'recvKbps', 'packetsSent', 'packetsReceived', 'loss', 'remoteLoss', 'jitter', 'rtt', 'pair', 'path']) {
       setField('metric', key, 'indisponível', null);
@@ -293,6 +314,7 @@ function renderStats(stats: CallStats | null): void {
 }
 
 function renderIce(info: IceInfo | null): void {
+  if (info) observed.ice = info;
   setField('field', 'ice', info ? `${info.mode} · ${info.summary}${info.turnConfigured ? ' · TURN configurado (não implica uso)' : ''}` : '—');
 }
 
@@ -305,6 +327,8 @@ function setMuteButton(muted: boolean): void {
 
 function startCall(mode: StartMode): void {
   ui.error.hidden = true;
+  Object.assign(observed, { sessionId: null, role: null, peer: null, stats: null, ice: null, remoteMax: null });
+  ui.evidence.hidden = true;
   ui.sessionCode.hidden = true;
   audio.init();
   const current: PeerCall = new PeerCall(
@@ -368,6 +392,44 @@ ui.copy.addEventListener('click', () => {
   void navigator.clipboard?.writeText(ui.inviteLink.hidden ? (ui.inviteToken.textContent ?? '') : ui.inviteLink.href).then(
     () => log('Convite copiado.'),
     () => log('Não foi possível copiar o link.'),
+  );
+});
+
+// Evidência sanitizada do participante (02B.5): validada ANTES de sair da página; recusada se algo sensível aparecer.
+ui.evidenceButton.addEventListener('click', () => {
+  const s = observed.stats;
+  const evidence = buildEvidence({
+    sessionId: observed.sessionId,
+    role: observed.role,
+    userAgent: navigator.userAgent,
+    iceMode: observed.ice?.mode ?? (isIceMode(ui.iceMode.value) ? ui.iceMode.value : 'auto'),
+    iceState: observed.peer?.ice ?? null,
+    connectionState: observed.peer?.connection ?? null,
+    pair: s?.pair ?? null,
+    turnConfigured: observed.ice ? observed.ice.turnConfigured : null,
+    rttMs: s?.rttMs ?? null,
+    rttSource: s?.rttSource ?? null,
+    jitterMs: s?.jitterMs ?? null,
+    lossPct: s?.lossPct ?? null,
+    remoteLossPct: s?.remoteLossPct ?? null,
+    packetsSent: s?.packetsSent ?? null,
+    packetsReceived: s?.packetsReceived ?? null,
+    remoteLevelMax: observed.remoteMax,
+    now: new Date(),
+  });
+  const problems = validateEvidence(evidence);
+  if (problems.length > 0) {
+    ui.evidence.hidden = true;
+    ui.error.textContent = `Evidência recusada pela sanitização: ${problems.join('; ')}.`;
+    ui.error.hidden = false;
+    return;
+  }
+  const text = JSON.stringify(evidence, null, 2);
+  ui.evidence.textContent = text;
+  ui.evidence.hidden = false;
+  void navigator.clipboard?.writeText(text).then(
+    () => log('Evidência sanitizada copiada.'),
+    () => log('Evidência exibida abaixo (cópia automática indisponível).'),
   );
 });
 

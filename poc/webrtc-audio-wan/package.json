@@ -15,7 +15,10 @@
     "serve": "node server/index.ts",
     "start": "vite build && node server/index.ts",
     "e2e": "node scripts/e2e-two-browsers.mjs",
-    "preflight:cloudflare": "node server/preflight-cli.ts"
+    "preflight:cloudflare": "node server/preflight-cli.ts",
+    "readiness": "node server/readiness-cli.ts",
+    "diagnose": "node server/diagnostics-cli.ts",
+    "evidence:check": "node server/evidence-cli.ts"
   },
   "dependencies": {
     "jose": "6.2.13",

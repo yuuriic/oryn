@@ -9,13 +9,10 @@
 // nada sensível passa pela linha de comando ou pelo histórico do shell.
 // Código de saída: 0 = pronto; 1 = violação; 2 = uso incorreto.
 
-import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { parseEnv } from 'node:util';
+import { resolve } from 'node:path';
 import { argValue, portArg } from './cli.ts';
 import { preflight, type PreflightMode } from './cloudflare-preflight.ts';
+import { isTrackedOrUnignored, parseEnvText, readText, repoRoot } from './preflight-io.ts';
 
 const usage = (message: string): never => {
   console.error(`Uso incorreto: ${message}`);
@@ -31,61 +28,22 @@ const envPath = argValue('env-file') ?? usage('--env-file é obrigatório.');
 const mode = (argValue('mode') ?? 'activation') as PreflightMode;
 if (mode !== 'activation' && mode !== 'template') usage('--mode deve ser activation ou template.');
 
-const here = dirname(fileURLToPath(import.meta.url));
-let repoRoot: string;
-try {
-  repoRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: here, encoding: 'utf8' }).trim();
-} catch {
-  repoRoot = resolve(here, '..', '..', '..');
-}
-
-const read = (path: string): string | null => {
-  try {
-    return readFileSync(path, 'utf8');
-  } catch {
-    return null;
-  }
-};
-
-/** Versionado ou não ignorado pelo git (dentro do repositório). Fora do repositório = false. */
-const isTrackedOrUnignored = (path: string): boolean => {
-  const abs = resolve(path);
-  try {
-    execFileSync('git', ['ls-files', '--error-unmatch', abs], { cwd: repoRoot, stdio: 'ignore' });
-    return true; // versionado
-  } catch {
-    // não versionado: precisa estar ignorado
-  }
-  try {
-    execFileSync('git', ['check-ignore', '-q', abs], { cwd: repoRoot, stdio: 'ignore' });
-    return false; // ignorado
-  } catch (error) {
-    // status 1 = não ignorado; 128 = fora do repositório
-    return (error as { status?: number }).status === 1;
-  }
-};
-
-const configText = read(configPath) ?? usage('não foi possível ler o arquivo de --config.');
-const envText = read(envPath) ?? usage('não foi possível ler o arquivo de --env-file.');
-let env: Record<string, string>;
-try {
-  env = parseEnv(envText) as Record<string, string>;
-} catch {
-  usage('arquivo de ambiente inválido.');
-  env = {};
-}
+const root = repoRoot();
+const configText = readText(configPath) ?? usage('não foi possível ler o arquivo de --config.');
+const envText = readText(envPath) ?? usage('não foi possível ler o arquivo de --env-file.');
+const env = parseEnvText(envText) ?? usage('arquivo de ambiente inválido.');
 
 const report = preflight({
   mode,
   configText,
   env,
-  repoRoot,
+  repoRoot: root,
   configPath: resolve(configPath),
   envPath: resolve(envPath),
   signalPort: portArg('signal-port', 5280),
   adminPort: portArg('admin-port', 5281),
-  readFile: read,
-  isTrackedOrUnignored,
+  readFile: readText,
+  isTrackedOrUnignored: (path) => isTrackedOrUnignored(root, path),
 });
 
 console.log(`\nOryn POC-02B — pré-validação Cloudflare (offline, modo ${mode})`);
