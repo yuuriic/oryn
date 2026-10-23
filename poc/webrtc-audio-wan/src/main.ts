@@ -1,5 +1,6 @@
 import { encode } from 'uqr';
-import { PeerCall, type CallPhase, type CallStats, type PeerStates, type StartMode } from './call.ts';
+import { PeerCall, type CallPhase, type CallStats, type IceInfo, type PeerStates, type StartMode } from './call.ts';
+import { isIceMode } from './ice.ts';
 import { isToken, type Role } from './protocol.ts';
 import { SignalingClient, signalingUrl } from './signaling-client.ts';
 import { describePair, formatCodec, formatMetric, parseFmtp } from './stats.ts';
@@ -33,6 +34,7 @@ const ui = {
   listen: $<HTMLInputElement>('#chk-listen'),
   volume: $<HTMLInputElement>('#rng-volume'),
   end: $<HTMLButtonElement>('#btn-end'),
+  iceMode: $<HTMLSelectElement>('#sel-ice'),
   phase: $<HTMLParagraphElement>('#phase'),
   error: $<HTMLParagraphElement>('#error'),
   meterLocal: $<HTMLMeterElement>('#meter-local'),
@@ -191,6 +193,7 @@ function renderPhase(phase: CallPhase, error?: string): void {
   ui.rejoin.hidden = active || operatorKey === null || lastSessionId === null;
   ui.join.disabled = active;
   ui.sessionInput.disabled = active;
+  ui.iceMode.disabled = active; // o modo vale para a chamada inteira
   ui.end.disabled = !active;
   ui.mute.disabled = !active || phase === 'requesting-mic';
   ui.listen.disabled = !active;
@@ -268,7 +271,7 @@ function renderPeerStates(states: PeerStates | null): void {
 
 function renderStats(stats: CallStats | null): void {
   if (!stats) {
-    for (const key of ['codec', 'sendKbps', 'recvKbps', 'packetsSent', 'packetsReceived', 'loss', 'remoteLoss', 'jitter', 'rtt', 'pair']) {
+    for (const key of ['codec', 'sendKbps', 'recvKbps', 'packetsSent', 'packetsReceived', 'loss', 'remoteLoss', 'jitter', 'rtt', 'pair', 'path']) {
       setField('metric', key, 'indisponível', null);
     }
     return;
@@ -285,6 +288,12 @@ function renderStats(stats: CallStats | null): void {
   setField('metric', 'jitter', formatMetric(stats.jitterMs, 1, ' ms'), stats.jitterMs);
   setField('metric', 'rtt', stats.rttMs === null ? 'indisponível' : `${formatMetric(stats.rttMs, 1, ' ms')} (${stats.rttSource === 'rtcp' ? 'RTCP' : 'ICE'})`, stats.rttMs);
   setField('metric', 'pair', describePair(stats.pair));
+  // Comprovação pelo par SELECIONADO, nunca pela configuração.
+  setField('metric', 'path', stats.path === 'relay' ? 'relay (TURN) — comprovado pelo par selecionado' : stats.path === 'direct' ? 'direto (sem TURN) — comprovado pelo par selecionado' : 'indisponível');
+}
+
+function renderIce(info: IceInfo | null): void {
+  setField('field', 'ice', info ? `${info.mode} · ${info.summary}${info.turnConfigured ? ' · TURN configurado (não implica uso)' : ''}` : '—');
 }
 
 function setMuteButton(muted: boolean): void {
@@ -304,6 +313,7 @@ function startCall(mode: StartMode): void {
       createPeerConnection: (cfg) => new RTCPeerConnection(cfg),
       createSignaling: (handlers) => new SignalingClient(signalingUrl(location), handlers),
       audioCodecs: () => RTCRtpReceiver.getCapabilities?.('audio')?.codecs ?? null,
+      iceMode: isIceMode(ui.iceMode.value) ? ui.iceMode.value : 'auto',
     },
     {
       onPhase: (phase, error) => call === current && renderPhase(phase, error),
@@ -314,6 +324,7 @@ function startCall(mode: StartMode): void {
       onRemoteStream: (s) => call === current && audio.setRemote(s),
       onStats: (s) => call === current && renderStats(s),
       onLog: (m) => call === current && log(m),
+      onIce: (info) => call === current && renderIce(info),
     },
   );
   call = current;

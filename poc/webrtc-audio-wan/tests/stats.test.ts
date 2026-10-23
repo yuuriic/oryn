@@ -125,6 +125,7 @@ describe('selectedPair', () => {
       localCandidateType: 'host',
       remoteCandidateType: 'host',
       protocol: 'udp',
+      relayProtocol: null,
     });
     expect(JSON.stringify(pair)).not.toContain('192.0.2.10');
   });

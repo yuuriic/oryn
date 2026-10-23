@@ -32,7 +32,8 @@ import { ACCESS_HEADER, AccessVerifier, resolveAccessConfig, type AccessConfig, 
 import { AdminAuth, newPairingCode } from './admin-auth.ts';
 import { Admission, newToken } from './admission.ts';
 import { TokenBucket } from './rate-limit.ts';
-import { SessionRegistry, type ConnectionContext, type Participant } from './registry.ts';
+import { SessionRegistry, shortId, type ConnectionContext, type Participant } from './registry.ts';
+import { IceBroker, type TurnProvider } from './turn.ts';
 
 export type ListenerKind = 'signal' | 'admin';
 
@@ -68,6 +69,23 @@ export interface ServerConfig {
   access?: AccessConfig;
   /** Transporte do JWKS (padrão: fetch global). Só para testes, sem rede pública. */
   accessFetch?: JwksFetch;
+  /**
+   * STUN/TURN (02B.4). provider null = sem TURN (modos relay/relay-tls falham fechados no cliente).
+   * As credenciais administrativas do provedor ficam dentro do provider (somente servidor).
+   */
+  ice?: {
+    provider: TurnProvider | null;
+    /** STUN para auto/direct quando o provedor não fornece (padrão: nenhum, uso local). */
+    stunUrls?: readonly string[];
+    /** Validade das credenciais TURN em segundos (padrão 2 h; 10 min a 24 h). */
+    ttlSec?: number;
+    /** Intervalo mínimo entre emissões para a mesma conexão (padrão 10 s). */
+    minIntervalMs?: number;
+    /** Emissões por conexão (padrão 3). */
+    maxPerConnection?: number;
+    /** Chamadas simultâneas ao provedor (padrão 4). */
+    maxInflight?: number;
+  };
   /** Validações de Access pendentes simultâneas no upgrade (padrão 16; acima disso, 503). */
   maxPendingAccessChecks?: number;
   maxSessions?: number;
@@ -94,6 +112,8 @@ export interface RunningServer {
   publicOrigin: string | null;
   /** Validador do Cloudflare Access do listener de sinalização, ou null (modo local sem Access). */
   access: AccessVerifier | null;
+  /** Emissão de configuração ICE/TURN para participantes admitidos. */
+  ice: IceBroker;
   registry: SessionRegistry;
   admission: Admission;
   /** Pareamento do operador (o terminal emite o código; nunca imprime o token). */
@@ -271,6 +291,24 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
     ? null
     : new AccessVerifier({ config: resolveAccessConfig(config.access), now: Date.now, fetch: config.accessFetch ?? fetch });
   const maxPendingAccessChecks = config.maxPendingAccessChecks ?? 16;
+  const iceTtlSec = config.ice?.ttlSec ?? 2 * 60 * 60;
+  if (!Number.isInteger(iceTtlSec) || iceTtlSec < 600 || iceTtlSec > 86_400) {
+    throw new Error('Configuração ICE inválida: ttlSec deve ser inteiro entre 600 e 86400.');
+  }
+  const stunUrls = [...(config.ice?.stunUrls ?? [])];
+  for (const u of stunUrls) {
+    if (!/^stun:[a-z0-9.-]{1,253}(:\d{1,5})?$/.test(u) || /:53$/.test(u)) throw new Error('Configuração ICE inválida: URL STUN inválida.');
+  }
+  const iceBroker = new IceBroker({
+    provider: config.ice?.provider ?? null,
+    stunUrls,
+    ttlSec: iceTtlSec,
+    minIntervalMs: config.ice?.minIntervalMs ?? 10_000,
+    maxPerConnection: config.ice?.maxPerConnection ?? 3,
+    maxInflight: config.ice?.maxInflight ?? 4,
+    now: Date.now,
+    log,
+  });
   const files = loadStaticFiles(config.distDir);
 
   const adminAuth = new AdminAuth({
@@ -560,15 +598,37 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
         participant.send({ type: 'error', code: parsed.code });
         return;
       }
+      if (parsed.value.type === 'ice-request') {
+        // Configuração ICE/TURN SOMENTE para participante admitido numa sessão.
+        if (registry.sessionOf(participant) === null) {
+          registry.rejectUnauthorized(participant);
+          return;
+        }
+        void iceBroker.request(
+          {
+            id: participant.id,
+            admitted: () => participants.has(ws) && registry.sessionOf(participant) !== null,
+            sessionTag: () => shortId(registry.sessionOf(participant) ?? '????'),
+            send: (message) => participant.send(message),
+          },
+          parsed.value.mode,
+        );
+        return;
+      }
       registry.handle(participant, parsed.value, context);
       if (registry.sessionOf(participant) !== null) unadmittedSince.delete(ws);
-      else if (!unadmittedSince.has(ws)) unadmittedSince.set(ws, Date.now());
+      else {
+        // Fora de sessão (saiu ou foi recusado): credenciais TURN desta conexão são revogadas.
+        iceBroker.release(participant.id);
+        if (!unadmittedSince.has(ws)) unadmittedSince.set(ws, Date.now());
+      }
     });
     ws.on('close', () => {
       accessExpiry.delete(ws);
       unadmittedSince.delete(ws);
       participants.delete(ws);
       registry.disconnect(participant);
+      iceBroker.release(participant.id);
     });
     ws.on('error', () => ws.terminate());
   });
@@ -614,6 +674,7 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
     clearInterval(heartbeat);
     adminAuth.revokeAll();
     registry.closeAll();
+    iceBroker.releaseAll();
     for (const ws of wss.clients) ws.close(1001, 'server shutdown');
     wss.close();
     await Promise.all([stop(signalServer), stop(adminServer)]);
@@ -654,5 +715,5 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
       .catch(() => log('[access] chaves públicas indisponíveis: requisições da sinalização serão recusadas (503) até obtê-las'));
   }
 
-  return { httpOrigin, adminOrigin, publicOrigin, access, registry, admission, adminAuth, close: shutdown };
+  return { httpOrigin, adminOrigin, publicOrigin, access, ice: iceBroker, registry, admission, adminAuth, close: shutdown };
 }

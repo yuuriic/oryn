@@ -10,6 +10,7 @@
 import { isAbsolute, relative, resolve } from 'node:path';
 import { parseDocument } from 'yaml';
 import { resolveAccessConfig } from './access.ts';
+import { CloudflareTurnProvider } from './turn.ts';
 import { validatePublicHostname } from './server.ts';
 
 export type PreflightMode = 'template' | 'activation';
@@ -171,8 +172,26 @@ export function preflight(input: PreflightInput): PreflightReport {
   }
   if (activation && team === TEMPLATE_VALUES.team) fail('ENV_PLACEHOLDER', 'ORYN_ACCESS_TEAM_DOMAIN ainda é o valor de exemplo.');
   if (activation && aud !== null && /^(.)\1{63}$/.test(aud)) fail('ENV_PLACEHOLDER', 'ORYN_ACCESS_AUD ainda é um valor de exemplo (caractere repetido).');
+  // STUN/TURN (02B.4): formato conferido sem imprimir o token.
+  const turnProvider = (env['ORYN_TURN_PROVIDER'] ?? 'off').trim().toLowerCase();
+  if (turnProvider === 'cloudflare') {
+    try {
+      new CloudflareTurnProvider({ keyId: (env['ORYN_TURN_KEY_ID'] ?? '').trim(), apiToken: (env['ORYN_TURN_API_TOKEN'] ?? '').trim() });
+      summary['TURN'] = 'cloudflare (token presente, não exibido)';
+    } catch {
+      fail('ENV_TURN', 'ORYN_TURN_KEY_ID/ORYN_TURN_API_TOKEN ausentes ou em formato inválido.');
+    }
+  } else if (turnProvider === 'off') {
+    summary['TURN'] = 'desligado';
+    if (env['ORYN_TURN_KEY_ID'] !== undefined || env['ORYN_TURN_API_TOKEN'] !== undefined) fail('ENV_TURN', 'ORYN_TURN_PROVIDER=off com credenciais TURN definidas.');
+  } else {
+    fail('ENV_TURN', 'ORYN_TURN_PROVIDER deve ser "cloudflare" ou "off".');
+  }
   const unknownEnv = Object.keys(env).filter(
-    (k) => k.startsWith('ORYN_') && !['ORYN_PUBLIC_HOSTNAMES'].includes(k) && !k.startsWith('ORYN_ACCESS_'),
+    (k) =>
+      k.startsWith('ORYN_') &&
+      !['ORYN_PUBLIC_HOSTNAMES', 'ORYN_TURN_PROVIDER', 'ORYN_TURN_KEY_ID', 'ORYN_TURN_API_TOKEN', 'ORYN_TURN_TTL_S', 'ORYN_ICE_STUN_URLS'].includes(k) &&
+      !k.startsWith('ORYN_ACCESS_'),
   );
   if (unknownEnv.length > 0) fail('ENV_UNKNOWN', `Variáveis ORYN_* desconhecidas: ${unknownEnv.join(', ')}.`);
   if (activation && input.envPath && input.isTrackedOrUnignored(input.envPath)) {

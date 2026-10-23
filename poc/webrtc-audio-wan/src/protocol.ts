@@ -4,6 +4,8 @@
 // Somente sintaxe "apagável" (sem enums/parameter properties): o Node executa este arquivo
 // com type stripping nativo.
 
+import { MAX_ICE_SECRET_LENGTH, MAX_ICE_SERVERS, MAX_ICE_URLS, isIceMode, parseIceUrl, type IceMode, type IceServerConfig } from './ice.ts';
+
 export const PROTOCOL_VERSION = 1;
 /** Tamanho máximo de uma mensagem WebSocket (bytes UTF-8). */
 export const MAX_MESSAGE_BYTES = 16 * 1024;
@@ -42,6 +44,8 @@ export type ClientMessage =
   /** Convidado: entra com um convite de uso único. */
   | { type: 'join'; invite: string }
   | { type: 'signal'; epoch: number; payload: SignalPayload }
+  /** Participante ADMITIDO pede a configuração ICE do modo escolhido (02B.4). */
+  | { type: 'ice-request'; mode: IceMode }
   | { type: 'leave' };
 
 export type ErrorCode =
@@ -58,7 +62,9 @@ export type ErrorCode =
   | 'server-busy'
   | 'unauthorized'
   | 'invite-invalid'
-  | 'locked';
+  | 'locked'
+  | 'turn-unavailable'
+  | 'ice-limit';
 
 export type ServerMessage =
   | { type: 'session'; sessionId: string; role: Role; epoch: number; peerPresent: boolean }
@@ -68,6 +74,11 @@ export type ServerMessage =
   | { type: 'session-closed'; reason: 'expired' | 'server-shutdown' }
   /** Somente ao operador: convite de uso único e a origem pública configurada (ou null). */
   | { type: 'invite'; token: string; expiresAt: number; publicOrigin: string | null }
+  /**
+   * Configuração ICE para este participante (02B.4). Credenciais TURN são TEMPORÁRIAS e exclusivas
+   * desta conexão; expiresAt = validade delas (null quando não há TURN).
+   */
+  | { type: 'ice-config'; mode: IceMode; iceServers: IceServerConfig[]; expiresAt: number | null }
   | { type: 'error'; code: ErrorCode };
 
 export type ParseResult<T> = { ok: true; value: T } | { ok: false; code: ErrorCode };
@@ -167,9 +178,30 @@ export function parseClientMessage(raw: string): ParseResult<ClientMessage> {
       return hasOnlyKeys(v, ['type', 'epoch', 'payload']) && isEpoch(v['epoch']) && isSignalPayload(v['payload'])
         ? { ok: true, value: { type: 'signal', epoch: v['epoch'], payload: v['payload'] } }
         : { ok: false, code: 'invalid-message' };
+    case 'ice-request':
+      return hasOnlyKeys(v, ['type', 'mode']) && isIceMode(v['mode'])
+        ? { ok: true, value: { type: 'ice-request', mode: v['mode'] } }
+        : { ok: false, code: 'invalid-message' };
     default:
       return { ok: false, code: 'invalid-message' };
   }
+}
+
+const isSecret = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && v.length <= MAX_ICE_SECRET_LENGTH;
+
+/** Servidores ICE: lista curta, URLs estritas (stun/turn/turns, sem porta 53) e credenciais limitadas. */
+export function isIceServers(v: unknown): v is IceServerConfig[] {
+  if (!Array.isArray(v) || v.length > MAX_ICE_SERVERS) return false;
+  return v.every((s) => {
+    if (!isObj(s) || !hasOnlyKeys(s, ['urls'], ['username', 'credential'])) return false;
+    const urls = s['urls'];
+    if (!Array.isArray(urls) || urls.length === 0 || urls.length > MAX_ICE_URLS) return false;
+    if (!urls.every((u) => typeof u === 'string' && parseIceUrl(u) !== null)) return false;
+    const hasTurn = urls.some((u) => parseIceUrl(u as string)!.scheme !== 'stun');
+    // Credenciais só acompanham URLs TURN, e sempre em par.
+    if (hasTurn) return isSecret(s['username']) && isSecret(s['credential']);
+    return s['username'] === undefined && s['credential'] === undefined;
+  });
 }
 
 const ERROR_CODES: readonly ErrorCode[] = [
@@ -187,6 +219,8 @@ const ERROR_CODES: readonly ErrorCode[] = [
   'unauthorized',
   'invite-invalid',
   'locked',
+  'turn-unavailable',
+  'ice-limit',
 ];
 
 /** Valida uma mensagem recebida pelo navegador (defesa em profundidade contra servidor/proxy). */
@@ -221,6 +255,13 @@ export function parseServerMessage(raw: string): ServerMessage | null {
         (v['publicOrigin'] === null || (typeof v['publicOrigin'] === 'string' && PUBLIC_ORIGIN_PATTERN.test(v['publicOrigin'])))
         ? (v as ServerMessage)
         : null;
+    case 'ice-config':
+      return hasOnlyKeys(v, ['type', 'mode', 'iceServers', 'expiresAt']) &&
+        isIceMode(v['mode']) &&
+        isIceServers(v['iceServers']) &&
+        (v['expiresAt'] === null || isEpoch(v['expiresAt']))
+        ? (v as ServerMessage)
+        : null;
     case 'error':
       return hasOnlyKeys(v, ['type', 'code']) && ERROR_CODES.includes(v['code'] as ErrorCode) ? (v as ServerMessage) : null;
     default:
@@ -244,4 +285,6 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   unauthorized: 'Não autorizado.',
   'invite-invalid': 'Convite inválido, expirado ou já utilizado. Peça um novo convite ao anfitrião.',
   locked: 'Muitas tentativas de autorização. Aguarde e tente novamente.',
+  'turn-unavailable': 'Servidor TURN indisponível: não foi possível obter credenciais temporárias.',
+  'ice-limit': 'Limite de emissão de configuração ICE atingido; aguarde e tente novamente.',
 };

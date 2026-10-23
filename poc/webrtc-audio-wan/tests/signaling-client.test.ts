@@ -129,7 +129,7 @@ describe('métricas da POC-02A', () => {
     expect(formatMetric(Number.NaN)).toBe('indisponível');
     expect(formatMetric(0, 1, ' ms')).toBe('0.0 ms');
     expect(describePair(null)).toBe('indisponível');
-    expect(describePair({ state: 'succeeded', rttMs: 3, localCandidateType: 'host', remoteCandidateType: 'srflx', protocol: 'udp' })).toBe(
+    expect(describePair({ state: 'succeeded', rttMs: 3, localCandidateType: 'host', remoteCandidateType: 'srflx', protocol: 'udp', relayProtocol: null })).toBe(
       'host ↔ srflx · udp (succeeded)',
     );
   });

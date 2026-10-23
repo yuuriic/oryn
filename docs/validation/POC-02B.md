@@ -5,8 +5,8 @@
 | Branch | `poc/webrtc-audio-wan`, criada a partir de `main` em `f068509` (PR #3 da POC-02A) |
 | Código | `poc/webrtc-audio-wan/` |
 | Relação com o ARCHITECTURE.md | P02 (§14): travessia de NAT, CGNAT, TURN e UDP bloqueado; credenciais TURN temporárias (§9.1) |
-| Incremento atual | **02B.3B — prontidão da infraestrutura Cloudflare, offline** (§11) |
-| Status | **02B.1, 02B.2A e 02B.2C aprovados (02B.2C em `b3e1bf2`, informado pelo usuário). 02B.3A publicado em `ed4d948` com CI verde. 02B.3B aguardando revisão do arquiteto.** Exposição pública **proibida** até a aprovação e o cumprimento dos critérios de §9.8, §10.10 e §11.8 |
+| Incremento atual | **02B.4 — integração STUN/TURN** (§12) |
+| Status | **02B.1, 02B.2A e 02B.2C aprovados (02B.2C em `b3e1bf2`, informado pelo usuário). 02B.3A publicado em `ed4d948` com CI verde. 02B.3B publicado em `4b765fe` + `44c82e4` com CI verde. 02B.4 aguardando revisão do arquiteto.** Exposição pública **proibida** até a aprovação e o cumprimento dos critérios de §9.8, §10.10, §11.8 e §12.11 |
 
 Legenda:
 - **[Observado]:** medido em execução pelo agente.
@@ -53,10 +53,10 @@ internet.
 | **02B.2B** | Admissão (operador e convites), allowlist pública fechada por padrão, `Host`/`Origin` coerentes, limites contra abuso | **Concluído; em revisão** (§8) |
 | **02B.2C** | Listener administrativo separado, pareamento do operador por código de uso único, análise do Cloudflare Access | **Concluído e aprovado** (§9) |
 | **02B.3A** | Validação criptográfica do JWT do Cloudflare Access na origem (HTTP e WebSocket), JWKS com cache e falha fechada | **Concluído** (§10); `ed4d948`, CI verde |
-| **02B.3B** | Prontidão Cloudflare offline: modelos, pré-validação, fronteira de confiança, runbook e protocolo de teste real | **Concluído; em revisão** (§11) |
+| **02B.3B** | Prontidão Cloudflare offline: modelos, pré-validação, fronteira de confiança, runbook e protocolo de teste real | **Concluído** (§11); `4b765fe` + `44c82e4`, CI verde |
 | 02B.3 | ~~Admissão e controle de abuso~~ **antecipado para o 02B.2B**; resta a proteção na borda (Access/WAF), a definir com o túnel | Parcial |
-| 02B.4 | Credenciais TURN emitidas no servidor (TTL, revogação, provedor simulado nos testes) | Não iniciado |
-| 02B.5 | Cliente: `iceServers`, modos `auto`/`direto`/`relay`/`relay-tls`, estados `disconnected`/`failed` (A6), métricas de relay | Não iniciado |
+| **02B.4** | Modos ICE (auto/direct/relay/relay-tls), credenciais TURN temporárias emitidas no servidor (adaptador, limites, revogação), estatísticas do par selecionado | **Concluído; em revisão** (§12) |
+| 02B.5 | ~~Modos ICE e métricas de relay~~ **antecipados para o 02B.4**; resta o tratamento de `disconnected`/`failed` (A6) e o ICE restart (§6, item 5) | Parcial |
 | 02B.6 | Exposição via Cloudflare Tunnel (runbook) | Não iniciado |
 | 02B.7 | E2E opcional com TURN real em ambiente local (o CI sem segredos foi antecipado para o 02B.2A) | Não iniciado |
 | 02B.8 | Testes manuais da matriz (§5) e registro de evidências | Não iniciado |
@@ -1098,3 +1098,254 @@ imediatamente.
 
 **CI:** workflow inalterado; os novos testes rodam nos jobs existentes. **[Não executado]** a execução no GitHub
 depende do commit e do push do usuário.
+
+## 12. Incremento 02B.4 — integração STUN/TURN
+
+**Pré-condições verificadas [Observado]:**
+- branch `poc/webrtc-audio-wan`, working tree limpa;
+- HEAD `44c82e4` igual a `origin`;
+- `POC-02B CI` com sucesso (pull_request) em `44c82e4`;
+- PR #4 aberto e em Draft.
+
+Antes disso, o 02B.4 foi interrompido uma vez porque o working tree não estava limpo: o `.gitignore` do 02B.3B
+tinha ficado fora de `4b765fe`. O usuário corrigiu isso em `44c82e4`.
+
+**Escopo:** local e automatizado. **Nenhum** serviço real foi usado: sem conta TURN, sem chamada à API da
+Cloudflare, sem túnel, sem teste WAN e sem porta exposta.
+
+### 12.1 Arquitetura
+
+```text
+ Navegador (admitido)                         Servidor Node                            Provedor TURN
+   │ ice-request {mode}  ── WSS (Access + convite / 5281 + pareamento) ──►  IceBroker ── Bearer <token> ──► API (somente servidor)
+   │ ◄── ice-config {iceServers, expiresAt}  (credenciais TEMPORÁRIAS desta conexão)   ◄── iceServers ────┘
+   │
+   └─ RTCPeerConnection(config do modo) ══ mídia ══► direto (host/srflx/prflx)  ou  servidor TURN (relay: udp/tcp/tls)
+```
+
+| # | Decisão | Motivo |
+|---|---|---|
+| T1 | A configuração ICE trafega pela **sinalização**, só para conexões **admitidas** (convite no 5280 com Access; pareamento no 5281). Nada no bundle, nenhum endpoint HTTP novo | Reaproveita toda a cadeia de autenticação existente; nenhuma credencial embarcada |
+| T2 | O **modo** é escolhido por participante (seletor na página) e validado pelo protocolo. O servidor só chama o provedor para os modos que usam TURN | `direct` não consome credenciais; cada lado testa seu caminho |
+| T3 | O cliente monta a `RTCConfiguration` com filtros fechados. `relay` e `relay-tls` **falham fechados** antes de criar a `RTCPeerConnection` | Sem fallback silencioso para UDP ou candidatos diretos |
+| T4 | `auto` sem TURN (provedor desligado ou indisponível) **prossegue de forma visível**: aviso no log e resumo "TURN indisponível" | Preserva o uso local e na LAN. **Decisão do arquiteto:** se `auto` deve falhar quando o provedor falhar |
+| T5 | Credencial **por conexão**, com limites: intervalo mínimo de 10 s, 3 por conexão, uma emissão em andamento por conexão e 4 chamadas simultâneas ao provedor | Frequência e custo controlados; evita reuso entre sessões |
+| T6 | **Revogação** na saída da sessão, na desconexão e no desligamento. Uma credencial emitida para uma conexão que saiu durante a chamada ao provedor **não é entregue** e é revogada | Credenciais não sobrevivem ao participante |
+| T7 | Validade padrão de **2 h** (configurável de 600 s a 86 400 s). Renovação **antes de um novo par** quando faltam menos de 5 min | Ver §12.4 sobre a expiração durante a chamada |
+| T8 | Adaptador Cloudflare implementado **pela documentação oficial**, sem exercício contra a API real (§12.5) | O requisito proíbe configurar serviços reais |
+| T9 | O caminho de mídia é declarado **somente** a partir do par ICE **selecionado** (`succeeded`). "TURN configurado" aparece como configuração, com o aviso "não implica uso" | Não inferir relay pela configuração |
+| T10 | Estatísticas por **listas fechadas**: tipos de candidato, transportes, `relayProtocol` e estado do par. Nada de endereço, porta, URL ou fundação | Sanitização por construção |
+
+### 12.2 Modos ICE
+
+| Modo | Servidores | `iceTransportPolicy` | Sem servidor adequado |
+|---|---|---|---|
+| `auto` | STUN + TURN (udp, tcp, tls) | `all` | Prossegue sem STUN/TURN, **visível** (T4) |
+| `direct` | Somente STUN | `all` | Prossegue sem STUN (só candidatos host). **Não garante** conectividade direta entre quaisquer redes (NAT simétrico, CGNAT, firewall) |
+| `relay` | Somente TURN (`turn:` e `turns:`), com credenciais | `relay` | **Falha fechada**, sem `RTCPeerConnection` |
+| `relay-tls` | Somente `turns:` sobre TCP (`?transport=tcp` ou sem transporte); nunca `turn:` nem `turns:` com `transport=udp` | `relay` | **Falha fechada**, sem `RTCPeerConnection` |
+
+**`relay-tls` ≠ UDP bloqueado.** Um par relay com `relayProtocol = tls` prova que a mídia passou pelo TURN sobre
+TLS. Não prova que UDP esteja bloqueado na rede: isso exige um teste de rede próprio (§6, item 7).
+
+URLs aceitas: `stun:`, `turn:` e `turns:`, com host DNS ou IPv4, porta opcional e `?transport=udp|tcp` só em TURN.
+A **porta 53 é recusada** em todo lugar: [Informado pela documentação da Cloudflare] ela é bloqueada pelos
+navegadores e só causaria espera.
+
+### 12.3 Fluxo de emissão das credenciais
+
+1. A conexão é **admitida**: convidado com convite de uso único pelo 5280 (Access obrigatório quando exposto) ou
+   operador pareado no 5281.
+2. O cliente envia `ice-request {mode}`.
+3. O servidor confere a admissão. Conexão não admitida → `unauthorized`, contada como falha de autorização (3
+   encerram a conexão), **sem chamar o provedor**.
+4. `direct`, ou ausência de provedor: STUN local (se configurado), sem credencial. `relay`/`relay-tls` sem provedor
+   → `turn-unavailable`.
+5. Limites (T5) excedidos → `ice-limit`.
+6. Chamada ao provedor com validade configurada. Falha, timeout ou resposta inválida → `turn-unavailable`.
+   **Nunca** credenciais fictícias.
+7. A conexão saiu enquanto o provedor respondia → a credencial é **revogada e não entregue**.
+8. `ice-config {mode, iceServers, expiresAt}` só para esta conexão. O cliente guarda em **memória**; nada de
+   `localStorage` ou arquivo, e nada no log (só o resumo "STUN n · TURN n (tipos)").
+9. Saída da sessão, desconexão ou desligamento → revogação (melhor esforço; falha registrada sem identificadores).
+
+**Segredos:**
+- o token administrativo do provedor (`ORYN_TURN_API_TOKEN`) existe só no servidor, lido do arquivo de ambiente;
+- nunca é impresso (banner, pré-validação), registrado ou enviado;
+- a pré-validação confere o formato sem exibi-lo;
+- argumentos com valores sensíveis continuam recusados.
+
+### 12.4 Expiração durante a chamada
+
+- A expiração **não** é tratada como encerramento imediato.
+- [Inferido, RFC 8656] Uma alocação TURN existente continua até o seu tempo de vida. As renovações (Refresh) da
+  alocação usam a credencial de longo prazo. Depois do vencimento da credencial, uma renovação pode ser recusada,
+  e a mídia por relay pode cair quando a alocação expirar.
+- [Não verificado] Se a revogação na Cloudflare encerra alocações ativas. Por isso a revogação só é feita depois
+  que a conexão do participante termina.
+- **Comportamento definido:**
+  - a validade padrão (2 h) deve superar a duração do teste;
+  - um **novo par** (reentrada, novo convidado) renova a configuração antes de criar a `RTCPeerConnection` se faltam
+    menos de 5 min;
+  - não há renovação no meio da chamada nem ICE restart (decisão pendente, §6 item 5);
+  - se o relay cair por vencimento, a chamada termina como qualquer falha de conexão, com mensagem clara, e a
+    reentrada emite credenciais novas.
+
+### 12.5 Contrato do adaptador TURN
+
+```ts
+interface TurnProvider {
+  readonly name: string;                           // para logs
+  issue(ttlSec: number): Promise<TurnIssue>;       // rejeita em falha/timeout; nunca devolve credencial fictícia
+  revoke(username: string): Promise<void>;         // melhor esforço
+}
+interface TurnIssue { iceServers: IceServerConfig[]; username: string; expiresAt: number }
+```
+
+**Implementações:**
+- **`SimulatedTurnProvider`:** testes e E2E; nenhuma rede.
+- **`CloudflareTurnProvider`:** [Informado pela documentação da Cloudflare Realtime TURN, consultada nesta etapa].
+  - Emissão: `POST https://rtc.live.cloudflare.com/v1/turn/keys/<KEY_ID>/credentials/generate-ice-servers`, com
+    `Authorization: Bearer <token>` e corpo `{"ttl": <s>}`; resposta `201` com `iceServers`.
+  - Revogação: `POST …/credentials/<username>/revoke` → `204`.
+  - Timeout de 5 s; resposta de até 32 KiB; sem redirecionamentos.
+  - Hosts aceitos: `stun.cloudflare.com` e `turn.cloudflare.com`. Outro host → descartado, e falha fechada se não
+    sobrar TURN.
+  - URLs da porta 53 removidas.
+  - **Não exercitado contra a API real.**
+
+**Configuração (servidor):**
+- `ORYN_TURN_PROVIDER=cloudflare|off` (padrão `off`), `ORYN_TURN_KEY_ID`, `ORYN_TURN_API_TOKEN` (segredo),
+  `ORYN_TURN_TTL_S`, `ORYN_ICE_STUN_URLS`;
+- configuração inválida ou ambígua impede a partida;
+- o banner mostra o provedor e a validade, nunca o token.
+
+### 12.6 Estatísticas e critérios de comprovação
+
+Exibidas na página e registradas no log sem endereços: tipo dos candidatos local e remoto (host, srflx, prflx,
+relay), transporte, `relayProtocol`, estado do par, RTT (RTCP ou ICE), pacotes enviados e recebidos, perda (local e
+do outro lado), jitter, `iceConnectionState` e suas mudanças, além de cada **mudança do par selecionado**.
+
+| Afirmação | Evidência exigida |
+|---|---|
+| "Usou relay" | Par **selecionado** (`succeeded`) com candidato local **ou** remoto `relay`, nos stats daquele lado |
+| "Usou TURN sobre TLS" | No lado em `relay-tls`: candidato **local** `relay` com `relayProtocol = tls` no par selecionado |
+| "Conectou direto" | Par selecionado sem `relay` dos dois lados |
+| "TURN configurado" | **Não** é evidência de uso. Aparece como "TURN configurado (não implica uso)" |
+| "UDP bloqueado" | **Fora do alcance** destes stats; exige método de bloqueio próprio |
+
+Registro recomendado, sem IPs: print da tabela de métricas e linhas do log "Par ICE selecionado: … → caminho …".
+
+### 12.7 Testes [Observado, 22/10/2026]
+
+| Requisito | Onde | Casos |
+|---|---|---|
+| Seleção de cada modo | `ice.test.ts`, `call-ice.test.ts` | `RTCConfiguration` exata por modo, inclusive políticas |
+| Falha fechada: relay sem TURN, relay-tls sem TURNS | `ice.test.ts` (7 variações), `call-ice.test.ts`, E2E | Nenhuma `RTCPeerConnection` criada; mensagem clara |
+| Ausência de fallback | `ice.test.ts`, `call-ice.test.ts`, E2E | relay nunca recebe STUN; relay-tls nunca recebe `turn:`/UDP. **E2E:** TURN inalcançável em relay → nenhum candidato host/srflx, nenhum par, nenhuma conexão |
+| Emissão só após admissão | `ice-server.test.ts`, `call-ice.test.ts` | Pedido só depois de `session`; não admitido → `unauthorized`, provedor não chamado, 3 tentativas encerram; convite inválido não abre caminho |
+| Falhas, timeout e indisponibilidade do provedor | `turn.test.ts`, `call-ice.test.ts` | Rede, 401, 500, 302, JSON inválido, sem `iceServers`, sem credencial, resposta grande, timeout, host não documentado |
+| Expiração e renovação | `call-ice.test.ts` | Credencial a menos de 5 min do fim → nova configuração antes do novo par |
+| Concorrência e limites | `turn.test.ts`, `ice-server.test.ts` | Pedidos simultâneos da mesma conexão (1 emite); intervalo; máximo por conexão; limite global |
+| Segredos fora dos logs | `turn.test.ts`, `ice-server.test.ts`, `call-ice.test.ts`, `cli-access.test.ts`, `cloudflare-preflight.test.ts`, E2E | username, credential, URLs TURN e token ausentes de logs, banner e relatório |
+| Sanitização das estatísticas | `ice.test.ts`, `call-ice.test.ts` | Valores fora das listas → `null`; nenhum IP, porta ou URL; caminho indeterminado sem par `succeeded` |
+| Limpeza | `turn.test.ts`, `ice-server.test.ts`, `call-ice.test.ts`, E2E | Revogação na saída, na desconexão e no desligamento; não entrega a quem saiu; timers zerados ao encerrar |
+| Regressão Access + convite | `ice-server.test.ts`, suíte existente, E2E | Convidado autenticado (túnel simulado com JWT) recebe credenciais; sem JWT nem conecta |
+| Protocolo | `ice.test.ts` | `ice-request` e `ice-config` estritos: porta 53, esquemas, credencial em STUN, chaves extras, limites |
+| Configuração (CLI e pré-validação) | `cli-access.test.ts`, `cloudflare-preflight.test.ts` | Provedor desconhecido, credenciais com `off`, token/ID inválidos, validade, STUN inválido |
+
+**Resultados:**
+
+| Verificação | Resultado |
+|---|---|
+| `pnpm install --frozen-lockfile` | OK (nenhuma dependência nova) |
+| `pnpm typecheck` | OK |
+| `pnpm test` | **547/547**, 25 arquivos. Novos: `ice` 43, `turn` 24, `ice-server` 11, `call-ice` 15. Ampliados: `cli-access` (+8), `cloudflare-preflight` (+4), `stats` e `signaling-client` (campo `relayProtocol`) |
+| Arquivos de ICE e fronteira repetidos 3 vezes | 92/92 nas três |
+| `pnpm build` | OK (JS 44,79 kB, 15,81 kB gzip). O bundle não contém o endpoint da API TURN nem credenciais |
+| `pnpm audit` | Nenhuma vulnerabilidade conhecida |
+| `pnpm e2e` | **51/51** em três execuções finais, Chrome 155.0.8059.85 ↔ Edge 155.0.4283.62: as 41 verificações anteriores mais 10 de modos ICE |
+
+**E2E dos modos ICE [Observado]:**
+- relay-tls sem TURN no servidor → falha fechada, nenhuma `RTCPeerConnection`;
+- auto (TURN simulado inalcançável) com direct → conectam com par `host ↔ host`, caminho "direto". A página mostra
+  "TURN configurado (não implica uso)";
+- relay com TURN inalcançável → `RTCPeerConnection` com política `relay`, nenhum candidato host/srflx, nenhum par
+  selecionado e nenhuma conexão. O primeiro lado a vencer o prazo de 20 s falha e o outro volta a aguardar;
+- credenciais simuladas ausentes de páginas, consoles e logs, e revogadas ao fim.
+
+**Defeito de teste encontrado e corrigido no E2E:** trocar só o fragmento (`#i=`) não recarrega a página, e o
+cenário seguinte herdava o log e o estado do anterior. O E2E agora abre uma página nova por cenário e espera o
+convite **novo** do operador.
+
+**Mutações (todas detectadas; código restaurado após cada uma):**
+
+| Mutação | Falhas |
+|---|---|
+| relay sem TURN aceito | 5 |
+| relay recebe STUN (fallback) | 2 |
+| relay-tls aceita `turn:`/UDP | 5 |
+| relay com política `all` | 2 |
+| direct recebe TURN | 2 |
+| Porta 53 aceita | 4 |
+| Emissão sem admissão | 2 |
+| Sem intervalo mínimo | 2 |
+| Sem trava de emissão em andamento | 1 |
+| Sem revogação no release | 5 |
+| Entrega a quem já saiu | 1 |
+| Sem release ao desconectar | 2 |
+| Credencial fictícia em falha do provedor | 1 |
+| Hosts não documentados aceitos | 1 |
+| Sem renovação perto do vencimento | 1 |
+| Caminho inferido pela configuração | 1 |
+| Estatísticas sem lista fechada | 2 |
+| Credencial aceita em servidor só STUN | 1 |
+
+**CI:** workflow inalterado; os novos testes e o E2E ampliado rodam nos jobs existentes. **[Não executado]** a
+execução no GitHub depende do commit e do push do usuário.
+
+### 12.8 Limitações da validação local
+
+- **Nenhum servidor TURN real**, então relay e relay-tls **não foram comprovados**. O E2E prova só a falha fechada,
+  a ausência de fallback e que "TURN configurado" não vira "relay" quando o par selecionado é direto.
+- O **cliente Cloudflare** foi testado contra respostas simuladas no formato documentado, nunca contra a API real.
+  Códigos de status e campos podem divergir; nesse caso, ele falha fechado.
+- **Safari/iPhone, CGNAT, 4G/5G e UDP bloqueado** não foram testados.
+- O E2E Chrome ↔ Edge roda no mesmo PC (par host ↔ host).
+
+### 12.9 Riscos residuais
+
+| Risco | Severidade | Situação |
+|---|---|---|
+| Relay e TURN/TLS ainda não comprovados em rede real | Alta para o objetivo da POC | Plano de §12.10; critério da próxima etapa |
+| Divergência entre a documentação e a API real da Cloudflare | Média | Falha fechada (`turn-unavailable`); teste real controlado antes de expor |
+| Credencial TURN no navegador (inerente ao WebRTC): quem tiver acesso à página pode usar o relay até o fim da validade | Média | Só para admitidos; por conexão; validade limitada; revogação na saída; limites de emissão |
+| Queda do relay quando a credencial vence numa chamada longa | Média | Validade de 2 h maior que o teste; sem renovação no meio da chamada (§12.4) |
+| `auto` sem TURN prossegue (T4) | Baixa | Visível na página e no log; decisão do arquiteto |
+| Custo/franquia do TURN | Baixa | Limites de emissão; revogação; [Informado no planejamento] 1.000 GB/mês grátis e depois US$ 0,05/GB |
+| Revogação pode não encerrar alocações ativas | Baixa | [Não verificado]; revogação só após o fim da conexão |
+| Token da API TURN no PC do operador | Média, se vazar | Só em arquivo de ambiente fora do repositório; nunca impresso; pré-validação |
+
+### 12.10 Plano de testes reais (02B.8, depois da exposição aprovada)
+
+**Pré-requisitos:**
+- 02B.6 ativo, com Access comprovado no WebSocket (§10.10, §11.8);
+- chave TURN criada pelo usuário: `ORYN_TURN_PROVIDER=cloudflare`, ID e token **só** no arquivo de ambiente fora do
+  repositório; pré-validação OK; banner com "TURN: cloudflare".
+
+| # | Cenário (matriz §5) | Modo | Evidência de aprovação |
+|---|---|---|---|
+| R1 | Windows Wi-Fi ↔ iPhone 4G/5G (teste 2) | `auto` nos dois | Áudio nos dois sentidos; par selecionado registrado nos dois lados (tipo e `relayProtocol`) |
+| R2 | Tentativa direta (teste 3) | `direct` nos dois | Estado ICE final e pares; sucesso ou falha registrados (falha não reprova) |
+| R3 | TURN forçado (teste 4) | `relay` no iPhone (e no PC) | Par selecionado **relay** nos stats do lado em `relay`; áudio nos dois sentidos |
+| R4 | TURN/TLS (teste 5) | `relay-tls` no iPhone | Candidato local **relay** com `relayProtocol = tls` no par selecionado; **não** declarar UDP bloqueado sem método próprio |
+| R5 | Encerramento (teste 7) | qualquer | Log do servidor: "credencial revogada"; nenhuma credencial em logs (buscar `username`/`credential`) |
+| R6 | Falha fechada real | `relay` com `ORYN_TURN_PROVIDER=off` | Erro "TURN indisponível"; nenhuma conexão |
+
+### 12.11 Critérios para a próxima etapa
+
+1. 02B.4 aprovado e `POC-02B CI` verde com este código.
+2. Decisão do arquiteto sobre T4 (`auto` sem TURN) e sobre a validade padrão das credenciais.
+3. Exposição (02B.6) com os critérios de §9.8, §10.10 e §11.8, mais a configuração TURN real validada pela
+   pré-validação.
+4. Execução de R1–R6 com evidências do **par selecionado**. Só então declarar relay ou relay-tls comprovados.

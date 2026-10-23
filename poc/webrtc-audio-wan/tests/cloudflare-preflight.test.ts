@@ -188,10 +188,21 @@ describe('ambiente do servidor', () => {
     ['AUD de exemplo', { ORYN_ACCESS_AUD: '0'.repeat(64) }, 'ENV_PLACEHOLDER'],
     ['equipe de exemplo', { ORYN_ACCESS_TEAM_DOMAIN: 'oryn-example.cloudflareaccess.com' }, 'ENV_PLACEHOLDER'],
     ['variável ORYN desconhecida', { ORYN_ADMIN_PORT: '5281' }, 'ENV_UNKNOWN'],
+    ['provedor TURN desconhecido', { ORYN_TURN_PROVIDER: 'twilio' }, 'ENV_TURN'],
+    ['TURN desligado com credenciais', { ORYN_TURN_API_TOKEN: 'TOKEN-0123456789abcdef' }, 'ENV_TURN'],
+    ['TURN cloudflare sem token', { ORYN_TURN_PROVIDER: 'cloudflare', ORYN_TURN_KEY_ID: 'turnkey0123456789' }, 'ENV_TURN'],
   ])('%s → recusado', (_name, patch, id) => {
     const env: Record<string, string | undefined> = { ...validEnv(), ...patch };
     for (const k of Object.keys(env)) if (env[k] === undefined) delete env[k];
     expect(ids(run({ env }))).toContain(id);
+  });
+
+  it('TURN cloudflare válido passa sem exibir o token no relatório', () => {
+    const TOKEN = 'TOKEN-SECRETO-turn-0123456789';
+    const r = run({ env: { ...validEnv(), ORYN_TURN_PROVIDER: 'cloudflare', ORYN_TURN_KEY_ID: 'turnkey0123456789', ORYN_TURN_API_TOKEN: TOKEN, ORYN_TURN_TTL_S: '7200' } });
+    expect(r.ok).toBe(true);
+    expect(r.summary['TURN']).toBe('cloudflare (token presente, não exibido)');
+    expect(JSON.stringify(r)).not.toContain(TOKEN);
   });
 
   it('portas de sinalização e administrativa iguais → recusado', () => {

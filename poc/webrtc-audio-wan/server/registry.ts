@@ -94,7 +94,14 @@ export class SessionRegistry {
         return this.signal(participant, message.epoch, message.payload);
       case 'leave':
         return this.leave(participant);
+      case 'ice-request':
+        return; // tratado pelo IceBroker no servidor (só para participantes admitidos)
     }
+  }
+
+  /** Tentativa não autorizada vinda de fora do registro (ex.: pedir credenciais TURN sem admissão). */
+  rejectUnauthorized(participant: Participant): void {
+    this.authFailure(participant, 'unauthorized');
   }
 
   /** Conexão encerrada (fechamento normal, erro ou heartbeat expirado). */

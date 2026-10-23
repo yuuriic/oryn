@@ -4,7 +4,7 @@ Prova de conceito **descartável** do Oryn. Objetivo final: chamada de áudio We
 Wi-Fi residencial e um iPhone (Safari) em rede móvel 4G/5G, com sinalização pública HTTPS/WSS (Cloudflare
 Tunnel) e STUN/TURN gerenciado (Cloudflare). Plano, decisões e evidências em `docs/validation/POC-02B.md`.
 
-## Estado atual: incremento 02B.3B
+## Estado atual: incremento 02B.4
 
 - Baseline copiado da POC-02A (`poc/webrtc-audio-lan/`, conteúdo de `f068509`), isolado no 02B.1.
 - **CA local e HTTPS local removidos** no 02B.2A.
@@ -23,6 +23,16 @@ Tunnel) e STUN/TURN gerenciado (Cloudflare). Plano, decisões e evidências em `
   - runbook com checklist, protocolo de teste real e rollback em `cloudflare/README.md`.
 
   Nada foi ativado. Detalhes em `POC-02B.md` §11.
+- **02B.4:** STUN/TURN. Detalhes em `POC-02B.md` §12.
+  - **Modos ICE** escolhidos na página:
+    - `auto`: STUN + TURN;
+    - `direct`: só STUN;
+    - `relay`: só TURN, falha fechada;
+    - `relay-tls`: só TURN sobre TLS, falha fechada.
+  - **Credenciais TURN temporárias** emitidas pelo servidor só para participantes admitidos, por conexão, com
+    limites e revogação. O segredo do provedor fica só no servidor.
+  - **Caminho de mídia** comprovado pelo par ICE selecionado, nunca pela configuração.
+  - **Sem TURN real nesta etapa:** relay e relay-tls não foram comprovados em rede real.
 - **Ainda não há** Cloudflare Tunnel nem STUN/TURN. **Nenhum serviço desta POC deve ser exposto na internet**
   até a aprovação arquitetural dos critérios de exposição (`POC-02B.md` §9.8, §10.10 e §11.8).
 
@@ -73,6 +83,9 @@ Tunnel) e STUN/TURN gerenciado (Cloudflare). Plano, decisões e evidências em `
   - O Access não substitui o convite nem dá privilégio administrativo.
   - Sem hostname público, o padrão é `ORYN_ACCESS_MODE=off` (uso local).
   - Outras variáveis estão em `POC-02B.md` §10.4.
+- **STUN/TURN (02B.4):** `ORYN_TURN_PROVIDER=cloudflare|off` (padrão `off`), `ORYN_TURN_KEY_ID`,
+  `ORYN_TURN_API_TOKEN` (**segredo**: só em arquivo de ambiente fora do repositório, nunca na linha de comando),
+  `ORYN_TURN_TTL_S` e `ORYN_ICE_STUN_URLS`. Com `off`, `relay` e `relay-tls` falham com "TURN indisponível".
 - **Futuro (02B.6):** o túnel recebe HTTPS/WSS da internet, com o TLS terminando na Cloudflare, e entrega o tráfego
   ao Node por HTTP em loopback.
 - **Hoje:** só o próprio PC acessa (`http://localhost:5280`). Hostnames públicos não configurados são recusados

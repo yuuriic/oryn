@@ -23,8 +23,16 @@ export interface PairInfo {
   rttMs: number | null;
   localCandidateType: string | null;
   remoteCandidateType: string | null;
+  /** Transporte do candidato local (udp/tcp). */
   protocol: string | null;
+  /** Só para candidato local relay: transporte até o servidor TURN (udp, tcp ou tls). */
+  relayProtocol: string | null;
 }
+
+const CANDIDATE_TYPES = new Set(['host', 'srflx', 'prflx', 'relay']);
+const TRANSPORTS = new Set(['udp', 'tcp', 'tls']);
+/** Só valores de uma lista fechada passam: nada de endereço, porta, URL ou fundação vaza por estes campos. */
+const known = (value: string | null, allowed: Set<string>): string | null => (value !== null && allowed.has(value.toLowerCase()) ? value.toLowerCase() : null);
 
 export interface OutboundSnapshot {
   timestamp: number;
@@ -150,13 +158,27 @@ export function selectedPair(entries: StatsEntry[]): PairInfo | null {
   const local = byId(entries, str(pair, 'localCandidateId'));
   const remote = byId(entries, str(pair, 'remoteCandidateId'));
   const rtt = num(pair, 'currentRoundTripTime');
+  const localType = known(str(local, 'candidateType'), CANDIDATE_TYPES);
   return {
-    state: str(pair, 'state') ?? 'desconhecido',
+    state: known(str(pair, 'state'), new Set(['frozen', 'waiting', 'in-progress', 'failed', 'succeeded'])) ?? 'desconhecido',
     rttMs: rtt === null ? null : rtt * 1000,
-    localCandidateType: str(local, 'candidateType'),
-    remoteCandidateType: str(remote, 'candidateType'),
-    protocol: str(local, 'protocol'),
+    localCandidateType: localType,
+    remoteCandidateType: known(str(remote, 'candidateType'), CANDIDATE_TYPES),
+    protocol: known(str(local, 'protocol'), TRANSPORTS),
+    relayProtocol: localType === 'relay' ? known(str(local, 'relayProtocol'), TRANSPORTS) : null,
   };
+}
+
+/**
+ * Caminho de mídia COMPROVADO pelo par selecionado (nunca pela configuração):
+ * - "relay": algum dos candidatos do par selecionado é relay (TURN de um dos lados);
+ * - "direct": par selecionado sem relay (host/srflx/prflx dos dois lados);
+ * - null: sem par selecionado ou tipos desconhecidos.
+ */
+export type MediaPath = 'relay' | 'direct';
+export function mediaPath(pair: PairInfo | null): MediaPath | null {
+  if (!pair || pair.state !== 'succeeded' || !pair.localCandidateType || !pair.remoteCandidateType) return null;
+  return pair.localCandidateType === 'relay' || pair.remoteCandidateType === 'relay' ? 'relay' : 'direct';
 }
 
 /** Taxa em kbit/s entre duas amostras; null quando não há intervalo válido. */
@@ -226,8 +248,9 @@ export function formatMetric(value: number | null | undefined, digits = 1, suffi
   return value === null || value === undefined || !Number.isFinite(value) ? 'indisponível' : `${value.toFixed(digits)}${suffix}`;
 }
 
-/** Descreve o par ICE sem endereços: "host ↔ host · udp". */
+/** Descreve o par ICE sem endereços: "host ↔ host · udp" ou "relay ↔ srflx · udp · TURN/tls". */
 export function describePair(pair: PairInfo | null): string {
   if (!pair) return 'indisponível';
-  return `${pair.localCandidateType ?? '?'} ↔ ${pair.remoteCandidateType ?? '?'} · ${pair.protocol ?? '?'} (${pair.state})`;
+  const relay = pair.relayProtocol ? ` · TURN/${pair.relayProtocol}` : '';
+  return `${pair.localCandidateType ?? '?'} ↔ ${pair.remoteCandidateType ?? '?'} · ${pair.protocol ?? '?'}${relay} (${pair.state})`;
 }

@@ -4,23 +4,30 @@
 // - Cada cliente tem UMA RTCPeerConnection por par formado (epoch). O host sempre cria a offer.
 // - Operações SDP são serializadas em fila; sinais de epoch antigo ou fora de ordem são descartados.
 // - Candidatos ICE que chegam antes da descrição remota ficam em fila (limitada).
-// - Sem iceServers: validação inicial apenas em LAN (sem STUN/TURN).
+// - ICE (02B.4): após a ADMISSÃO, o cliente pede ao servidor a configuração do modo escolhido
+//   (auto/direct/relay/relay-tls). O par só é criado com uma configuração válida; relay e relay-tls
+//   falham fechados sem TURN/TURNS. Credenciais TURN ficam só em memória e nunca vão ao log.
+// - O caminho de mídia (direto ou relay) é informado pelo par ICE SELECIONADO, nunca pela configuração.
 // - Nenhum SDP, candidato completo ou credencial ICE é registrado no log.
 
 import { preferOpus } from './codecs.ts';
 import { describeMediaError } from './errors.ts';
 import { ERROR_MESSAGES, type ClientMessage, type ErrorCode, type Role, type ServerMessage, type SignalPayload } from './protocol.ts';
+import { buildRtcConfiguration, type IceMode } from './ice.ts';
 import { describeCandidate } from './redact.ts';
 import type { SignalingHandlers } from './signaling-client.ts';
 import {
   bitrateKbps,
+  describePair,
   inboundAudio,
+  mediaPath,
   outboundAudio,
   packetLossPercent,
   remoteInboundAudio,
   selectedPair,
   toEntries,
   type CodecInfo,
+  type MediaPath,
   type PairInfo,
 } from './stats.ts';
 
@@ -66,6 +73,17 @@ export interface CallStats {
   rttMs: number | null;
   rttSource: 'rtcp' | 'ice' | null;
   pair: PairInfo | null;
+  /** Caminho comprovado pelo par selecionado (null = ainda sem par selecionado). */
+  path: MediaPath | null;
+}
+
+/** O que a interface mostra sobre a configuração ICE (sem hosts nem credenciais). */
+export interface IceInfo {
+  mode: IceMode;
+  /** "STUN 1 · TURN 4 (tcp, tls, udp)". */
+  summary: string;
+  turnConfigured: boolean;
+  expiresAt: number | null;
 }
 
 export interface SignalingLike {
@@ -82,6 +100,11 @@ export interface CallDeps {
   audioCodecs?: () => RTCRtpCodec[] | null | undefined;
   statsIntervalMs?: number;
   negotiationTimeoutMs?: number;
+  /** Modo ICE desta página (padrão: auto). */
+  iceMode?: IceMode;
+  /** Prazo para o servidor responder ao pedido de configuração ICE (padrão 10 s). */
+  iceConfigTimeoutMs?: number;
+  now?: () => number;
 }
 
 export interface CallCallbacks {
@@ -94,6 +117,7 @@ export interface CallCallbacks {
   onRemoteStream(stream: MediaStream | null): void;
   onStats(stats: CallStats | null): void;
   onLog(message: string): void;
+  onIce?(info: IceInfo | null): void;
 }
 
 export const AUDIO_CONSTRAINTS: MediaTrackConstraints = {
@@ -104,6 +128,8 @@ export const AUDIO_CONSTRAINTS: MediaTrackConstraints = {
 };
 
 const MAX_PENDING_CANDIDATES = 64;
+/** Credenciais TURN que vencem antes disso são renovadas antes de um novo par. */
+const ICE_RENEW_MARGIN_MS = 5 * 60_000;
 /** Erros do servidor que encerram a tentativa (antes de existir sessão ativa). */
 const FATAL_ERRORS: readonly ErrorCode[] = [
   'not-found',
@@ -142,6 +168,14 @@ export class PeerCall {
   private negotiationTimer: ReturnType<typeof setTimeout> | null = null;
   private prevOut: { bytes: number; ts: number } | null = null;
   private prevIn: { bytes: number; ts: number } | null = null;
+  private lastPairText: string | null = null;
+
+  /** Configuração ICE vigente (só em memória). */
+  private ice: { config: RTCConfiguration; info: IceInfo } | null = null;
+  /** Par aguardando configuração ICE. */
+  private pendingEpoch: number | null = null;
+  private iceRequested = false;
+  private iceTimer: ReturnType<typeof setTimeout> | null = null;
 
   private readonly deps: CallDeps;
   private readonly cb: CallCallbacks;
@@ -162,6 +196,12 @@ export class PeerCall {
   }
   get currentEpoch(): number {
     return this.epoch;
+  }
+  get iceMode(): IceMode {
+    return this.deps.iceMode ?? 'auto';
+  }
+  private now(): number {
+    return (this.deps.now ?? Date.now)();
   }
 
   /** Deve ser chamado a partir de um gesto do usuário. */
@@ -247,6 +287,8 @@ export class PeerCall {
         this.epoch = message.epoch;
         this.cb.onSession({ sessionId: message.sessionId, role: message.role, epoch: message.epoch });
         this.cb.onLog(`Na sessão como ${message.role === 'host' ? 'anfitrião' : 'convidado'}.`);
+        // Admitido: pede a configuração ICE do modo escolhido (credenciais TURN só existem a partir daqui).
+        this.requestIce();
         if (message.peerPresent) this.beginPair(message.epoch);
         else this.setPhase('waiting-peer');
         return;
@@ -267,10 +309,14 @@ export class PeerCall {
         this.cb.onInvite({ token: message.token, expiresAt: message.expiresAt, publicOrigin: message.publicOrigin });
         this.cb.onLog('Convite de uso único emitido.');
         return;
+      case 'ice-config':
+        this.onIceConfig(message);
+        return;
       case 'session-closed':
         this.fail(message.reason === 'expired' ? 'A sessão expirou por inatividade.' : 'O servidor foi encerrado.');
         return;
       case 'error':
+        if (message.code === 'turn-unavailable' || message.code === 'ice-limit') return this.onIceError(message.code);
         if (FATAL_ERRORS.includes(message.code) && (this.sessionId === null || message.code === 'rate-limited')) {
           this.fail(ERROR_MESSAGES[message.code]);
         } else {
@@ -278,6 +324,69 @@ export class PeerCall {
         }
         return;
     }
+  }
+
+  // ---------- configuração ICE ----------
+
+  private iceUsable(): boolean {
+    if (this.ice === null) return false;
+    const expiresAt = this.ice.info.expiresAt;
+    return expiresAt === null || expiresAt - this.now() > ICE_RENEW_MARGIN_MS;
+  }
+
+  private requestIce(): void {
+    if (this.iceRequested || this.disposed) return;
+    this.iceRequested = true;
+    this.signaling?.send({ type: 'ice-request', mode: this.iceMode });
+    this.cb.onLog(`Configuração ICE solicitada (modo ${this.iceMode}).`);
+    this.iceTimer = setTimeout(() => {
+      if (this.iceRequested) this.fail('O servidor não respondeu ao pedido de configuração ICE.');
+    }, this.deps.iceConfigTimeoutMs ?? 10_000);
+  }
+
+  private clearIceTimer(): void {
+    if (this.iceTimer !== null) clearTimeout(this.iceTimer);
+    this.iceTimer = null;
+    this.iceRequested = false;
+  }
+
+  private onIceConfig(message: Extract<ServerMessage, { type: 'ice-config' }>): void {
+    if (!this.iceRequested || message.mode !== this.iceMode) {
+      this.cb.onLog('Configuração ICE não solicitada descartada.');
+      return;
+    }
+    this.clearIceTimer();
+    const built = buildRtcConfiguration(this.iceMode, message.iceServers);
+    // Falha fechada: relay/relay-tls sem TURN adequado não criam conexão alguma.
+    if (!built.ok) return this.fail(built.reason);
+    const info: IceInfo = { mode: this.iceMode, summary: built.summary, turnConfigured: built.turnConfigured, expiresAt: message.expiresAt };
+    this.ice = { config: built.config, info };
+    this.cb.onIce?.(info);
+    const until = message.expiresAt ? `, validade até ${new Date(message.expiresAt).toLocaleTimeString('pt-BR', { hour12: false })}` : '';
+    this.cb.onLog(`Configuração ICE recebida (modo ${this.iceMode}: ${built.summary}${until}).`);
+    this.resumePendingPair();
+  }
+
+  private resumePendingPair(): void {
+    if (this.pendingEpoch === null) return;
+    const epoch = this.pendingEpoch;
+    this.pendingEpoch = null;
+    this.beginPair(epoch);
+  }
+
+  private onIceError(code: 'turn-unavailable' | 'ice-limit'): void {
+    if (!this.iceRequested) return;
+    this.clearIceTimer();
+    if (code === 'turn-unavailable' && this.iceMode === 'auto' && this.ice === null) {
+      // auto continua sem TURN, de forma VISÍVEL (sem relay não há garantia de rota entre redes).
+      const info: IceInfo = { mode: 'auto', summary: 'TURN indisponível — sem STUN/TURN', turnConfigured: false, expiresAt: null };
+      this.ice = { config: { iceServers: [], iceTransportPolicy: 'all' }, info };
+      this.cb.onIce?.(info);
+      this.cb.onLog('Aviso: TURN indisponível; modo auto prossegue sem STUN/TURN (sem garantia de rota entre redes).');
+      this.resumePendingPair();
+      return;
+    }
+    this.fail(ERROR_MESSAGES[code]);
   }
 
   // ---------- par WebRTC ----------
@@ -288,8 +397,15 @@ export class PeerCall {
     const stream = this.localStream;
     const track = stream?.getAudioTracks()[0];
     if (!stream || !track) return this.fail('Microfone indisponível.');
+    // Sem configuração ICE válida (ou com credenciais TURN perto de vencer): espera a configuração.
+    if (!this.iceUsable()) {
+      this.pendingEpoch = epoch;
+      this.setPhase('negotiating');
+      this.requestIce();
+      return;
+    }
 
-    const pc = this.deps.createPeerConnection({ iceServers: [] });
+    const pc = this.deps.createPeerConnection({ ...this.ice!.config });
     this.pc = pc;
     this.wirePeer(pc);
     pc.addTrack(track, stream);
@@ -340,10 +456,17 @@ export class PeerCall {
         this.clearNegotiationTimer();
         this.setPhase('connected');
       } else if (state === 'failed') {
-        this.fail('A conexão WebRTC falhou (sem rota entre os dispositivos na LAN?).');
+        this.fail(
+          this.iceMode === 'relay' || this.iceMode === 'relay-tls'
+            ? `A conexão WebRTC falhou no modo ${this.iceMode} (servidor TURN inalcançável ou credenciais recusadas; sem fallback).`
+            : 'A conexão WebRTC falhou (nenhum par ICE funcionou).',
+        );
       }
     };
-    pc.oniceconnectionstatechange = emit;
+    pc.oniceconnectionstatechange = () => {
+      emit();
+      if (this.pc === pc) this.cb.onLog(`iceConnectionState = ${pc.iceConnectionState}`);
+    };
     pc.onicegatheringstatechange = emit;
     pc.onsignalingstatechange = emit;
     emit();
@@ -491,6 +614,12 @@ export class PeerCall {
     this.prevIn = inn ? { bytes: inn.bytesReceived, ts: inn.timestamp } : null;
 
     const rtcpRtt = remote?.roundTripTimeMs ?? null;
+    // Mudança do par selecionado vai ao log (sem endereços): é a evidência do caminho de mídia.
+    const pairText = pair && pair.state === 'succeeded' ? describePair(pair) : null;
+    if (pairText !== null && pairText !== this.lastPairText) {
+      this.cb.onLog(`Par ICE selecionado: ${pairText} → caminho ${mediaPath(pair) ?? 'indeterminado'}.`);
+      this.lastPairText = pairText;
+    }
     this.cb.onStats({
       codec: out?.codec ?? inn?.codec ?? null,
       sendKbps,
@@ -504,6 +633,7 @@ export class PeerCall {
       rttMs: rtcpRtt ?? pair?.rttMs ?? null,
       rttSource: rtcpRtt !== null ? 'rtcp' : pair?.rttMs != null ? 'ice' : null,
       pair,
+      path: mediaPath(pair),
     });
   }
 
@@ -538,6 +668,7 @@ export class PeerCall {
     this.pc = null;
     this.pending = [];
     this.prevIn = this.prevOut = null;
+    this.lastPairText = null;
     if (pc) {
       pc.onicecandidate = null;
       pc.ontrack = null;
@@ -555,6 +686,13 @@ export class PeerCall {
   private release(): void {
     this.disposed = true;
     this.teardownPeer();
+    // Credenciais TURN descartadas da memória; o servidor as revoga quando a conexão termina.
+    this.clearIceTimer();
+    this.pendingEpoch = null;
+    if (this.ice) {
+      this.ice = null;
+      this.cb.onIce?.(null);
+    }
     this.signaling?.close();
     this.signaling = null;
     if (this.localStream) {

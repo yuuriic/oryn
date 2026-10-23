@@ -4,6 +4,7 @@
 // - Hub de sinalização em memória usando o SessionRegistry REAL e o protocolo serializado em JSON.
 import { vi } from 'vitest';
 import type { CallDeps, SignalingLike } from '../../src/call.ts';
+import type { IceMode, IceServerConfig } from '../../src/ice.ts';
 import { parseClientMessage, parseServerMessage, type ServerMessage } from '../../src/protocol.ts';
 import type { SignalingHandlers } from '../../src/signaling-client.ts';
 import { Admission } from '../../server/admission.ts';
@@ -177,6 +178,15 @@ export class SignalingHub {
   private ids = 0;
   private tokens = 0;
   readonly sockets = new Set<FakeSignaling>();
+  /**
+   * Resposta ao pedido de configuração ICE (como o IceBroker do servidor): servidores entregues ou
+   * um código de erro. Padrão: nenhum servidor (rede local), sem validade.
+   */
+  ice: { iceServers: IceServerConfig[]; expiresAt: number | null } | { error: 'turn-unavailable' | 'ice-limit' } | 'silent' = {
+    iceServers: [],
+    expiresAt: null,
+  };
+  readonly iceRequests: IceMode[] = [];
 
   constructor() {
     this.admission = new Admission({
@@ -241,6 +251,22 @@ export class FakeSignaling implements SignalingLike {
     this.sent.push(message);
     const parsed = parseClientMessage(JSON.stringify(message));
     if (!parsed.ok) throw new Error(`cliente enviou mensagem inválida: ${parsed.code}`);
+    if (parsed.value.type === 'ice-request') {
+      // Só participante admitido (como no servidor real).
+      if (this.hub.registry.sessionOf(this.participant) === null) {
+        this.participant.send({ type: 'error', code: 'unauthorized' });
+        return true;
+      }
+      this.hub.iceRequests.push(parsed.value.mode);
+      const ice = this.hub.ice;
+      if (ice === 'silent') return true;
+      this.participant.send(
+        'error' in ice
+          ? { type: 'error', code: ice.error }
+          : { type: 'ice-config', mode: parsed.value.mode, iceServers: ice.iceServers, expiresAt: ice.expiresAt },
+      );
+      return true;
+    }
     // Hub em memória = conexão do listener administrativo (operador neste PC).
     this.hub.registry.handle(this.participant, parsed.value, { admin: true });
     return true;
@@ -273,17 +299,20 @@ export interface Harness {
   streams: FakeStream[];
   pcs: FakePeerConnection[];
   signalings: FakeSignaling[];
+  /** RTCConfiguration recebida em cada criação de RTCPeerConnection. */
+  configs: RTCConfiguration[];
 }
 
 export function harness(hub: SignalingHub, options: { gum?: () => Promise<FakeStream>; failConnect?: boolean } = {}): Harness {
-  const h: Harness = { deps: undefined as unknown as CallDeps, streams: [], pcs: [], signalings: [] };
+  const h: Harness = { deps: undefined as unknown as CallDeps, streams: [], pcs: [], signalings: [], configs: [] };
   h.deps = {
     getUserMedia: async () => {
       const s = options.gum ? await options.gum() : new FakeStream();
       h.streams.push(s);
       return s as unknown as MediaStream;
     },
-    createPeerConnection: () => {
+    createPeerConnection: (config) => {
+      h.configs.push(config);
       const pc = new FakePeerConnection();
       h.pcs.push(pc);
       return pc as unknown as RTCPeerConnection;

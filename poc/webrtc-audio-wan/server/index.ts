@@ -20,12 +20,21 @@
 //   Opcionais (ms): ORYN_ACCESS_JWKS_TIMEOUT_MS, ORYN_ACCESS_JWKS_CACHE_TTL_MS, ORYN_ACCESS_JWKS_MAX_STALE_MS,
 //   ORYN_ACCESS_JWKS_COOLDOWN_MS; ORYN_ACCESS_JWKS_MAX_BYTES; ORYN_ACCESS_CLOCK_TOLERANCE_S.
 // Nenhum desses valores é segredo; mesmo assim, não versionar configurações reais.
+//
+// STUN/TURN (02B.4):
+//   ORYN_TURN_PROVIDER=cloudflare | off   (padrão: off; modos relay/relay-tls falham fechados)
+//   ORYN_TURN_KEY_ID=<id da chave TURN>
+//   ORYN_TURN_API_TOKEN=<token da API TURN>   ← SEGREDO: só em arquivo de ambiente fora do repositório
+//   ORYN_TURN_TTL_S=7200                      (validade das credenciais temporárias, 600–86400)
+//   ORYN_ICE_STUN_URLS=stun:host:porta,...    (STUN extra para auto/direct; padrão: nenhum)
+// O token nunca é impresso, registrado ou enviado ao navegador.
 
 import { createInterface } from 'node:readline';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AccessConfig } from './access.ts';
 import { formatPairingCode } from './admin-auth.ts';
+import { CloudflareTurnProvider, type TurnProvider } from './turn.ts';
 import { argValue, portArg } from './cli.ts';
 import { startServer } from './server.ts';
 
@@ -69,8 +78,29 @@ function accessFromEnv(env: NodeJS.ProcessEnv): AccessConfig | undefined {
   return config;
 }
 
+/** Lê a configuração STUN/TURN do ambiente. Inválida ou ambígua impede a partida. */
+function iceFromEnv(env: NodeJS.ProcessEnv): { provider: TurnProvider | null; stunUrls: string[]; ttlSec?: number } {
+  const providerName = (env['ORYN_TURN_PROVIDER'] ?? 'off').trim().toLowerCase();
+  const stunUrls = (env['ORYN_ICE_STUN_URLS'] ?? '').split(',').map((u) => u.trim()).filter((u) => u !== '');
+  const ttlRaw = env['ORYN_TURN_TTL_S'];
+  if (ttlRaw !== undefined && !/^\d+$/.test(ttlRaw.trim())) throw new Error('ORYN_TURN_TTL_S deve ser um inteiro.');
+  const ttl = ttlRaw === undefined ? {} : { ttlSec: Number(ttlRaw) };
+  if (providerName === 'off') {
+    const stray = ['ORYN_TURN_KEY_ID', 'ORYN_TURN_API_TOKEN'].filter((k) => env[k] !== undefined);
+    if (stray.length > 0) throw new Error(`ORYN_TURN_PROVIDER=off com ${stray.join(', ')} definido(s): configuração ambígua.`);
+    return { provider: null, stunUrls, ...ttl };
+  }
+  if (providerName !== 'cloudflare') throw new Error('ORYN_TURN_PROVIDER deve ser "cloudflare" ou "off".');
+  return {
+    provider: new CloudflareTurnProvider({ keyId: (env['ORYN_TURN_KEY_ID'] ?? '').trim(), apiToken: (env['ORYN_TURN_API_TOKEN'] ?? '').trim() }),
+    stunUrls,
+    ...ttl,
+  };
+}
+
 const access = accessFromEnv(process.env);
-const server = await startServer({ distDir, httpPort, adminPort, publicHostnames, ...(access ? { access } : {}) });
+const ice = iceFromEnv(process.env);
+const server = await startServer({ distDir, httpPort, adminPort, publicHostnames, ice, ...(access ? { access } : {}) });
 const local = (origin: string): string => origin.replace('127.0.0.1', 'localhost');
 
 const showPairingCode = (): void => {
@@ -85,6 +115,8 @@ console.log(`  Sinalização (alvo do túnel):     ${local(server.httpOrigin)}`)
 console.log(`  Administração (só neste PC):     ${local(server.adminOrigin!)}`);
 console.log(`  Acesso público:                  ${server.publicOrigin ? `${server.publicOrigin} (Host/Origin permitidos)` : 'FECHADO (nenhum hostname público configurado)'}`);
 console.log(`  Cloudflare Access (sinalização): ${access ? `OBRIGATÓRIO (equipe ${access.teamDomain.trim().toLowerCase()})` : 'DESLIGADO (somente uso local)'}`);
+console.log(`  TURN:                            ${ice.provider ? `${ice.provider.name} (credenciais temporárias, validade ${Math.round((ice.ttlSec ?? 7200) / 60)} min)` : 'DESLIGADO (relay/relay-tls indisponíveis)'}`);
+console.log(`  STUN local extra:                ${ice.stunUrls.length ? `${ice.stunUrls.length} URL(s)` : 'nenhum'}`);
 showPairingCode();
 console.log('Ctrl+C para encerrar.\n');
 

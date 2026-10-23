@@ -13,6 +13,7 @@ import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { formatPairingCode } from '../server/admin-auth.ts';
 import { startServer } from '../server/server.ts';
+import { SimulatedTurnProvider } from '../server/turn.ts';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const headless = !process.argv.includes('--headed');
@@ -292,6 +293,109 @@ try {
   const csp = consoles.split('\n').filter((m) => /Content Security Policy/i.test(m));
   check('sem violações de CSP', csp.length === 0, csp);
   results.observed.serverLogLines = serverLogs.length;
+
+  // ---------- Modos ICE (02B.4), testáveis localmente ----------
+  // Não há servidor TURN real: relay/relay-tls NÃO são comprovados aqui. Verifica-se a falha fechada e a
+  // ausência de fallback, e que "TURN configurado" não é confundido com caminho relay.
+  const pcCount = (p) => p.page.evaluate(() => window.__e2e.pcs.length);
+  const iceInfo = (p) => text(p, '[data-testid="ice-info"]');
+  const pathOf = (p) => text(p, '[data-testid="media-path"]');
+  const startHosting = async (p, mode) => {
+    const previous = await text(p, '[data-testid="invite-token"]');
+    await p.page.selectOption('[data-testid="ice-mode"]', mode);
+    await p.page.click('[data-testid="btn-create"]');
+    await waitPhase(p, 'waiting-peer');
+    // Espera o convite NOVO (o anterior, já usado, pode continuar na tela por um instante).
+    await p.page.waitForFunction((old) => {
+      const t = document.querySelector('[data-testid="invite-token"]')?.textContent?.trim() ?? '';
+      return t.length === 43 && t !== old;
+    }, previous);
+    return text(p, '[data-testid="invite-token"]');
+  };
+  const joinWith = async (p, origin, inviteToken, mode) => {
+    // Página nova a cada cenário: só trocar o fragmento (#i=) NÃO recarrega a página e manteria o log e
+    // o estado da chamada anterior.
+    await p.page.goto('about:blank');
+    await p.page.goto(`${origin}/#i=${inviteToken}`);
+    await p.page.selectOption('[data-testid="ice-mode"]', mode);
+    await p.page.click('[data-testid="btn-join"]');
+  };
+  const endBoth = async (...ps) => {
+    for (const p of ps) {
+      if (await p.page.isEnabled('[data-testid="btn-end"]')) {
+        await p.page.click('[data-testid="btn-end"]');
+        await waitPhase(p, 'ended');
+      }
+    }
+  };
+
+  // 1) relay-tls sem TURN no servidor (servidor principal, sem provedor): falha fechada, sem RTCPeerConnection.
+  const inviteTls = await startHosting(A, 'auto');
+  await joinWith(B, base, inviteTls, 'relay-tls');
+  await waitPhase(B, 'failed');
+  check('relay-tls sem TURN no servidor: falha fechada com mensagem clara', /TURN indisponível/.test(await text(B, '[data-testid="error"]')));
+  check('relay-tls sem TURN: nenhuma RTCPeerConnection criada nesta página (sem fallback)', (await pcCount(B)) === 0, await pcCount(B));
+  await endBoth(A);
+
+  // Servidor 2: provedor TURN SIMULADO anunciando um TURN inalcançável (porta local fechada).
+  const probe = createServer();
+  await new Promise((r) => probe.listen(0, '127.0.0.1', r));
+  const deadPort = probe.address().port;
+  await new Promise((r) => probe.close(r));
+  const turnLogs = [];
+  const sim = new SimulatedTurnProvider({ turnUrls: [`turn:127.0.0.1:${deadPort}?transport=udp`, `turns:127.0.0.1:${deadPort}?transport=tcp`] });
+  const server2 = await startServer({ distDir: join(root, 'dist'), httpPort: 0, adminPort: 0, ice: { provider: sim }, log: (l) => turnLogs.push(l) });
+  try {
+    const base2 = server2.httpOrigin.replace('127.0.0.1', 'localhost');
+    const admin2 = server2.adminOrigin.replace('127.0.0.1', 'localhost');
+    await A.page.goto(admin2);
+    const code2 = server2.adminAuth.issuePairingCode().code;
+    await A.page.fill('[data-testid="inp-pair"]', code2);
+    await A.page.click('[data-testid="btn-pair"]');
+    await A.page.waitForSelector('[data-testid="btn-create"]:enabled');
+
+    // 2) A em auto (TURN configurado) + B em direct: conectam pelo par direto; o caminho é "direto", não relay.
+    const inviteAuto = await startHosting(A, 'auto');
+    await joinWith(B, base2, inviteAuto, 'direct');
+    await Promise.all([waitPhase(A, 'connected'), waitPhase(B, 'connected')]);
+    await wait(2500);
+    const autoInfo = await iceInfo(A);
+    const directInfo = await iceInfo(B);
+    results.observed.iceAutoDirect = { A: { info: autoInfo, path: await pathOf(A), pair: await text(A, '[data-testid="pair"]') }, B: { info: directInfo, path: await pathOf(B) } };
+    check('auto: TURN configurado é exibido como configuração, não como uso', /^auto · STUN 0 · TURN 2 \(tls, udp\) · TURN configurado \(não implica uso\)$/.test(autoInfo), autoInfo);
+    check('direct: somente STUN (nenhum TURN)', /^direct · STUN 0 · TURN 0$/.test(directInfo), directInfo);
+    check('caminho comprovado pelo par selecionado: direto nos dois lados (TURN inalcançável não é inferido)', /^direto/.test(await pathOf(A)) && /^direto/.test(await pathOf(B)) && !/relay/.test(await text(A, '[data-testid="pair"]')), results.observed.iceAutoDirect);
+    await endBoth(B, A);
+
+    // 3) relay com TURN inalcançável: não conecta e não cai para candidatos diretos.
+    // Os dois lados têm o mesmo prazo de negociação (20 s): o primeiro a vencer falha e o outro volta a
+    // aguardar. O que importa é que NENHUM conecta e que B nunca usa candidatos diretos.
+    const inviteRelay = await startHosting(A, 'auto');
+    const relayStart = Date.now();
+    await joinWith(B, base2, inviteRelay, 'relay');
+    await Promise.race([waitPhase(A, 'failed', 40_000), waitPhase(B, 'failed', 40_000)]);
+    await wait(300);
+    const relayLog = await text(B, '[data-testid="log"]');
+    const relayPolicy = await B.page.evaluate(() => window.__e2e.pcs.map((pc) => pc.getConfiguration().iceTransportPolicy));
+    results.observed.iceRelay = {
+      endedAfterMs: Date.now() - relayStart,
+      phases: { A: await phaseOf(A), B: await phaseOf(B) },
+      errorA: await text(A, '[data-testid="error"]'),
+      errorB: await text(B, '[data-testid="error"]'),
+      policy: relayPolicy,
+    };
+    check('relay com TURN inalcançável: nenhum lado conecta; a tentativa termina por prazo', !/connectionState = connected/.test(relayLog) && /negociação esgotado/.test(results.observed.iceRelay.errorA + results.observed.iceRelay.errorB), results.observed.iceRelay);
+    check('relay: única RTCPeerConnection de B com iceTransportPolicy "relay"', relayPolicy.length === 1 && relayPolicy[0] === 'relay', relayPolicy);
+    check('relay: nenhum candidato local host/srflx e nenhum par selecionado em B (sem fallback)', !/Candidato local: (host|srflx|prflx)/.test(relayLog) && !/Par ICE selecionado/.test(relayLog));
+    await endBoth(B, A);
+
+    // Segredos do modo ICE: credenciais simuladas nunca nas páginas, consoles ou logs do servidor.
+    const iceText = [await text(A, '[data-testid="log"]'), relayLog, ...A.consoleMessages, ...B.consoleMessages, turnLogs.join('\n')].join('\n');
+    check('credenciais TURN (usernames) ausentes de páginas, consoles e logs', sim.issued.length > 0 && !sim.issued.some((u) => iceText.includes(u)), { emitidas: sim.issued.length });
+    check('credenciais TURN revogadas ao fim das conexões', sim.revoked.length >= 1, { emitidas: sim.issued.length, revogadas: sim.revoked.length });
+  } finally {
+    await server2.close();
+  }
 } catch (error) {
   results.fatal = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
   exitCode = 1;

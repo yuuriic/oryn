@@ -38,6 +38,16 @@
           </label>
           <button id="btn-join" type="button" data-testid="btn-join">Entrar</button>
         </div>
+        <div class="row">
+          <label class="inline" for="sel-ice">Modo ICE</label>
+          <select id="sel-ice" data-testid="ice-mode">
+            <option value="auto" selected>auto (STUN + TURN)</option>
+            <option value="direct">direct (só STUN)</option>
+            <option value="relay">relay (só TURN)</option>
+            <option value="relay-tls">relay-tls (só TURN sobre TLS)</option>
+          </select>
+          <span class="muted small">relay e relay-tls falham se o servidor não fornecer TURN.</span>
+        </div>
         <div id="pairing" class="row" data-testid="pairing" hidden>
           <label class="grow">
             <span class="visually-hidden">Código de pareamento do operador</span>
@@ -114,6 +124,8 @@
               <tr><th>Jitter (recebido)</th><td data-metric="jitter">indisponível</td></tr>
               <tr><th>RTT</th><td data-metric="rtt">indisponível</td></tr>
               <tr><th>Par ICE (sem endereços)</th><td data-metric="pair" data-testid="pair">indisponível</td></tr>
+              <tr><th>Caminho de mídia (par selecionado)</th><td data-metric="path" data-testid="media-path">indisponível</td></tr>
+              <tr><th>Modo ICE / servidores</th><td data-field="ice" data-testid="ice-info">—</td></tr>
             </tbody>
           </table>
         </section>
