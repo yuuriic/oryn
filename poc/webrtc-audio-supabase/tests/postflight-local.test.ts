@@ -108,3 +108,25 @@ describe('verificação entre migrações (05_step_checks.sql)', () => {
     }
   });
 });
+
+describe('reversão (90_rollback.sql) depois de cada etapa', () => {
+  it.each([1, 2, 3])('depois de aplicar %i migração(ões): volta ao estado vazio e a reaplicação é limpa', async (n) => {
+    const db = await TestDb.createBare();
+    try {
+      const files = migrationFiles();
+      for (let i = 0; i < n; i++) await db.migrate(files[i]![1]);
+      await db.migrate(sql('90_rollback.sql'));
+      const left = await db.admin<{ schemas: number; fns: number; policies: number }>(`
+        select (select count(*)::int from pg_namespace where nspname in ('oryn', 'oryn_realtime')) as schemas,
+               (select count(*)::int from pg_proc p join pg_namespace s on s.oid = p.pronamespace where s.nspname = 'public') as fns,
+               (select count(*)::int from pg_policies where schemaname = 'realtime' and policyname like 'oryn_%') as policies`);
+      expect(left[0]).toEqual({ schemas: 0, fns: 0, policies: 0 });
+      // RLS e dono de realtime.messages intocados pela reversão.
+      expect((await db.admin<{ rls: boolean; owner: string }>(`select relrowsecurity as rls, pg_get_userbyid(relowner) as owner from pg_class where oid = 'realtime.messages'::regclass`))[0]).toEqual({ rls: true, owner: 'supabase_realtime_admin' });
+      for (const [, m] of files) await db.migrate(m);
+      expect((await postflight(db)).filter((r) => r.status === 'FAIL')).toEqual([]);
+    } finally {
+      await db.close();
+    }
+  });
+});

@@ -1,6 +1,6 @@
 # POC-02C.1B — Runbook da integração com o Supabase real
 
-Estado: **preparado, não executado**. Correções locais B1–B3 feitas no 02C.1B.0A (seção 3). Nada remoto foi alterado. Toda fase abaixo marcada com ⛔ exige
+Estado: **preparado, não executado**. Checklist por etapa (0100, 0200, 0300), auditoria `SECURITY DEFINER` e configurações do painel: `DEPLOY-CHECKLIST-02C.md` (02C.2C.1). Correções locais B1–B3 feitas no 02C.1B.0A (seção 3). Nada remoto foi alterado. Toda fase abaixo marcada com ⛔ exige
 aprovação explícita do arquiteto antes de começar.
 
 ## 1. Alvo
@@ -95,7 +95,7 @@ controle.
 ```powershell
 cd "C:\Dev\Projeto - Oryn\poc\webrtc-audio-supabase"
 pnpm install --frozen-lockfile; pnpm typecheck; pnpm test; pnpm test:pg; pnpm audit
-# esperado (02C.2B): test 221 passed / 18 todo; test:pg 15 passed (14 de concorrência + 1 de diagnóstico, 02C.2B.1); audit limpo
+# esperado (02C.2C.1): test 231 passed / 18 todo; test:pg 15 passed (14 de concorrência + 1 de diagnóstico, 02C.2B.1); audit limpo
 ```
 
 ### Fase 2 — Pré-voo remoto, somente leitura ⛔
