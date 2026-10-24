@@ -95,7 +95,7 @@ controle.
 ```powershell
 cd "C:\Dev\Projeto - Oryn\poc\webrtc-audio-supabase"
 pnpm install --frozen-lockfile; pnpm typecheck; pnpm test; pnpm test:pg; pnpm audit
-# esperado (02C.2B): test 221 passed / 18 todo; test:pg 14 passed; audit limpo
+# esperado (02C.2B): test 221 passed / 18 todo; test:pg 15 passed (14 de concorrência + 1 de diagnóstico, 02C.2B.1); audit limpo
 ```
 
 ### Fase 2 — Pré-voo remoto, somente leitura ⛔
