@@ -7,7 +7,7 @@
 // embedded-postgres chama o postgres.exe direto e, quando ele sai, só rejeita com `undefined` ("Unknown
 // Error: undefined" no CI). No Windows o servidor é iniciado e parado pelo pg_ctl do próprio pacote, que
 // cria um token RESTRITO (como o PostgreSQL faz oficialmente; o initdb já faz isso sozinho). No Linux nada muda.
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { closeSync, mkdtempSync, openSync, readFileSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -46,6 +46,59 @@ async function stage<T>(name: string, output: () => string, secret: string, fn: 
   }
 }
 
+/** Prazos internos (02C.2B.2): nenhuma etapa depende do timeout do Vitest para terminar. */
+export const TIMEOUTS = { initdbMs: 90_000, startMs: 60_000, stopMs: 15_000 } as const;
+
+/** Rejeita com mensagem explícita se `promise` não terminar em `ms`; `onTimeout` encerra o que ficou pendurado. */
+export function withTimeout<T>(promise: Promise<T>, ms: number, what: string, onTimeout: () => void = () => {}): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      onTimeout();
+      reject(new Error(`tempo esgotado: ${what} não terminou em ${ms / 1000} s`));
+    }, ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Encerra o processo `postgres` iniciado pelo embedded-postgres SEM usar `epg.stop()` (02C.2B.2). O
+ * `stop()` da biblioteca registra o evento `exit` só DEPOIS de mandar o sinal; se o processo já tinha saído
+ * (ex.: falha na inicialização), o `exit` nunca mais chega e a promessa fica pendente para sempre
+ * (reproduzido: `start()` rejeita em ~110 ms, `exitCode = 1`, `stop()` pendente). Aqui: processo já
+ * terminado → nada a fazer; vivo → SIGINT (desligamento rápido), espera limitada e SIGKILL de reserva.
+ */
+async function stopEmbedded(epg: EmbeddedPostgres): Promise<void> {
+  // Campo interno da biblioteca (embedded-postgres 17.10.0-beta.17, dist/index.js: `this.process`).
+  const internal = epg as unknown as { process?: ChildProcess | undefined };
+  const child = internal.process;
+  try {
+    if (!child || child.exitCode !== null || child.signalCode !== null) return;
+    const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
+    child.kill('SIGINT');
+    try {
+      await withTimeout(exited, TIMEOUTS.stopMs, 'encerramento do postgres (SIGINT)');
+    } catch {
+      child.kill('SIGKILL');
+      await withTimeout(exited, 5_000, 'encerramento do postgres (SIGKILL)');
+    }
+  } finally {
+    // Sem isto, o gancho de saída da biblioteca chamaria o mesmo stop() pendente e atrasaria o fim do
+    // processo em 10 s (prazo forçado do async-exit-hook).
+    internal.process = undefined;
+  }
+}
+
+/**
+ * Lançador do servidor: `pg_ctl` no Windows (token restrito; ver o topo) e o embedded-postgres nos demais.
+ * `ORYN_PG_LAUNCHER=embedded` força o caminho do Linux no Windows, só para validar localmente esse caminho
+ * (não usar no CI: o runner Windows é elevado e o postgres.exe se recusaria a iniciar).
+ */
+function launcher(): 'pg_ctl' | 'embedded' {
+  if (process.env['ORYN_PG_LAUNCHER'] === 'embedded') return 'embedded';
+  return process.platform === 'win32' ? 'pg_ctl' : 'embedded';
+}
+
 /** pg_ctl do pacote de plataforma (dependência do embedded-postgres, que o pnpm não expõe direto). */
 async function windowsPgCtl(): Promise<string> {
   const fromHere = createRequire(import.meta.url);
@@ -64,8 +117,15 @@ function run(file: string, args: string[], outputFile: string): Promise<string> 
   return new Promise((resolve, reject) => {
     const fd = openSync(outputFile, 'a');
     const child = spawn(file, args, { env: { ...process.env, LC_MESSAGES: 'C' }, windowsHide: true, stdio: ['ignore', fd, fd] });
-    const timer = setTimeout(() => child.kill(), 90_000);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill();
+    }, TIMEOUTS.startMs + 30_000); // acima do -t 60 do próprio pg_ctl
+    let settled = false;
     const done = (fail: Error | null) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
       closeSync(fd);
       const output = readFileSync(outputFile, 'utf8');
@@ -73,7 +133,13 @@ function run(file: string, args: string[], outputFile: string): Promise<string> 
       else resolve(output);
     };
     child.once('error', (error) => done(error));
-    child.once('exit', (code, signal) => done(code === 0 ? null : new Error(`pg_ctl ${args[0]} saiu com código ${code ?? 'null'} (sinal ${signal ?? 'null'})`)));
+    child.once('exit', (code, signal) =>
+      done(
+        timedOut ? new Error(`tempo esgotado: pg_ctl ${args[0]} não terminou em ${(TIMEOUTS.startMs + 30_000) / 1000} s`)
+        : code === 0 ? null
+        : new Error(`pg_ctl ${args[0]} saiu com código ${code ?? 'null'} (sinal ${signal ?? 'null'})`),
+      ),
+    );
   });
 }
 
@@ -124,21 +190,23 @@ export class PgServer {
     });
     let pgCtl: string | null = null;
     try {
-      if (process.platform === 'win32') pgCtl = await stage('localizar pg_ctl', output, password, windowsPgCtl);
-      await stage('initdb', output, password, () => epg.initialise());
+      if (launcher() === 'pg_ctl') pgCtl = await stage('localizar pg_ctl', output, password, windowsPgCtl);
+      await stage('initdb', output, password, () => withTimeout(epg.initialise(), TIMEOUTS.initdbMs, 'initdb'));
       const ctl = pgCtl;
       if (ctl) {
         // -w: espera aceitar conexões; -l: log do servidor, lido no diagnóstico se falhar.
         await stage('iniciar servidor (pg_ctl)', output, password, async () => {
-          capture(await run(ctl, ['start', '-D', dataDir, '-o', [`-p ${port}`, ...serverOptions].join(' '), '-l', logFile, '-w', '-t', '60'], join(base, 'pg_ctl.log')));
+          capture(await run(ctl, ['start', '-D', dataDir, '-o', [`-p ${port}`, ...serverOptions].join(' '), '-l', logFile, '-w', '-t', String(TIMEOUTS.startMs / 1000)], join(base, 'pg_ctl.log')));
         });
       } else {
-        await stage('iniciar servidor', output, password, () => epg.start());
+        // O embedded-postgres resolve ao ver "ready to accept connections" e rejeita (com `undefined`) se o
+        // processo sair; um servidor vivo que nunca fica pronto deixaria a promessa pendente: daí o prazo.
+        await stage('iniciar servidor', output, password, () => withTimeout(epg.start(), TIMEOUTS.startMs, 'início do postgres'));
       }
     } catch (error) {
-      // Falhou antes de existir o servidor: para o que tiver subido e apaga o diretório temporário.
+      // Falhou antes de existir o servidor: para o que tiver subido (com prazo) e apaga o diretório temporário.
       if (pgCtl) await run(pgCtl, ['stop', '-D', dataDir, '-m', 'immediate', '-w'], join(base, 'pg_ctl.log')).catch(() => undefined);
-      else await epg.stop().catch(() => undefined);
+      else await stopEmbedded(epg).catch(() => undefined);
       rmSync(base, { recursive: true, force: true });
       throw error;
     }
@@ -159,7 +227,7 @@ export class PgServer {
   async stop(): Promise<void> {
     await this.pool.end();
     if (this.pgCtl) await run(this.pgCtl, ['stop', '-D', join(this.base, 'data'), '-m', 'fast', '-w'], join(this.base, 'pg_ctl.log')).catch(() => undefined);
-    else await this.epg.stop();
+    else await stopEmbedded(this.epg); // nunca epg.stop(): pode ficar pendente se o servidor já saiu
     rmSync(this.base, { recursive: true, force: true });
   }
 
