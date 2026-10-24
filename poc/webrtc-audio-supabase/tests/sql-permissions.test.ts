@@ -64,7 +64,12 @@ describe('EXECUTE explícito', () => {
     expect(await db.rpcError(s.owner, 'public.set_signal_state', { p_msg_id: s.room, p_state: 'published' })).toMatch(/permission denied/);
     expect(await db.rpcError(s.owner, 'oryn.admin_issue_creator_invite', { p_ttl_minutes: 60, p_max_open_rooms: 5 })).toMatch(/permission denied/);
     expect(await db.rpcError('service', 'oryn.admin_issue_creator_invite', { p_ttl_minutes: 60, p_max_open_rooms: 5 })).toMatch(/permission denied/);
-    expect(await db.rpcError(s.owner, 'realtime.send', { payload: {}, event: 'x', topic: `oryn:s:${s.memberSession}` })).toMatch(/permission denied/);
+    // 02C.2B: no Supabase real, realtime.send é SECURITY INVOKER com EXECUTE para PUBLIC. O cliente consegue
+    // chamá-lo (se alcançasse SQL), mas o RLS barra a escrita em oryn:* e o erro vira só WARNING: nada é gravado.
+    const before = (await db.admin<{ n: number }>(`select count(*)::int as n from realtime.messages`))[0]!.n;
+    expect(await db.rpcError(s.owner, 'realtime.send', { payload: {}, event: 'x', topic: `oryn:s:${s.memberSession}` })).toBeNull();
+    expect(await db.rpcError('anon', 'realtime.send', { payload: {}, event: 'x', topic: `oryn:s:${s.memberSession}` })).toBeNull();
+    expect((await db.admin<{ n: number }>(`select count(*)::int as n from realtime.messages`))[0]!.n).toBe(before);
   });
 
   it('SECURITY DEFINER sempre com search_path vazio', async () => {

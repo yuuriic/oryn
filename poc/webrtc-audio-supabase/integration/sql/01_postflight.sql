@@ -1,7 +1,11 @@
--- POC-02C.1B — PÓS-VOO, SOMENTE LEITURA. Rodar logo DEPOIS das migrações, no mesmo projeto/branch.
--- Reproduz no catálogo REAL do Supabase as asserções de tests/sql-permissions.test.ts (PGlite).
--- Saída: uma linha por item, com expected/actual/pass. Critério: TODAS as linhas com pass = true.
--- Ordenado com as falhas primeiro. Transação READ ONLY e ROLLBACK no fim.
+-- POC-02C.1B — PÓS-VOO, SOMENTE LEITURA. Rodar logo DEPOIS das migrações, no mesmo projeto/branch, como o
+-- papel que aplicou as migrações (postgres). Reproduz no catálogo REAL as asserções dos testes locais.
+-- Saída: item, expected, actual, status. status:
+--   PASS / FAIL    — verificação objetiva no catálogo;
+--   NOT VERIFIED   — o catálogo não basta (ex.: schemas da Data API); exige painel ou harness. NUNCA conta como PASS;
+--   INFO           — fato do Supabase registrado na evidência (ex.: EXECUTE padrão em realtime.send).
+-- Critério (02C.2B): ZERO linhas FAIL; cada NOT VERIFIED resolvido pela evidência indicada no item.
+-- Ordenado: FAIL, NOT VERIFIED, INFO, PASS. Transação READ ONLY e ROLLBACK no fim.
 
 begin;
 set transaction read only;
@@ -53,9 +57,6 @@ checks(item, expected, actual) as (
   select 'EXECUTE ' || role || ' oryn_realtime.can_receive_topic', false,
          pg_catalog.has_function_privilege(role, 'oryn_realtime.can_receive_topic(text)', 'EXECUTE')
     from client_roles where role <> 'authenticated'
-  union all
-  select 'EXECUTE authenticated realtime.send (cliente não publica)', false,
-         pg_catalog.has_function_privilege('authenticated', 'realtime.send(jsonb,text,text,boolean)', 'EXECUTE')
   union all
   select 'USAGE ' || role || ' schema oryn', false, pg_catalog.has_schema_privilege(role, 'oryn', 'USAGE') from client_roles
   union all
@@ -119,17 +120,68 @@ checks(item, expected, actual) as (
          not exists (select 1 from pg_catalog.pg_auth_members m
                       where pg_catalog.pg_get_userbyid(m.member) in ('anon', 'authenticated'))
   union all
+  -- 02C.2B: compensações do EXECUTE padrão de realtime.send (INFO abaixo). O cliente pode até executar a
+  -- função se alcançar SQL, mas a barreira restritiva nega a escrita em oryn:* para anon e authenticated.
+  select 'barreira restritiva de escrita em oryn:* cobre anon e authenticated', true,
+         exists (select 1 from pg_catalog.pg_policies
+                  where schemaname = 'realtime' and tablename = 'messages' and policyname = 'oryn_topics_no_client_write'
+                    and permissive = 'RESTRICTIVE' and cmd = 'INSERT'
+                    and roles @> array['anon', 'authenticated']::name[])
+  union all
+  select 'tabelas da Oryn pertencem ao papel que migrou (' || current_user || ')', true,
+         not exists (select 1 from pg_catalog.pg_class c join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+                      where n.nspname = 'oryn' and c.relkind = 'r' and c.relowner <> (select oid from pg_catalog.pg_roles where rolname = current_user))
+  union all
+  -- 02C.2B (M5): travas por linha que serializam a mesma sessão/usuário sem impasse com as chaves estrangeiras.
+  select 'join_room trava a linha de membro (FOR NO KEY UPDATE) antes de contar sessões', true,
+         (select p.prosrc ~* 'from oryn\.room_members m.*for no key update.*count' from pg_catalog.pg_proc p where p.oid = 'public.join_room(uuid)'::regprocedure)
+  union all
+  select 'authorize_signal trava a sessão remetente (FOR NO KEY UPDATE)', true,
+         (select p.prosrc ~* 's\.id = p_session_id and s\.user_id = v_uid and s\.revoked_at is null\s+for no key update' from pg_catalog.pg_proc p
+           where p.oid = 'public.authorize_signal(uuid,uuid,uuid,text,integer,integer)'::regprocedure)
+  union all
   select 'nenhuma coluna de payload/SDP/ICE em oryn', true,
          not exists (select 1 from information_schema.columns
                       where table_schema = 'oryn' and column_name ~* '(sdp|candidate|payload$|ice|ip_|address)')
+),
+db_schemas as (
+  select cfg from pg_catalog.pg_roles r, pg_catalog.unnest(r.rolconfig) cfg
+   where r.rolname = 'authenticator' and cfg like 'pgrst.db_schemas=%'),
+-- Itens que o catálogo não decide sozinho, ou fatos do Supabase a registrar.
+notes(item, expected, actual, status) as (
+  select 'Data API: schemas expostos sem oryn/oryn_realtime/realtime',
+         'só public, graphql_public',
+         coalesce((select pg_catalog.string_agg(cfg, '; ') from db_schemas), 'configuração fora do banco'),
+         case
+           when not exists (select 1 from db_schemas) then 'NOT VERIFIED' -- painel Settings > Data API + teste #3
+           when exists (select 1 from db_schemas where cfg ~ '(^|[=, ])(oryn|oryn_realtime|realtime)($|[, ])') then 'FAIL'
+           else 'PASS' end
   union all
-  select 'Data API não expõe oryn/oryn_realtime/realtime (rolconfig do authenticator)', true,
-         not exists (select 1 from pg_catalog.pg_roles r, pg_catalog.unnest(r.rolconfig) cfg
-                      where r.rolname = 'authenticator' and cfg like 'pgrst.db_schemas=%'
-                        and cfg ~ '(^|[=, ])(oryn|oryn_realtime|realtime)($|[, ])')
+  select 'Realtime: "Allow public access" desligado', 'desligado', 'configuração fora do banco', 'NOT VERIFIED' -- painel + teste #7
+  union all
+  select 'realtime.send: EXECUTE para anon/authenticated (padrão do Supabase)', 'informativo',
+         'anon=' || pg_catalog.has_function_privilege('anon', 'realtime.send(jsonb,text,text,boolean)', 'EXECUTE')::text
+           || ', authenticated=' || pg_catalog.has_function_privilege('authenticated', 'realtime.send(jsonb,text,text,boolean)', 'EXECUTE')::text,
+         'INFO'
+  union all
+  select 'realtime.messages: dono (gerido pelo Supabase; a migração não altera)', 'informativo',
+         (select pg_catalog.pg_get_userbyid(c.relowner)::text from pg_catalog.pg_class c where c.oid = 'realtime.messages'::regclass), 'INFO'
+  union all
+  select 'realtime.messages: políticas PERMISSIVAS de INSERT de terceiros', 'informativo (oryn:* fica negado pela barreira)',
+         (select pg_catalog.count(*)::text from pg_catalog.pg_policies
+           where schemaname = 'realtime' and tablename = 'messages' and permissive = 'PERMISSIVE' and cmd in ('INSERT', 'ALL')
+             and policyname not like 'oryn_%'), 'INFO'
+  union all
+  select 'realtime.messages: partições existentes (sem partição, realtime.send perde o evento em silêncio)', 'informativo',
+         (select pg_catalog.count(*)::text from pg_catalog.pg_inherits where inhparent = 'realtime.messages'::regclass), 'INFO'
 )
-select item, expected, actual, expected is not distinct from actual as pass
-  from checks
- order by (expected is not distinct from actual), item;
+select item, expected, actual, status from (
+  select item, expected::text as expected, actual::text as actual,
+         case when expected is not distinct from actual then 'PASS' else 'FAIL' end as status
+    from checks
+  union all
+  select item, expected, actual, status from notes
+) r
+ order by array_position(array['FAIL', 'NOT VERIFIED', 'INFO', 'PASS'], r.status), r.item;
 
 rollback;

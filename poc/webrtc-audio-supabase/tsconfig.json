@@ -17,5 +17,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src", "tests", "supabase/functions/_shared", "vitest.config.ts", "vitest.remote.config.ts"]
+  "include": ["src", "tests", "supabase/functions/_shared", "vitest.config.ts", "vitest.remote.config.ts", "vitest.pg.config.ts"]
 }

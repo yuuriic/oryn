@@ -168,7 +168,7 @@ language plpgsql security definer set search_path = '' as $$
 declare v_uid uuid := oryn.require_uid(); v_max integer; v_active integer; v_pending integer; v_token text; v_exp timestamptz;
 begin
   select r.max_members into v_max from oryn.rooms r
-   where r.id = p_room_id and r.owner_id = v_uid and r.closed_at is null for update;
+   where r.id = p_room_id and r.owner_id = v_uid and r.closed_at is null for no key update;
   if not found or not oryn.is_active_member(p_room_id, v_uid) then
     raise exception 'unauthorized' using errcode = '42501';
   end if;
@@ -226,7 +226,7 @@ begin
   if not found then
     raise exception 'invite-invalid' using errcode = 'P0001';
   end if;
-  select r.max_members into v_max from oryn.rooms r where r.id = v_room and r.closed_at is null for update;
+  select r.max_members into v_max from oryn.rooms r where r.id = v_room and r.closed_at is null for no key update;
   if not found then
     raise exception 'invite-invalid' using errcode = 'P0001';
   end if;
@@ -248,12 +248,21 @@ create function public.join_room(p_room_id uuid) returns table (session_id uuid,
 language plpgsql security definer set search_path = '' as $$
 declare v_uid uuid := oryn.require_uid(); v_live integer; v_sid uuid; v_label text;
 begin
-  if not oryn.is_active_member(p_room_id, v_uid) then
+  -- 02C.2B (M5): trava a linha de membro (sala, usuário) ANTES de contar. Entradas simultâneas do MESMO
+  -- usuário nesta sala ficam em fila; outros usuários e outras salas não esperam. FOR NO KEY UPDATE não
+  -- conflita com as travas KEY SHARE das chaves estrangeiras. A pertença é conferida de novo depois da
+  -- espera (pode ter sido removida enquanto aguardava).
+  perform 1 from oryn.room_members m
+   where m.room_id = p_room_id and m.user_id = v_uid and m.removed_at is null
+   for no key update;
+  if not found or not oryn.is_active_member(p_room_id, v_uid) then
     raise exception 'not-member' using errcode = '42501';
   end if;
-  -- Expira (revoga) sessões sem batimento desta sala.
+  -- Expira (revoga) só as PRÓPRIAS sessões sem batimento desta sala: nenhuma linha de outro usuário é
+  -- travada aqui (evita esperas e impasses entre entradas de usuários diferentes). Sessões alheias
+  -- vencidas já são ignoradas por roster, publicação, assinatura e sinalização (filtro de batimento).
   update oryn.room_sessions set revoked_at = pg_catalog.now(), revoke_reason = 'expired'
-   where room_id = p_room_id and revoked_at is null and not oryn.session_is_fresh(last_seen_at);
+   where room_id = p_room_id and user_id = v_uid and revoked_at is null and not oryn.session_is_fresh(last_seen_at);
   select pg_catalog.count(*) into v_live from oryn.room_sessions
    where room_id = p_room_id and user_id = v_uid and revoked_at is null;
   if v_live >= 2 then
@@ -273,7 +282,7 @@ language plpgsql security definer set search_path = '' as $$
 declare v_uid uuid := oryn.require_uid(); v_last timestamptz; v_room uuid;
 begin
   select s.last_seen_at, s.room_id into v_last, v_room from oryn.room_sessions s
-   where s.id = p_session_id and s.user_id = v_uid and s.revoked_at is null for update;
+   where s.id = p_session_id and s.user_id = v_uid and s.revoked_at is null for no key update;
   if not found or not oryn.is_active_member(v_room, v_uid) then
     raise exception 'session-invalid' using errcode = '42501';
   end if;
@@ -290,7 +299,7 @@ language plpgsql security definer set search_path = '' as $$
 declare v_uid uuid := oryn.require_uid(); v_room uuid; v_revoked timestamptz;
 begin
   select s.room_id, s.revoked_at into v_room, v_revoked from oryn.room_sessions s
-   where s.id = p_session_id and s.user_id = v_uid for update;
+   where s.id = p_session_id and s.user_id = v_uid for no key update;
   if not found then
     raise exception 'session-invalid' using errcode = '42501';
   end if;
@@ -339,8 +348,15 @@ begin
     raise exception 'invalid-argument' using errcode = 'P0001';
   end if;
   -- Remetente: sessão DO CHAMADOR, viva, de membro ativo.
+  -- 02C.2B: a linha da sessão remetente fica TRAVADA até o fim da chamada. Chamadas simultâneas da MESMA
+  -- sessão são serializadas: a idempotência por client_msg_id e o limite de taxa ficam exatos, e uma
+  -- repetição concorrente devolve "duplicate" em vez do erro bruto de chave única. Outras sessões não
+  -- esperam. FOR NO KEY UPDATE (e não FOR UPDATE): não conflita com o KEY SHARE que as chaves estrangeiras
+  -- de signal_log/pair_counters tomam na sessão do DESTINO. Com FOR UPDATE, A→B e B→A simultâneos se
+  -- travariam mutuamente (impasse).
   select s.room_id, s.last_seen_at into v_room, v_last from oryn.room_sessions s
-   where s.id = p_session_id and s.user_id = v_uid and s.revoked_at is null;
+   where s.id = p_session_id and s.user_id = v_uid and s.revoked_at is null
+   for no key update;
   if not found or not oryn.session_is_fresh(v_last) or not oryn.is_active_member(v_room, v_uid) then
     raise exception 'session-invalid' using errcode = '42501';
   end if;

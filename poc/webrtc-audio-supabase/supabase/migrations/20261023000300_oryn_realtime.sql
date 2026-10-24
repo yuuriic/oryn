@@ -8,7 +8,19 @@
 -- Requer, no projeto Supabase real: canais com `private: true` e "Allow public access" DESLIGADO
 -- (configuração do painel, NOT VERIFIED nesta etapa).
 
-alter table realtime.messages enable row level security;
+-- 02C.2B (A1): realtime.messages pertence ao Supabase (dono supabase_realtime_admin) e já vem com RLS
+-- ligado. O papel das migrações não é dono, então NÃO alteramos a tabela (nem RLS, nem dono): só
+-- conferimos. Sem RLS, as políticas abaixo não teriam efeito e os tópicos oryn:* ficariam abertos —
+-- a migração para aqui, inteira, sem criar nada.
+do $$
+begin
+  if pg_catalog.to_regclass('realtime.messages') is null then
+    raise exception 'oryn-0300: realtime.messages ausente' using errcode = 'P0001';
+  end if;
+  if not (select c.relrowsecurity from pg_catalog.pg_class c where c.oid = 'realtime.messages'::regclass) then
+    raise exception 'oryn-0300: RLS desligado em realtime.messages; reative no Supabase antes de migrar' using errcode = 'P0001';
+  end if;
+end $$;
 
 -- Receber: tópico exato oryn:s:{sessão} (minúsculo, como o servidor publica) e sessão própria ativa.
 create policy oryn_receive_own_session_topic on realtime.messages

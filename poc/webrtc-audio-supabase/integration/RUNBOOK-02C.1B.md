@@ -25,7 +25,7 @@ aprovação explícita do arquiteto antes de começar.
 | 0100 | `alter default privileges ... in schema oryn` | Vale só para objetos criados **pelo papel que roda a migração** (`postgres`). Objetos criados por outro papel não são cobertos (aceitável: só `postgres` cria em `oryn`) |
 | 0200 | `revoke ... from anon, authenticated, service_role` depois de cada `create` | Neutraliza os privilégios padrão de `public` **se existirem**. Projetos novos podem já não concedê-los: as migrações funcionam nos dois casos, porque os `GRANT` são explícitos |
 | 0200 | `realtime.send(jsonb,text,text,boolean)` dentro de `SECURITY DEFINER` | Exige `EXECUTE` para `postgres` (P6). Assinatura confere com a documentação |
-| 0300 | `alter table realtime.messages enable row level security` e `create policy` | Exigem que `postgres` seja dono ou membro do dono de `realtime.messages` (P5). A documentação manda criar políticas como `postgres`, então é **esperado** passar; não verificado |
+| 0300 | Asserção de RLS (sem `ALTER TABLE`) e `create policy` | **02C.2B:** o `postgres` não é dono de `realtime.messages` (dono `supabase_realtime_admin`, lido na 02C.2A). A 0300 não altera a tabela: só exige RLS ligado e para inteira se não estiver. As políticas são autorizadas pelo `supautils.policy_grants`, que lista `postgres → realtime.messages` (P5 `policy_grant = true`, lido no real) |
 | 0300 | Política de `select` exige `extension = 'broadcast'` | Compatível com a checagem do Realtime (consulta em `realtime.messages` seguida de rollback) |
 | 0200 | `pg_graphql` | Se ativo, as RPCs de `public` também aparecem por GraphQL. A autorização é a mesma (`EXECUTE`); anotar no teste #3 |
 
@@ -94,30 +94,56 @@ controle.
 
 ```powershell
 cd "C:\Dev\Projeto - Oryn\poc\webrtc-audio-supabase"
-pnpm install --frozen-lockfile; pnpm typecheck; pnpm test   # esperado: 190 passed, 17 todo
+pnpm install --frozen-lockfile; pnpm typecheck; pnpm test; pnpm test:pg; pnpm audit
+# esperado (02C.2B): test 221 passed / 18 todo; test:pg 14 passed; audit limpo
 ```
 
 ### Fase 2 — Pré-voo remoto, somente leitura ⛔
 
 Rodar `integration/sql/00_preflight.sql` no SQL editor do alvo. A transação é `READ ONLY` com `ROLLBACK`.
-Salvar a saída. **GO para a Fase 3 só se** P1–P6 baterem com o esperado e P2/P3/P7 vierem vazios.
+Salvar a saída. **GO para a Fase 3 só se:**
+- P1–P6 baterem com o esperado revisto no 02C.2B (P5: `rls_enabled = true` e `policy_grant = true`);
+- P2, P3 e P7 vierem vazios;
+- P9 for registrado como NOT VERIFIED, com a captura do painel.
 
-### Fase 3 — Aplicação ⛔
+### Fase 3 — Aplicação, uma migração por vez ⛔
+
+A CLI 2.122.0 não aplica "até a versão N". Para conferir cada migração antes da próxima, cada passo usa um
+`--workdir` temporário, fora do repositório, com só as N primeiras migrações. O histórico remoto faz cada
+passo aplicar só a migração nova. Sempre o mesmo método: **não** misturar com `apply_migration` do MCP nem
+com o SQL editor.
 
 ```powershell
+cd "C:\Dev\Projeto - Oryn\poc\webrtc-audio-supabase"
 supabase login                                       # token pessoal só no terminal; não salvar em arquivo
-$ref = Read-Host 'ref do projeto (<PROJECT_REF>)'    # digitado, não salvo
-supabase link --project-ref $ref                     # senha do banco digitada no prompt
-supabase db push --dry-run                           # esperado: as 3 migrações listadas, nada mais
-supabase db push                                     # aplica e registra o histórico
-supabase migration list                              # esperado: 3 versões em Local e Remote
+$ref  = Read-Host 'ref do projeto (<PROJECT_REF>)'   # digitado, não salvo
+$base = Join-Path $env:TEMP 'oryn-push'
+foreach ($n in 1..3) {
+  $wd = Join-Path $base "step$n"
+  New-Item -ItemType Directory -Force (Join-Path $wd 'supabase\migrations') | Out-Null
+  Copy-Item supabase\config.toml (Join-Path $wd 'supabase')
+  Get-ChildItem supabase\migrations\*.sql | Sort-Object Name | Select-Object -First $n |
+    Copy-Item -Destination (Join-Path $wd 'supabase\migrations')
+}
+# Para cada passo N = 1, 2, 3 (senha do banco digitada no prompt; --skip-vault: nada de Vault a partir do config):
+supabase --workdir "$base\step1" db push --project-ref $ref --skip-vault --dry-run   # esperado: SÓ a 0100
+supabase --workdir "$base\step1" db push --project-ref $ref --skip-vault
+#   → rodar integration/sql/05_step_checks.sql: nenhum FAIL; nenhum PENDING com step <= 1
+#   → repetir com step2 (só a 0200) e step3 (só a 0300)
+supabase --workdir "$base\step3" migration list --project-ref $ref                 # 3 versões em Local e Remote
+Remove-Item -Recurse -Force $base
 ```
 
-A pasta `supabase/.temp/` gerada pelo `link` já está no `.gitignore`.
+As pastas `supabase/.temp/` dos workdirs temporários ficam fora do repositório; a do projeto já está no `.gitignore`.
 
 ### Fase 4 — Pós-voo, somente leitura ⛔
 
-Rodar `integration/sql/01_postflight.sql`. **Critério: todas as linhas com `pass = true`.**
+Rodar `integration/sql/01_postflight.sql`. **Critério (02C.2B):**
+- **zero linhas `FAIL`**;
+- cada `NOT VERIFIED` (Data API, "Allow public access") resolvido pela captura do painel e pelos testes #3 e #7;
+- linhas `INFO` copiadas para a evidência.
+
+`NOT VERIFIED` nunca conta como PASS.
 Rodar também os advisors de segurança e de performance do painel e anotar cada item.
 
 ### Fase 5 — Testes de integração ⛔
@@ -203,3 +229,25 @@ $env:ORYN_IT_CREATOR_INVITE = Read-Host 'convite de criador'  # uso único
 pnpm test:remote
 Remove-Item Env:ORYN_*                                         # limpar ao terminar
 ```
+
+## 10. Fidelidade dos ambientes de teste (02C.2B)
+
+| Aspecto | PGlite + shim (`pnpm test`) | PostgreSQL 17 embutido (`pnpm test:pg`) | Supabase real |
+|---|---|---|---|
+| Versão | Postgres 18 | **17.10** | 17.11 |
+| Conexões simultâneas | não (uma só) | **sim** | sim |
+| `realtime.messages` | particionada, RLS ligado, dono `supabase_realtime_admin`, privilégios de cliente | igual | observado na 02C.2A |
+| `realtime.send` | cópia do código real (INVOKER, `id`, WARNING) | igual | observado |
+| Permissão de criar políticas | aproximada por pertença ao dono (também permitiria `ALTER TABLE`); compensada por um teste estático que proíbe `ALTER TABLE` em `realtime.*` | igual | `supautils.policy_grants` (só políticas) |
+| Dono das migrações | `migration_owner`: não superusuário, BYPASSRLS | igual | `postgres`: não superusuário, BYPASSRLS |
+| Partições do Realtime | uma partição larga | igual | diárias, criadas pelo serviço Realtime (**NOT VERIFIED**: hoje 0) |
+| Codificação | UTF8 | UTF8 (`--encoding=UTF8 --locale=C`) | UTF8 |
+| PostgREST, Data API, gateway, Realtime, Auth | **não existem** | **não existem** | só pelo harness remoto e pelo painel |
+
+O que **só** o Supabase real prova:
+- schemas expostos;
+- canais privados, entrega e não persistência do Broadcast;
+- cache de autorização;
+- Turnstile;
+- criação de partições;
+- o comportamento do `supautils`.

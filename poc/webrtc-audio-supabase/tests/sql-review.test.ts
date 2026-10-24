@@ -69,9 +69,10 @@ describe('matriz de privilégios efetivos', () => {
     });
   });
 
-  it('dono das migrações: não é superusuário, não ignora RLS, é dono de tudo e nenhum cliente herda dele', async () => {
+  it('dono das migrações: não é superusuário, tem BYPASSRLS como o postgres real, é dono de tudo e nenhum cliente herda dele', async () => {
+    // 02C.2B: o `postgres` do Supabase tem rolbypassrls = true (lido na 02C.2A); a proteção das RPCs não depende de RLS.
     const role = (await db.admin<{ rolsuper: boolean; rolbypassrls: boolean }>(`select rolsuper, rolbypassrls from pg_roles where rolname = 'migration_owner'`))[0]!;
-    expect(role).toEqual({ rolsuper: false, rolbypassrls: false });
+    expect(role).toEqual({ rolsuper: false, rolbypassrls: true });
     const owners = await db.admin<{ owner: string; n: number }>(`
       select pg_get_userbyid(p.proowner) as owner, count(*)::int as n from pg_proc p join pg_namespace n on n.oid = p.pronamespace
        where n.nspname in ('oryn', 'oryn_realtime') group by 1`);

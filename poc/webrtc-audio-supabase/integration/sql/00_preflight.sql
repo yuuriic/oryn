@@ -2,12 +2,13 @@
 -- migrações. A transação é READ ONLY e termina em ROLLBACK: qualquer escrita acidental falha.
 -- Não lê nem imprime segredos (nenhuma tabela de chaves, vault ou auth.* além de metadados de catálogo).
 -- Cada consulta tem o resultado ESPERADO no comentário; divergência = NO-GO até análise do arquiteto.
+-- Expectativas revistas no 02C.2B com os valores LIDOS no projeto real na 02C.2A (PG 17.11).
 
 begin;
 set transaction read only;
 
 -- P1. Versão e papel que aplicará as migrações.
--- Esperado: PostgreSQL 17.x; current_user = postgres; rolsuper = false; rolbypassrls = qualquer (anotar).
+-- Esperado: PostgreSQL 17.x; current_user = postgres; rolsuper = false; rolbypassrls = true (lido na 02C.2A).
 select pg_catalog.version() as version,
        current_user,
        r.rolsuper,
@@ -34,16 +35,25 @@ select pg_catalog.to_regprocedure('auth.uid()') is not null                     
        pg_catalog.to_regprocedure('realtime.topic()') is not null                             as has_realtime_topic,
        pg_catalog.to_regprocedure('realtime.send(jsonb,text,text,boolean)') is not null       as has_realtime_send;
 
--- P5. Dono de realtime.messages e capacidade do papel atual de criar políticas / ligar RLS (exige ser dono
--- ou membro do papel dono). Esperado: can_manage = true; rls_enabled = true (já vem ligado no Supabase).
+-- P5. realtime.messages é do Supabase. A migração 0300 NÃO altera a tabela: só cria políticas e exige RLS.
+-- Esperado (lido na 02C.2A):
+--   owner = supabase_realtime_admin; rls_enabled = true (BLOQUEANTE: a 0300 para se for false);
+--   owner_privileges = false (o postgres não é dono nem herda o dono; é esperado);
+--   policy_grant = true: o supautils.policy_grants autoriza o papel atual a criar/remover POLÍTICAS em
+--   realtime.messages. Se for false/NULL: NO-GO (a 0300 falharia ao criar as políticas).
 select pg_catalog.pg_get_userbyid(c.relowner)                                                as owner,
        c.relrowsecurity                                                                       as rls_enabled,
-       pg_catalog.pg_has_role(current_user, c.relowner, 'USAGE')                              as can_manage
+       pg_catalog.pg_has_role(current_user, c.relowner, 'USAGE')                              as owner_privileges,
+       coalesce(nullif(pg_catalog.current_setting('supautils.policy_grants', true), '')::jsonb
+                  -> current_user ? 'realtime.messages', false)                               as policy_grant
   from pg_catalog.pg_class c where c.oid = 'realtime.messages'::regclass;
 
--- P6. Privilégios que as migrações e o Realtime precisam. Esperado:
+-- P6. Privilégios que as migrações e o Realtime precisam. Esperado (lido na 02C.2A):
 --   owner_send = true; owner_references_users = true;
---   authenticated_select/insert = true (o Realtime avalia RLS como o usuário); anon_* = anotar.
+--   authenticated_select/insert = true (o Realtime avalia RLS como o usuário); anon_select/insert = true;
+--   authenticated_topic = true; authenticated_send = true — PADRÃO do Supabase (realtime.send é SECURITY
+--   INVOKER com EXECUTE para PUBLIC). Não é falha: a escrita em oryn:* é negada pela barreira restritiva da
+--   0300 e o schema realtime fica fora da Data API (teste #3). Registrar o valor na evidência.
 select pg_catalog.has_function_privilege(current_user, 'realtime.send(jsonb,text,text,boolean)', 'EXECUTE') as owner_send,
        pg_catalog.has_table_privilege(current_user, 'auth.users', 'REFERENCES')                as owner_references_users,
        pg_catalog.has_table_privilege('authenticated', 'realtime.messages', 'SELECT')         as authenticated_select,
@@ -67,8 +77,9 @@ select coalesce(n.nspname, '(global)') as schema,
  order by 1, 2, 3;
 
 -- P9. Schemas expostos pela Data API (configuração do PostgREST guardada no papel authenticator).
--- Esperado: pgrst.db_schemas sem 'oryn', 'oryn_realtime' nem 'realtime'. Se nada aparecer, conferir no painel
--- (Settings > Data API) e registrar a captura de tela.
+-- Esperado: pgrst.db_schemas sem 'oryn', 'oryn_realtime' nem 'realtime'. Na 02C.2A veio VAZIO (a
+-- configuração não fica no banco): o item é NOT VERIFIED até a leitura do painel (Settings > Data API),
+-- com captura de tela, e o teste #3. Vazio NÃO é PASS.
 select r.rolname, cfg
   from pg_catalog.pg_roles r, pg_catalog.unnest(r.rolconfig) cfg
  where r.rolname = 'authenticator' and cfg like 'pgrst.%';

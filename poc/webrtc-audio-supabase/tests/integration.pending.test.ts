@@ -22,4 +22,6 @@ describe('NOT VERIFIED — Supabase real (02C.1B)', () => {
   // Acrescentados na revisão 02C.1A.1:
   it.todo('dono real das migrações (postgres do Supabase): não superusuário; tem EXECUTE em realtime.send e cria políticas em realtime.messages');
   it.todo('integração GitHub do Supabase: diretório de trabalho, branch de produção, "Deploy to production" e branching automático conferidos ANTES do primeiro push das migrações');
+  // Acrescentado no 02C.2B (comprovado em PostgreSQL 17 embutido; falta o Supabase real):
+  it.todo('concorrência real no Supabase: join_room simultâneo respeita 2 sessões; authorize_signal repetido em paralelo devolve o mesmo msg_id sem erro bruto');
 });

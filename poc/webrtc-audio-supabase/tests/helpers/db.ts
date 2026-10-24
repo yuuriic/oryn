@@ -7,8 +7,13 @@ import { fileURLToPath } from 'node:url';
 import { PGlite, type Transaction } from '@electric-sql/pglite';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
-const shim = readFileSync(fileURLToPath(new URL('./supabase-shim.sql', import.meta.url)), 'utf8');
+export const SHIM_SQL = readFileSync(fileURLToPath(new URL('./supabase-shim.sql', import.meta.url)), 'utf8');
 const migrationsDir = `${root}supabase/migrations`;
+
+/** Migrações versionadas, na ordem de aplicação: [nome do arquivo, SQL]. */
+export function migrationFiles(): [string, string][] {
+  return readdirSync(migrationsDir).filter((f) => f.endsWith('.sql')).sort().map((f) => [f, readFileSync(`${migrationsDir}/${f}`, 'utf8')]);
+}
 
 export type Actor = { uid: string } | 'anon' | 'service';
 
@@ -20,14 +25,29 @@ export class TestDb {
 
   static async create(): Promise<TestDb> {
     const pg = new PGlite();
-    await pg.exec(shim);
+    await pg.exec(SHIM_SQL);
     // Migrações aplicadas pelo dono NÃO superusuário (como o `postgres` do Supabase).
     await pg.exec('set role migration_owner');
-    for (const file of readdirSync(migrationsDir).filter((f) => f.endsWith('.sql')).sort()) {
-      await pg.exec(readFileSync(`${migrationsDir}/${file}`, 'utf8'));
-    }
+    for (const [, sql] of migrationFiles()) await pg.exec(sql);
     await pg.exec('reset role');
     return new TestDb(pg);
+  }
+
+  /** Só o shim, sem migrações: para testes que aplicam (ou fazem falhar) migrações uma a uma. */
+  static async createBare(): Promise<TestDb> {
+    const pg = new PGlite();
+    await pg.exec(SHIM_SQL);
+    return new TestDb(pg);
+  }
+
+  /** Aplica uma migração como o dono das migrações (cada chamada é uma transação implícita). */
+  async migrate(sql: string): Promise<void> {
+    await this.pg.exec('set role migration_owner');
+    try {
+      await this.pg.exec(sql);
+    } finally {
+      await this.pg.exec('reset role');
+    }
   }
 
   close(): Promise<void> {

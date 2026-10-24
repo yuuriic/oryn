@@ -4,6 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { TestDb } from './helpers/db.ts';
 import { createRoom, creatorToken, joinWithInvite, makeCreator, openSession, roomInvite, scenario } from './helpers/fixtures.ts';
+import { parseControlEvent } from '../src/contracts.ts';
 
 let db: TestDb;
 beforeEach(async () => {
@@ -165,10 +166,14 @@ describe('sessões e acesso entre salas', () => {
     const s = await scenario(db);
     const hello = await db.admin<{ event: string; payload: Record<string, unknown> }>(`select event, payload from realtime.messages where topic = $1 and event = 'hello'`, [`oryn:s:${s.ownerSession}`]);
     expect(hello).toHaveLength(1);
-    expect(Object.keys(hello[0]!.payload).sort()).toEqual(['label', 'session_id']);
+    // 02C.2B: o realtime.send injeta `id` (UUID da mensagem), como no Supabase real; o cliente o aceita.
+    expect(Object.keys(hello[0]!.payload).sort()).toEqual(['id', 'label', 'session_id']);
+    expect(parseControlEvent('hello', hello[0]!.payload)).toEqual({ event: 'hello', session_id: s.memberSession, label: 'Amigo' });
     await db.rpc(s.member, 'public.leave_room', { p_session_id: s.memberSession });
     const bye = await db.admin<{ payload: Record<string, unknown> }>(`select payload from realtime.messages where topic = $1 and event = 'bye'`, [`oryn:s:${s.ownerSession}`]);
-    expect(bye).toEqual([{ payload: { session_id: s.memberSession } }]);
+    expect(bye).toHaveLength(1);
+    expect(Object.keys(bye[0]!.payload).sort()).toEqual(['id', 'session_id']);
+    expect(parseControlEvent('bye', bye[0]!.payload)).toEqual({ event: 'bye', session_id: s.memberSession });
     await db.rpc(s.member, 'public.leave_room', { p_session_id: s.memberSession }); // idempotente
   });
 

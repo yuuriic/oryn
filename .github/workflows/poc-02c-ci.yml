@@ -2,7 +2,8 @@
 # autorização SQL em Postgres em memória/PGlite) e auditoria de dependências. Independente do poc-02b-ci.yml.
 #
 # Segurança: somente leitura do repositório, sem segredos, sem acesso ao projeto Supabase, sem migrações
-# remotas e sem deploy. Os 17 testes de integração real permanecem `todo` (NOT VERIFIED).
+# remotas e sem deploy. Os testes de integração real permanecem `todo` (NOT VERIFIED). O `test:pg` sobe um
+# PostgreSQL 17 embutido (embedded-postgres) só em 127.0.0.1 do runner, com senha gerada por execução.
 #
 # Checks obrigatórios × filtros de caminho (mesmo padrão aprovado na POC-02B): um workflow com "paths" no
 # gatilho de PR nem é criado quando o PR não toca esses caminhos, e um check obrigatório ficaria pendente
@@ -109,6 +110,9 @@ jobs:
 
       - name: Testes (unitários + autorização SQL local; integração real como todo)
         run: pnpm test
+
+      - name: Concorrência em PostgreSQL 17 real embutido (local ao runner; sem rede externa nem segredos)
+        run: pnpm test:pg
 
       - name: Audit de dependências
         if: runner.os == 'Linux'

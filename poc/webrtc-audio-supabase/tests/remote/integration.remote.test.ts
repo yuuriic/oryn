@@ -7,6 +7,7 @@
 // Nada de JWT, chave ou token de convite em mensagens de asserção ou log.
 import { createClient, type RealtimeChannel, type SupabaseClient } from '@supabase/supabase-js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { parseControlEvent } from '../../src/contracts.ts';
 import { remoteGate, type RemoteEnv } from './remote-env.ts';
 
 const gate = remoteGate(process.env);
@@ -186,7 +187,7 @@ describe.skipIf(!hasRoomSetup)('Supabase real — sala de teste (exige ORYN_IT_C
     expect(receiver.received).toEqual([]);
   });
 
-  it('#11 realtime.send (controle): hello chega ao destinatário só com session_id e label', async () => {
+  it('#11 realtime.send (controle): hello chega ao destinatário e o cliente o aceita (id injetado + session_id + label)', async () => {
     const receiver = await subscribe(member.client, topicOf(memberSession));
     expect(receiver.status).toBe('SUBSCRIBED');
     const second = (await rpc<{ session_id: string }[]>(owner, 'join_room', { p_room_id: room })).data![0]!.session_id;
@@ -195,7 +196,26 @@ describe.skipIf(!hasRoomSetup)('Supabase real — sala de teste (exige ORYN_IT_C
     await rpc(owner, 'leave_room', { p_session_id: second });
     const hello = receiver.received.find((m) => m.event === 'hello');
     expect(hello).toBeDefined();
-    expect(Object.keys(hello!.payload as object).sort()).toEqual(['label', 'session_id']);
+    // 02C.2B: o realtime.send real acrescenta `id`; nada além de id, label e session_id.
+    expect(Object.keys(hello!.payload as object).filter((k) => k !== 'id').sort()).toEqual(['label', 'session_id']);
+    expect(parseControlEvent('hello', hello!.payload)).toEqual({ event: 'hello', session_id: second, label: 'it-owner' });
+  });
+
+  it('#18 M5: 5 join_room SIMULTÂNEOS do mesmo usuário → no máximo 2 sessões vivas', async () => {
+    const results = await Promise.all(Array.from({ length: 5 }, () => rpc<{ session_id: string }[]>(member, 'join_room', { p_room_id: room })));
+    const opened = results.filter((r) => r.message === null).map((r) => r.data![0]!.session_id);
+    // O membro já tem 1 sessão (beforeAll): sobra exatamente 1 vaga.
+    expect(opened).toHaveLength(1);
+    expect(results.filter((r) => r.message === 'limit-reached')).toHaveLength(4);
+    for (const sid of opened) await rpc(member, 'leave_room', { p_session_id: sid });
+  });
+
+  it('#18 authorize_signal: 5 repetições SIMULTÂNEAS do mesmo client_msg_id → mesmo msg_id, sem erro bruto', async () => {
+    const args = { p_session_id: memberSession, p_to_session_id: ownerSession, p_client_msg_id: crypto.randomUUID(), p_kind: 'candidate', p_pair_epoch: 1, p_payload_bytes: 200 };
+    const results = await Promise.all(Array.from({ length: 5 }, () => rpc<{ msg_id: string; duplicate: boolean }[]>(member, 'authorize_signal', args)));
+    expect(results.map((r) => r.message)).toEqual(Array(5).fill(null));
+    expect(new Set(results.map((r) => r.data![0]!.msg_id)).size).toBe(1);
+    expect(results.filter((r) => r.data![0]!.duplicate === false)).toHaveLength(1);
   });
 
   it('#15 HTTP: 5 resgates SIMULTÂNEOS do mesmo convite → exatamente 1 sucesso', async () => {

@@ -11,12 +11,16 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:pg": "vitest run --config vitest.pg.config.ts",
     "test:remote": "vitest run --config vitest.remote.config.ts"
   },
   "devDependencies": {
     "@electric-sql/pglite": "0.5.11",
     "@supabase/supabase-js": "2.118.0",
     "@types/node": "24.19.2",
+    "@types/pg": "8.23.1",
+    "embedded-postgres": "17.10.0-beta.17",
+    "pg": "8.23.1",
     "typescript": "7.0.2",
     "vitest": "5.0.5"
   }

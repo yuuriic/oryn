@@ -29,6 +29,14 @@ POC-02C.0 e 02C.0A (D1 a D4).
   - `supabase/config.toml` com a função travada (`enabled = false`; B3);
   - auditoria das RPCs `SECURITY DEFINER`;
   - harness remoto desligado por padrão.
+- **02C.2B (compatibilidade com o Supabase real observado na 02C.2A):**
+  - `0300` não altera mais `realtime.messages`: só exige RLS ligado e para inteira se não estiver (A1);
+  - o cliente aceita o `id` que o `realtime.send` real injeta nos eventos de controle (A2);
+  - pré-voo e pós-voo com as expectativas reais, mais as classificações `NOT VERIFIED` e `INFO` (A3);
+  - travas por linha em `join_room` e `authorize_signal`: limite de sessões, idempotência e limite de taxa
+    exatos sob concorrência, sem impasse (M5);
+  - shim refeito a partir do catálogo real;
+  - concorrência provada em **PostgreSQL 17 real embutido** (`pnpm test:pg`).
 
 ## Comandos
 
@@ -37,11 +45,13 @@ cd "C:\Dev\Projeto - Oryn\poc\webrtc-audio-supabase"
 pnpm install --frozen-lockfile
 pnpm typecheck
 pnpm test        # unitários + autorização SQL (PGlite); itens do Supabase real aparecem como "todo"
+pnpm test:pg     # concorrência e compatibilidade em PostgreSQL 17 real embutido (local, ~20 s)
 pnpm test:remote # Supabase REAL: tudo pulado sem ORYN_REMOTE=1 (ver integration/RUNBOOK-02C.1B.md, §9)
 ```
 
-Requisitos: Node 24+ e pnpm 12+. Não há serviço a instalar: o PGlite é uma biblioteca (dependência de
-desenvolvimento).
+Requisitos: Node 24+ e pnpm 12+. Não há serviço a instalar: o PGlite e o PostgreSQL 17 embutido
+(`embedded-postgres`, só em 127.0.0.1 e com senha gerada por execução) são dependências de desenvolvimento.
+`pnpm-workspace.yaml` libera o script de instalação **só** dos binários do PostgreSQL embutido (Windows e Linux x64).
 
 ## Estrutura
 
@@ -55,6 +65,7 @@ desenvolvimento).
 | `supabase/functions/signal/index.ts` | Só a ligação Deno dos módulos de `_shared`. **Não executado**; fora do typecheck |
 | `supabase/config.toml` | CLI 2.122.0: Data API só `public`, sem seed, JWT de 600 s, função `signal` travada (`enabled = false`) |
 | `tests/remote/` | Harness do Supabase real (`pnpm test:remote`), desligado por padrão |
+| `tests/pg/` | Concorrência e compatibilidade em PostgreSQL 17 real embutido (`pnpm test:pg`; roda no CI) |
 | `integration/` | Runbook, matriz de evidências e scripts SQL do 02C.1B |
 | `src/` | Cliente: contratos de domínio, recepção (duplicatas e ordem) e envio com retentativas |
 | `tests/` | Testes; `helpers/` com o shim, o banco PGlite e os cenários |

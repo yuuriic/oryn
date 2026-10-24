@@ -63,9 +63,14 @@ export type ControlEvent = { event: 'hello'; session_id: string; label: string }
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v);
 
+/**
+ * Valida um evento de controle. O `realtime.send` do Supabase acrescenta `id` (UUID da mensagem) ao
+ * payload (02C.2A): ele é aceito só como UUID e descartado do resultado. Qualquer outra chave invalida o evento.
+ */
 export function parseControlEvent(event: string, payload: unknown): ControlEvent | null {
   if (!isObj(payload)) return null;
-  const keys = Object.keys(payload).sort().join(',');
+  if ('id' in payload && !isUuid(payload['id'])) return null;
+  const keys = Object.keys(payload).filter((k) => k !== 'id').sort().join(',');
   if (event === 'hello' && keys === 'label,session_id' && isUuid(payload['session_id']) && isDisplayName(payload['label'])) {
     return { event, session_id: payload['session_id'], label: payload['label'] };
   }

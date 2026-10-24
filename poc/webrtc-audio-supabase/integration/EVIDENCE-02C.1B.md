@@ -1,4 +1,4 @@
-# POC-02C.1B — Matriz de evidências (17 testes de `tests/integration.pending.test.ts`)
+# POC-02C.1B — Matriz de evidências (18 testes de `tests/integration.pending.test.ts`; o #18 foi acrescentado no 02C.2B)
 
 **Status:**
 - **PASS:** comprovado no Supabase real, com evidência anexada.
@@ -6,7 +6,7 @@
 - **NOT VERIFIED:** pronto para executar, ainda não executado.
 - **BLOCKED:** não dá para executar até resolver o bloqueio indicado (B1–B5 do runbook).
 
-Situação em 2026-10-23: **0 PASS · 0 FAIL · 14 NOT VERIFIED · 3 BLOCKED** (atualizado no 02C.1B.0C: #17 desbloqueado). Nada foi executado no remoto.
+Situação em 2026-10-23: **0 PASS · 0 FAIL · 15 NOT VERIFIED · 3 BLOCKED** (02C.1B.0C: #17 desbloqueado; 02C.2B: +#18). Nada foi executado no remoto.
 A única evidência remota já colhida é de leitura: versão do Postgres e projeto vazio.
 
 **02C.1B.0A:** nenhum status mudou, porque mocks e PGlite não convertem NOT VERIFIED em PASS. Mudou a
@@ -41,13 +41,14 @@ Os itens #13 e #14 continuam BLOCKED, agora só por falta de autorização de pu
 | 8 | Cliente não envia Broadcast em `oryn:*` (WS e REST) | (a) WS: A, inscrito no próprio tópico com `ack: true`, envia `broadcast`. B, inscrito no mesmo tópico (segunda aba de A), não recebe nada; (b) REST: `POST /realtime/v1/api/broadcast` com o **JWT de A** para `oryn:s:{sessão de B}`, `private: true`; (c) variante com `ORYN:S:` maiúsculo | (a) `send()` = `error`, e nada chega; (b) não chega ao destinatário (status anotado); (c) idem | Logs do harness com o contador de mensagens recebidas = 0 | NOT VERIFIED | Harness: WS com `ack` + REST `httpSend` (minúsculo e maiúsculo) |
 | 9 | Broadcast REST com a chave secreta entrega só a quem tem SELECT | Edge Function (ou `curl` do operador com `apikey: sb_secret_…`, **sem** `Authorization`) publica em `oryn:s:{sessão de B}`. B e A estão inscritos | Só B recebe | Contadores de recepção | NOT VERIFIED | B1 corrigido: só `apikey` secreta |
 | 10 | Broadcast REST **não** persiste nem aparece no Replay (portão S2) | Depois do #9: `select count(*) from realtime.messages where topic = 'oryn:s:<B>' and event = 'signal'` (SQL editor) + cliente B com `broadcast.replay.since` | Contagem = 0 e nada reproduzido. **Se > 0: FAIL**, e a opção S2 cai | Saída SQL + log do Replay | NOT VERIFIED | Depende do #9 + SQL |
-| 11 | `realtime.send` (controle) chega e fica retido | `join_room` por A2 com B inscrito → B recebe `hello`; consulta em `realtime.messages` pelo tópico de B | B recebe `hello` com só `session_id`/`label`; linha presente (retenção documentada: 3 dias) | Log + saída SQL | NOT VERIFIED | Harness: `hello` com chaves exatas |
+| 11 | `realtime.send` (controle) chega e fica retido | `join_room` por A2 com B inscrito → B recebe `hello`; consulta em `realtime.messages` pelo tópico de B | B recebe `hello` com `session_id`, `label` e o `id` injetado pelo `realtime.send` (02C.2B), aceito pelo cliente; linha presente (retenção documentada: 3 dias) | Log + saída SQL | NOT VERIFIED | Harness: `hello` com chaves exatas |
 | 12 | Sessão revogada com assinatura em cache | B inscrito; B chama `leave_room` (ou o dono o remove). Publicar de novo no tópico de B; depois B envia `access_token` com um JWT novo | Documentação: a autorização fica em cache até a nova entrada no canal ou o `access_token`. **Registrar** se B ainda recebe antes da renovação (risco aceito ou não, decisão do arquiteto); depois da renovação, o canal cai (`system` error + `phx_close`) | Linha do tempo com contadores | NOT VERIFIED | Exige publicação do servidor |
 | 13 | Edge Function `signal` ponta a ponta; p95 ≤ 500 ms | Harness: 200 envios válidos + casos 400/401/403/409/413/429 | Códigos conforme o contrato; p95 ≤ 500 ms medido no cliente | Tabela de códigos + histograma | **BLOCKED** (publicação não autorizada; `enabled = false` no config.toml) | B1–B3 corrigidos localmente; publicação não autorizada |
 | 14 | Chave secreta só como secret; logs sem payload/JWT/IDs completos | Painel › Edge Functions › Logs depois do #13; `grep` por `eyJ`, `sb_secret_`, `v=0` (SDP) e UUIDs completos | Nenhuma ocorrência; só prefixos de 8 caracteres | Export dos logs filtrado | **BLOCKED** (depende do #13) | Logs sanitizados testados com mocks |
 | 15 | Resgate SIMULTÂNEO do convite: exatamente 1 sucesso | `integration/sql/10_concurrency_redeem.sql` (2 sessões psql) + variante HTTP com N=10 | SQL: B bloqueia e recebe `invite-invalid`. HTTP: 1×200 e 9×`invite-invalid`; 1 membro novo | Saídas das duas sessões + contagem | NOT VERIFIED | Harness HTTP (N=5) + roteiro SQL |
 | 16 | Dono real das migrações: não superusuário; tem `EXECUTE` em `realtime.send`; cria políticas | P1, P5, P6 do pré-voo + sucesso da 0300 | `rolsuper = false`; `owner_send = true`; `can_manage = true`; 0300 aplicada | Saída do pré-voo | NOT VERIFIED | Pré-voo P1/P5/P6 |
 | 17 | Integração GitHub conferida ANTES do primeiro push | Fase 0 do runbook (painel, só leitura) + push canário | Working directory, branch de produção, Deploy to production e Automatic branching registrados e aprovados pelo arquiteto | Capturas de tela + leitura pós-canário | NOT VERIFIED: confirmação do usuário registrada (Working directory `.`, produção `main`, Deploy to production desligado, branching indisponível no Free); **faltam as capturas**. O canário `c9e1546` não teve efeito: 0 runs, 0 checks, 0 migrações, 0 funções, 0 branches em 15 min | Fase 0 do runbook |
+| 18 | Concorrência real no Supabase (02C.2B): `join_room` simultâneo respeita 2 sessões; `authorize_signal` repetido em paralelo devolve o mesmo `msg_id` | Harness `#18` (5 chamadas simultâneas de cada) | `join_room`: 1 aberta + 4 `limit-reached` (o membro já tem 1); `authorize_signal`: 5 sem erro, 1 `msg_id`, 1 `duplicate = false` | Relatório do harness | NOT VERIFIED | **Comprovado em PostgreSQL 17.10 real** (`pnpm test:pg`), com versões de controle que falham sem a trava |
 
 ## Evidência complementar já disponível (local)
 
@@ -61,4 +62,9 @@ Os itens #13 e #14 continuam BLOCKED, agora só por falta de autorização de pu
 | `tests/sql-definer-audit.test.ts` (catálogo + 32 chamadas indevidas, com RLS ligado e desligado) | 8 passed; mutação (EXECUTE para PUBLIC + checagem de dono removida) → 3 falhas |
 | `tests/remote-guard.test.ts` + `pnpm test:remote` sem configuração | 12 passed; harness: 12 skipped · 7 todo; com `ORYN_REMOTE=1` incompleto ou chave secreta no ambiente → aborta antes da rede |
 | `supabase/config.toml` na CLI 2.122.0 | Configuração carregada; tipo inválido recusado; chave desconhecida ignorada (risco) |
+| `pnpm test` (PGlite) — 02C.2B | 221 passed · 18 todo |
+| `pnpm test:pg` (PostgreSQL 17.10 real embutido, 3 execuções seguidas) | 14 passed. M5: 6 `join_room` simultâneos → exatamente 2; controle sem trava → mais de 2. Repetição simultânea → 1 `msg_id`, nenhum 23505; controle sem trava → 23505. Limite de taxa 40/45 exato. A↔B sem impasse; controle com `FOR UPDATE` → 40P01. Convite: 1 de 6; última vaga: 1 de 2. Pós-voo e pré-voo rodam no PG 17 com zero FAIL |
+| A1 (`0300` com RLS desligado) | Para com `oryn-0300: RLS desligado…`, cria 0 políticas e não liga o RLS; depois de religar, aplica normalmente |
+| `05_step_checks.sql` | PGlite: PASS/PENDING corretos a cada passo e FAIL na regressão. **Supabase real (leitura, 02C.2B):** roda no PG 17.11, com 21 PENDING e nenhum erro |
+| P5 revisado no Supabase real (leitura, 02C.2B) | owner `supabase_realtime_admin`, `rls_enabled = true`, `owner_privileges = false`, `policy_grant = true` |
 | Leitura remota (MCP, sem segredos) | `oryn` ACTIVE_HEALTHY, PG 17.11; 0 migrações; 0 branches; 0 Edge Functions |
