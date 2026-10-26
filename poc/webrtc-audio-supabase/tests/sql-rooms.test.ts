@@ -3,7 +3,7 @@
 // expirado/revogado/reutilizado, acesso entre salas, sessão de outro usuário.
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { TestDb } from './helpers/db.ts';
-import { createRoom, creatorToken, joinWithInvite, makeCreator, openSession, roomInvite, scenario } from './helpers/fixtures.ts';
+import { createRoom, creatorToken, joinWithInvite, makeCreator, openSession, roomInvite, scenario, signalArgs } from './helpers/fixtures.ts';
 import { parseControlEvent } from '../src/contracts.ts';
 
 let db: TestDb;
@@ -187,6 +187,36 @@ describe('sessões e acesso entre salas', () => {
     expect(await db.canReceive(s.owner, `oryn:s:${s.ownerSession}`)).toBe(false);
     expect(await db.rpcError(s.owner, 'public.touch_session', { p_session_id: s.ownerSession })).toBe('session-invalid');
     expect(await db.rpc(s.owner, 'public.get_roster', { p_room_id: s.room })).toEqual([]);
+  });
+
+  // 02C.3D.1 (F1): touch_session gravava a revogação 'expired' e logo depois lançava o erro, que desfazia a
+  // gravação. A sessão vencida continua recusada em todo caminho e nunca volta a valer; a revogação que
+  // persiste é a do join_room, nas sessões do próprio usuário.
+  it('sessão vencida: touch_session não grava nada antes do erro, e a sessão nunca volta a valer', async () => {
+    const s = await scenario(db);
+    const src = (await db.admin<{ src: string }>(`select prosrc as src from pg_proc where oid = 'public.touch_session(uuid)'::regprocedure`))[0]!.src;
+    // Comandos de escrita (a trava `for no key update` não conta).
+    const writes = [...src.matchAll(/\b(update\s+oryn\.|insert\s+into|delete\s+from)/gi)].map((m) => m.index!);
+    expect(writes, 'só o UPDATE do batimento').toHaveLength(1);
+    expect(writes[0]!, 'nenhuma escrita antes do último raise').toBeGreaterThan(src.lastIndexOf('raise exception'));
+
+    const stale = `now() - interval '91 seconds'`;
+    await db.admin(`update oryn.room_sessions set last_seen_at = ${stale} where id = $1`, [s.ownerSession]);
+    const before = await db.admin(`select last_seen_at, revoked_at from oryn.room_sessions where id = $1`, [s.ownerSession]);
+    for (let i = 0; i < 2; i++) {
+      expect(await db.rpcError(s.owner, 'public.touch_session', { p_session_id: s.ownerSession })).toBe('session-invalid');
+    }
+    expect(await db.admin(`select last_seen_at, revoked_at from oryn.room_sessions where id = $1`, [s.ownerSession])).toEqual(before);
+    expect(await db.rpcError(s.owner, 'public.authorize_signal', signalArgs(s.ownerSession, s.memberSession))).toBe('session-invalid');
+    expect(await db.rpcError(s.member, 'public.authorize_signal', signalArgs(s.memberSession, s.ownerSession))).toBe('recipient-invalid');
+    expect(await db.canReceive(s.owner, `oryn:s:${s.ownerSession}`)).toBe(false);
+    expect((await db.rpc<{ session_id: string }>(s.member, 'public.get_roster', { p_room_id: s.room })).map((r) => r.session_id)).toEqual([s.memberSession]);
+
+    // A próxima entrada do dono revoga de vez a sessão vencida; ela continua inválida.
+    const fresh = await openSession(db, s.owner, s.room);
+    expect(await db.admin(`select revoke_reason from oryn.room_sessions where id = $1`, [s.ownerSession])).toEqual([{ revoke_reason: 'expired' }]);
+    expect(await db.rpcError(s.owner, 'public.touch_session', { p_session_id: s.ownerSession })).toBe('session-invalid');
+    expect(await db.rpcError(s.owner, 'public.touch_session', { p_session_id: fresh })).toBeNull();
   });
 
   it('no máximo 2 sessões vivas por usuário por sala', async () => {

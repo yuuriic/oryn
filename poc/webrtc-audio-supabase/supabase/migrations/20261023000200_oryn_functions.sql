@@ -286,8 +286,11 @@ begin
   if not found or not oryn.is_active_member(v_room, v_uid) then
     raise exception 'session-invalid' using errcode = '42501';
   end if;
+  -- 02C.3D.1 (F1): sem gravar a revogação aqui. O erro desfaz tudo o que a chamada escreveu, então ela
+  -- nunca persistia. A sessão sem batimento já é recusada em todo caminho (filtro de batimento) e não volta
+  -- a valer: só esta função e authorize_signal renovam last_seen_at, ambas depois de conferir o batimento.
+  -- A revogação 'expired' que persiste é a do join_room, nas sessões do próprio usuário.
   if not oryn.session_is_fresh(v_last) then
-    update oryn.room_sessions set revoked_at = pg_catalog.now(), revoke_reason = 'expired' where id = p_session_id;
     raise exception 'session-invalid' using errcode = '42501';
   end if;
   update oryn.room_sessions set last_seen_at = pg_catalog.now() where id = p_session_id;

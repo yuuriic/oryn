@@ -217,7 +217,7 @@ Origem dos dados: catálogo do PGlite e do PostgreSQL 17.10 depois das migraçõ
 | `revoke_room_invite` | authenticated | `require_uid()` | **dono** da sala | nenhum |
 | `redeem_room_invite` | authenticated | `require_uid()` | convite e sala travados; capacidade; já-membro não consome | baixo: `already-member` só confirma a validade de um token para quem **já é membro** daquela sala |
 | `join_room` | authenticated | `require_uid()` | membro ativo, conferido de novo **com a linha de membro travada** (M5); limite de 2 sessões | nenhum; só expira as próprias sessões |
-| `touch_session` | authenticated | `require_uid()` | **própria** sessão, travada, de membro ativo | nenhum |
+| `touch_session` | authenticated | `require_uid()` | **própria** sessão, travada, de membro ativo; sessão sem batimento → `session-invalid` **sem gravar nada** (02C.3D.1, F1: a revogação gravada antes do erro era desfeita por ele). A revogação `expired` persistente fica com o `join_room` | nenhum |
 | `leave_room` | authenticated | `require_uid()` | **própria** sessão, travada | nenhum |
 | `get_roster` | authenticated | `require_uid()` | membro ativo da sala | por desenho, revela `session_id` e rótulo dos participantes **da mesma sala** (necessário para sinalizar) |
 | `authorize_signal` | authenticated | `require_uid()` | sessão **própria**, travada, viva, de membro ativo; destino vivo da **mesma** sala | baixo: chamável direto (a Edge Function usa o JWT do usuário); só cria registros sem payload nos **próprios** pares e gasta o próprio limite |
