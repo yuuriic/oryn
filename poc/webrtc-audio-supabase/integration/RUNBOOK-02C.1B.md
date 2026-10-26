@@ -283,17 +283,50 @@ Verificação, sem alterar nada:
     declarado pelo operador. O portão recusa um saldo menor que o da fase, e o processo para antes da rede
     na tentativa que passar do saldo.
   - **Limitação:** a contagem é **por processo**. O controle entre processos e reexecuções é operacional
-    (§10, passo 0 e "Reexecução").
+    (§10, "Orçamento entre processos").
 - **Execução:** só pela janela controlada do §10.
 
 ## 10. Janela controlada de testes remotos (02C.4E; ⛔ cada passo marcado exige autorização própria)
 
 Princípios:
-- Uma janela tem **início e fim registrados (UTC)**, **um** responsável e **no máximo 10** tentativas de
-  cadastro anônimo.
+- Uma janela tem **início (`T0`) e fim (`T1`) registrados em UTC**, **um** responsável e **no máximo 10**
+  tentativas de cadastro anônimo.
+- **Duração (02C.4F.1):**
+  - alvo de **15 min** entre `T0` (CAPTCHA de teste ativo) e `T1` (restauração concluída);
+  - **limite absoluto de 30 min**: em `T0 + 30 min`, a restauração (passo 8) começa **imediatamente**, em
+    qualquer estado, mesmo com um teste rodando (interromper com Ctrl+C);
+  - o responsável registra `T0 + 15` e `T0 + 30` antes de começar.
 - Nada é alterado no painel sem a captura de **antes**, e tudo é restaurado com a captura de **depois**.
 - Tokens, chaves, convites e JWTs **nunca** vão para arquivo, log ou evidência: só nomes de variáveis.
 - Evidências em `integration/evidence/janela-<AAAAMMDD-HHMM>/` (pasta fora do Git).
+
+**Regras de ordem (02C.4F.1; obrigatórias):**
+1. **Ligar:** CAPTCHA (secret de teste) **antes** do anônimo. Nunca existe instante com anônimo ligado e
+   CAPTCHA desligado.
+2. **Desligar:** anônimo **antes** do CAPTCHA, pelo mesmo motivo.
+3. **Fases:** C1 → conferência dos resultados da C1 (7 PASS e 1 identidade na janela) → D0 → **só então**
+   emitir o convite → C2. O convite nunca é emitido antes de a C1 estar conferida.
+
+**Falha leva à restauração (02C.4F.1):** qualquer falha, critério de interrupção (ver "Critérios de
+interrupção"), saída ≠ 0 de um `pnpm test:remote`, erro no painel, perda do terminal ou encerramento antecipado
+por qualquer motivo leva **direto ao passo 8**. Não se tenta "consertar e repetir" dentro da janela. A limpeza
+(passo 9) nunca é pré-requisito da restauração.
+
+**Rotina das variáveis temporárias (02C.4F.1).** Definir uma vez por sessão do PowerShell, antes do passo 3.
+Remove só `ORYN_*` e as variáveis locais de apoio, imprime **apenas nomes**, nunca valores, e falha se
+sobrar alguma:
+
+```powershell
+function Clear-OrynEnv {
+  $names = @(Get-ChildItem Env: | Where-Object { $_.Name -like 'ORYN_*' } | ForEach-Object { $_.Name } | Sort-Object)
+  foreach ($n in $names) { Remove-Item -LiteralPath "Env:$n" -ErrorAction Stop }
+  foreach ($v in 'ref', 'pat', 'cfg') { Remove-Variable -Name $v -Scope Global -ErrorAction SilentlyContinue }
+  $left = @(Get-ChildItem Env: | Where-Object { $_.Name -like 'ORYN_*' }).Count
+  Write-Host ("ORYN_* removidas: {0} [{1}]; restantes: {2}" -f $names.Count, ($names -join ', '), $left)
+  if ($left -ne 0) { throw 'ainda há variáveis ORYN_* no ambiente: não prossiga' }
+}
+Clear-OrynEnv   # antes de começar: o ambiente tem de estar limpo
+```
 
 ### 0. Captura do estado inicial (leitura; sem autorização nova)
 
@@ -310,59 +343,137 @@ Princípios:
 | Dados | contagens (`auth.users`, `is_anonymous`, `oryn.rooms`, `oryn.creator_invites`, `realtime.messages`, partições) | registrar (hoje: tudo 0) |
 | Advisors | segurança e performance | registrar |
 
+### 0b. Verificação prévia da restauração do secret (leitura; **nenhuma** alteração remota) — portão de GO
+
+Risco: ao desligar o CAPTCHA, o painel pode **manter o secret de teste gravado**, e um religamento futuro o
+usaria sem ninguém perceber. Antes de autorizar a janela, demonstrar **sem salvar nada**:
+
+| # | Verificação | Como | Passa se |
+|---|---|---|---|
+| V1 | O estado do secret é **observável** | (a) Painel › Auth › Attack Protection: com o CAPTCHA desligado, ver se o formulário mostra o campo do secret e se ele está vazio (**não** clicar em salvar); **ou** (b) leitura da configuração de Auth pela Management API (bloco abaixo), que informa só **booleanos** | É possível afirmar, por captura ou booleano, "secret vazio" × "secret presente" × "é o secret de teste" |
+| V2 | Existe um caminho **documentado** para **esvaziar ou substituir** o secret com o CAPTCHA desligado | Painel (campo editável com o CAPTCHA desligado) e/ou documentação da Management API (campo do secret do CAPTCHA na atualização da configuração de Auth) | Há um caminho identificado, com a referência registrada |
+| V3 | O estado atual é o esperado | V1 | CAPTCHA desligado e secret vazio (o projeto nunca teve CAPTCHA) |
+
+**Se V1 ou V2 não puderem ser demonstrados: NO-GO para a janela.** Registrar na pasta da janela e levar ao
+arquiteto. A janela não começa sem prova de que a restauração do secret é verificável.
+
+Leitura opcional pela Management API. Roda num terminal **separado** do harness; o token pessoal de acesso é
+digitado e nunca salvo, e é uma credencial administrativa: **nunca** pode estar no ambiente do `pnpm test:remote`.
+A estrutura exata da resposta é NOT VERIFIED: se os campos abaixo não existirem, V1(b) falha e vale só o V1(a).
+
+```powershell
+$ref = Read-Host 'ref do projeto'
+$pat = Read-Host 'token pessoal de acesso (Management API)' -AsSecureString
+$cfg = Invoke-RestMethod -Uri "https://api.supabase.com/v1/projects/$ref/config/auth" `
+  -Headers @{ Authorization = 'Bearer ' + [Net.NetworkCredential]::new('', $pat).Password }
+# Só booleanos e o nome do provedor; o valor do secret NUNCA é impresso.
+[pscustomobject]@{
+  campo_enabled_existe = $null -ne $cfg.PSObject.Properties['security_captcha_enabled']
+  captcha_ligado       = [bool]$cfg.security_captcha_enabled
+  provedor             = [string]$cfg.security_captcha_provider
+  campo_secret_existe  = $null -ne $cfg.PSObject.Properties['security_captcha_secret']
+  secret_vazio         = [string]::IsNullOrEmpty([string]$cfg.security_captcha_secret)
+  secret_eh_de_teste   = ([string]$cfg.security_captcha_secret) -match '^[123]x0{30,}AA$'
+  anonimo_ligado       = [bool]$cfg.external_anonymous_users_enabled
+}
+Remove-Variable cfg, pat, ref
+```
+
 ### 1. Autorização da janela ⛔
 
-Registrar: responsável, início previsto, duração máxima (proposta: 60 min), teto de 10 cadastros e quem restaura.
+Registrar:
+- responsável e quem restaura;
+- `T0` previsto, alvo de **15 min**, limite absoluto de **30 min** (`T0 + 30` anotado);
+- teto de 10 cadastros;
+- resultado do 0b (V1–V3 PASS).
 
 ### 2. Alteração manual das configurações (operador, no painel) ⛔
 
+Ordem obrigatória (regra 1): **CAPTCHA primeiro, anônimo depois**.
+
 1. Auth › Attack Protection: CAPTCHA **ligado**, provedor **Turnstile**, secret = **secret de teste oficial que
    sempre aceita** (Cloudflare, "Turnstile › Testing"). É público e não é credencial, mas também não vai para
-   arquivo do repositório.
-2. Auth › Providers: **Anonymous sign-ins ligado**.
-3. Capturas de **depois da alteração**. Anotar a **hora de início da janela (UTC)**.
+   arquivo do repositório. Salvar e capturar. **Anotar `T0` (UTC)**: o relógio dos 15/30 min começa aqui.
+2. **Só depois** do item 1 salvo: Auth › Providers: **Anonymous sign-ins ligado**. Salvar e capturar.
+3. Qualquer erro do painel nos itens 1 ou 2 → **passo 8**.
 
 ### 3. C1 ⛔
 
 ```powershell
-$ref = Read-Host 'ref do projeto'                                # digitado, não salvo
-$env:ORYN_REMOTE = '1'; $env:ORYN_REMOTE_REF = $ref
-$env:ORYN_SUPABASE_URL = "https://$ref.supabase.co"
-$env:ORYN_PUBLISHABLE_KEY = Read-Host 'chave publicável'        # digitada, não salva
-$env:ORYN_CAPTCHA_MODE = 'turnstile-test'
-$env:ORYN_IT_PHASE = 'C1'
-$env:ORYN_IT_IDENTITY_BUDGET = '<saldo do passo "Reexecução"; na 1ª C1 da janela: 10>'
-pnpm test:remote
-Remove-Item Env:ORYN_*
+$dir = 'integration/evidence/janela-<AAAAMMDD-HHMM>'             # pasta da janela (fora do Git)
+try {
+  $ref = Read-Host 'ref do projeto'                              # digitado, não salvo
+  $env:ORYN_REMOTE = '1'; $env:ORYN_REMOTE_REF = $ref
+  $env:ORYN_SUPABASE_URL = "https://$ref.supabase.co"
+  $env:ORYN_PUBLISHABLE_KEY = Read-Host 'chave publicável'      # digitada, não salva
+  $env:ORYN_CAPTCHA_MODE = 'turnstile-test'
+  $env:ORYN_IT_PHASE = 'C1'
+  $env:ORYN_IT_IDENTITY_BUDGET = '10'                            # 1ª e única C1 da janela
+  pnpm test:remote --reporter=verbose 2>&1 | Tee-Object -FilePath "$dir/c1.txt"
+  $c1Exit = $LASTEXITCODE
+} finally {
+  Clear-OrynEnv                                                  # sempre, inclusive em erro ou Ctrl+C
+}
+"C1 exit = $c1Exit"                                              # ≠ 0 → passo 8
 ```
 
-Esperado: 7 PASS (#5 ×2, #4 ×3, #3, S4). Salvar o relatório do Vitest, com as anotações, na pasta da janela.
+Esperado: **7 PASS** (#5 ×2, #4 ×3, #3, S4) e exit 0. Senão: **passo 8**.
+
+**Conferência da C1 (antes de qualquer passo seguinte):**
+- relatório com 7 PASS e nenhum FAIL ou skip inesperado;
+- `Select-String -Path "$dir/c1.txt" -Pattern 'eyJ|sb_(publishable|secret)_'` vazio;
+- leitura: anônimos com `created_at ≥ T0` = **exatamente 1**.
+
+Qualquer divergência → passo 8.
 
 ### 4. Confirmação das partições (D0; leitura)
 
-Consulta de `02C.4A`, seção 3. A partição de **hoje** tem de existir. Se não existir: **parar** (a C2 não começa).
+Consulta de `02C.4A`, seção 3. A partição de **hoje** tem de existir. Se não existir: **passo 8** (a C2 não começa).
+
+**Limite do D0 (02C.4F.1):** a partição prova só que **algum** cliente se conectou por WebSocket. Ela não
+prova que a **C1 desta janela** rodou nem que passou. `ORYN_IT_PARTITIONS_CONFIRMED=1` é uma **declaração do
+operador**, não uma verificação automática: o harness da C2 não tem como saber se a C1 aconteceu. A garantia
+da ordem é a **conferência da C1** (passo 3) feita antes do D0, mais o saldo (uma C1 depois da C2 não tem
+saldo). Só declarar `=1` depois de as duas coisas estarem registradas na pasta da janela.
 
 ### 5. Autorização do convite do criador ⛔
 
+Pré-condição (regra 3): conferência da C1 **e** D0 registradas. Antes disso, o convite **não** é emitido.
+
 SQL editor (escrita): `select oryn.admin_issue_creator_invite(10, 1);`. O token aparece **uma vez**: digitar
-direto no `Read-Host` do passo 6, **sem** colar em arquivo ou chat. Validade de 10 min.
+direto no `Read-Host` do passo 6, **sem** colar em arquivo ou chat, e **sem** salvar a consulta como snippet.
+Validade de 10 min. Expirado ou consumido sem uma C2 válida: **passo 8** (não emitir outro sem nova autorização).
 
 ### 6. C2 ⛔
 
 ```powershell
-# mesmas variáveis de conexão do passo 3, digitadas de novo
-$env:ORYN_CAPTCHA_MODE = 'turnstile-test'
-$env:ORYN_IT_PHASE = 'C2'
-$env:ORYN_IT_IDENTITY_BUDGET = '<saldo; depois de uma C1 limpa: 8>'
-$env:ORYN_IT_PARTITIONS_CONFIRMED = '1'
-$env:ORYN_IT_CREATOR_INVITE = Read-Host 'convite de criador'    # uso único
-pnpm test:remote
-Remove-Item Env:ORYN_*
+try {
+  $ref = Read-Host 'ref do projeto'
+  $env:ORYN_REMOTE = '1'; $env:ORYN_REMOTE_REF = $ref
+  $env:ORYN_SUPABASE_URL = "https://$ref.supabase.co"
+  $env:ORYN_PUBLISHABLE_KEY = Read-Host 'chave publicável'
+  $env:ORYN_CAPTCHA_MODE = 'turnstile-test'
+  $env:ORYN_IT_PHASE = 'C2'
+  $env:ORYN_IT_IDENTITY_BUDGET = '8'                             # 10 − 1 criada − 1 negativo da C1
+  $env:ORYN_IT_PARTITIONS_CONFIRMED = '1'                        # declaração do operador (ver o limite do D0)
+  $env:ORYN_IT_CREATOR_INVITE = Read-Host 'convite de criador'  # uso único
+  pnpm test:remote --reporter=verbose 2>&1 | Tee-Object -FilePath "$dir/c2.txt"
+  $c2Exit = $LASTEXITCODE
+} finally {
+  Clear-OrynEnv
+}
+"C2 exit = $c2Exit"                                              # ≠ 0 → passo 8
 ```
 
-Esperado: 17 PASS. Salvar o relatório com as anotações (motivos de recusa, `track()`, ack, `httpSend`).
+Esperado: **17 PASS** e exit 0. Salvar o relatório com as anotações (motivos de recusa, `track()`, ack,
+`httpSend`). Conferir que `Select-String -Path "$dir/c2.txt" -Pattern 'eyJ|sb_(publishable|secret)_'` vem vazio
+e que os anônimos com `created_at ≥ T0` são **exatamente 9**. Qualquer divergência: passo 8 (a auditoria do
+passo 7 roda **depois** da restauração).
 
-### 7. Auditoria dos dados e da estrutura (leitura)
+### 7. Auditoria dos dados e da estrutura (leitura; **depois** do passo 8)
+
+É só leitura e não precisa da janela aberta: roda **depois** da restauração, para não prolongar o tempo com o
+CAPTCHA de teste. Ordem real de execução: 6 → 8 → 7 → (9, com autorização separada).
 
 - `06` e `07`: estrutura igual ao passo 0 (só `auth_users` e `realtime_messages.particoes` mudam).
 - N3/N4: `realtime.messages` em `oryn:*` só com `hello`/`bye`, payload só com `id`, `session_id` e `label`;
@@ -370,19 +481,32 @@ Esperado: 17 PASS. Salvar o relatório com as anotações (motivos de recusa, `t
 - Contagens: anônimos na janela ≤ 10; 1 sala `it-02c4b-*`; o convite de criador usado.
 - Advisors: sem lint novo.
 
-### 8. Restauração das configurações ⛔ (sempre, mesmo se algum passo falhou)
+### 8. Restauração das configurações ⛔ (sempre: fim normal, falha, interrupção ou `T0 + 30 min`)
 
-1. Auth › Providers: Anonymous sign-ins **desligado**.
-2. Auth › Attack Protection: CAPTCHA **desligado** (estado do passo 0) ou o secret **real**, se o widget de
-   produção já existir e o arquiteto decidir.
-3. Anotar a **hora de fim da janela (UTC)**.
+A autorização da janela (passo 1) **já inclui** a restauração: ela nunca espera nova autorização. Não depende
+do harness, do terminal nem da limpeza. Ordem obrigatória (regra 2): **anônimo primeiro, CAPTCHA depois**.
+
+1. Se houver teste rodando: **Ctrl+C**. O `finally` dos passos 3 e 6 executa `Clear-OrynEnv`. Conferir
+   rodando `Clear-OrynEnv` de novo; tem de dizer `restantes: 0`.
+2. Auth › Providers: Anonymous sign-ins **desligado**. Salvar e capturar.
+3. **Só depois** do item 2 salvo, em Auth › Attack Protection:
+   - **esvaziar** o campo do secret pelo caminho identificado no 0b (V2), ou trocar pelo secret **real**, se o
+     widget de produção existir e o arquiteto tiver decidido;
+   - CAPTCHA **desligado** (estado do passo 0);
+   - salvar e capturar.
+4. Confirmar o estado do secret pelo mesmo método do 0b (V1): captura e/ou booleanos (`captcha_ligado = False`,
+   `secret_vazio = True` ou o secret real autorizado, `secret_eh_de_teste = False`, `anonimo_ligado = False`).
+5. **Anotar `T1` (UTC)**. Registrar a duração (`T1 − T0`; alvo ≤ 15 min, limite 30 min).
+
+Erro no painel em qualquer item: tentar de novo imediatamente. Enquanto R1 e R2 não estiverem confirmados, a
+janela continua **aberta** no registro e o arquiteto é avisado na hora.
 
 **Evidências de restauração** (comparar com o passo 0; qualquer divergência é registrada e levada ao arquiteto):
 
 | # | Item | Evidência |
 |---|---|---|
 | R1 | Anonymous sign-ins | captura: desligado |
-| R2 | CAPTCHA | captura: igual ao passo 0 (desligado) ou o secret real autorizado; **nunca** o secret de teste |
+| R2 | CAPTCHA | captura + verificação V1 do 0b: desligado **e** secret vazio (ou o secret real autorizado); **nunca** o secret de teste gravado |
 | R3 | Rate limits e JWT | captura: iguais ao passo 0 |
 | R4 | Realtime "Allow public access" | captura: desligado |
 | R5 | Data API | captura: só `public`, `graphql_public` |
@@ -390,7 +514,8 @@ Esperado: 17 PASS. Salvar o relatório com as anotações (motivos de recusa, `t
 | R7 | Histórico de migrações | `{0100, 0200, 0300}`; `cli_login_*` = `{}` |
 | R8 | Fingerprints (`07`) | `oryn_scope` `1a5a563d…f5a7` / 58; `platform` `4ce64373…1359` |
 | R9 | Advisors | iguais ao passo 0 |
-| R10 | Variáveis locais | `Get-ChildItem Env:ORYN_*` vazio; nenhum token em arquivo da pasta da janela |
+| R10 | Variáveis locais | `Clear-OrynEnv` com `restantes: 0`; `Select-String -Path "$dir/*" -Pattern 'eyJ\|sb_(publishable\|secret)_\|sbp_'` vazio |
+| R11 | Duração | `T1 − T0` registrado; acima de 30 min = desvio a reportar |
 
 **Verificação funcional opcional (leitura do comportamento, sem cadastro):** nenhuma. Não fazer cadastro
 "para ver se desligou": isso gastaria orçamento e criaria usuário. A captura R1 basta.
@@ -403,16 +528,37 @@ Estratégia da `02C.4B.1`, seção 5:
 3. Apagar o `creator_invite` usado.
 4. Conferir as contagens em 0 e o `07`.
 
-### Reexecução dentro da mesma janela (controle entre processos)
+### Orçamento entre processos (controle operacional; preservado do 02C.4E)
 
-O contador do harness é **por processo**. Antes de **cada** `pnpm test:remote`:
-1. Ler `auth.users` com `is_anonymous` e `created_at` ≥ início da janela (identidades **criadas**).
+O contador do harness é **por processo**. O saldo passado em `ORYN_IT_IDENTITY_BUDGET` é calculado e
+registrado na pasta da janela antes de **cada** `pnpm test:remote`:
+1. Ler `auth.users` com `is_anonymous` e `created_at` ≥ `T0` (identidades **criadas**).
 2. Somar as tentativas **sem criação** já feitas: 1 por C1 executada (o #5 negativo).
-3. `saldo = 10 − (1) − (2)`. Registrar a conta na pasta da janela e passar em `ORYN_IT_IDENTITY_BUDGET`.
+3. `saldo = 10 − (1) − (2)`. Na sequência normal: C1 = **10** (0 − 0), C2 = **8** (10 − 1 − 1).
 
-O portão recusa um saldo menor que o da fase (C1 = 2, C2 = 8). Na prática, uma C2 que falhou depois do
-`beforeAll` **não** cabe numa segunda tentativa na mesma janela. Isso exige nova janela, com limpeza antes,
-ou uma decisão do arquiteto de ampliar o teto.
+O portão recusa um saldo menor que o da fase (C1 = 2, C2 = 8).
+
+**Reexecução dentro da mesma janela: não permitida (02C.4F.1).** Falha vai para o passo 8. Uma nova
+tentativa exige **nova janela** (passos 0–8 de novo), com a limpeza da anterior autorizada e concluída antes,
+e o saldo recalculado do zero. Ampliar o teto de 10 é decisão do arquiteto.
+
+### Critérios de interrupção (02C.4F; todos levam **direto ao passo 8**)
+
+| # | Condição |
+|---|---|
+| I1 | Qualquer item do passo 0 diferente do esperado, ou 0b com V1/V2/V3 sem PASS (aqui: NO-GO, a janela nem abre) |
+| I2 | O portão do harness abortar por motivo inesperado, ou `IdentityBudgetExceeded` |
+| I3 | #5 negativo **aceito** (CAPTCHA não exigido) ou #5 positivo **recusado** (secret errado). A C2 não começa. |
+| I4 | Anônimos com `created_at ≥ T0` diferentes do esperado (≠ 1 depois da C1; ≠ 9 depois da C2): a mais indica cadastro de terceiros com o CAPTCHA nominal; a menos indica falha não detectada |
+| I5 | D0 sem a partição de hoje |
+| I6 | `SUBSCRIBED` indevido (S2, S3, S5, S6, S7, A1, A2) ou entrega a cliente não autorizado (P1–P3, D3) |
+| I7 | Evento `signal` ou chave de payload fora de `{id, session_id, label}` em `realtime.messages` (auditoria) |
+| I8 | Mudança em `oryn_scope`, `platform`, políticas ou histórico, ou surgimento de `cli_login_*` |
+| I9 | Token, JWT ou chave aparecendo em saída, arquivo ou chat |
+| I10 | `T0 + 30 min` atingido; convite expirado ou consumido sem C2 válida; exit ≠ 0 em qualquer fase |
+
+I7 e I8 aparecem na auditoria, que já roda depois da restauração: registrar e levar ao arquiteto antes de
+qualquer limpeza.
 
 ## 11. Fidelidade dos ambientes de teste (02C.2B)
 
