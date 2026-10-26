@@ -62,3 +62,33 @@ export function isServerReply(err: Error | undefined): boolean {
 
 /** Recusa por credencial (JWT/token), e não por autorização (RLS). */
 export const isCredentialRefusal = (reason: string) => /jwt|token/i.test(reason);
+
+// --- orçamento de identidades (02C.4E) --------------------------------------------------------------------------
+
+export class IdentityBudgetExceeded extends Error {}
+
+/**
+ * Conta as TENTATIVAS de cadastro anônimo deste processo (com sucesso, falha ou recusa esperada) e bloqueia
+ * a próxima antes da rede quando o limite é atingido. Conta tentativas, não identidades criadas: é o que gasta
+ * o limite de 30/h por IP e o que pode deixar usuário no projeto.
+ *
+ * LIMITAÇÃO: a contagem vive só neste processo. Reexecuções (outro `pnpm test:remote`) começam do zero; o
+ * controle entre processos é operacional (runbook §10: o operador lê, antes de cada execução, quantas
+ * identidades a janela já criou e passa o saldo em ORYN_IT_IDENTITY_BUDGET).
+ */
+export class IdentityBudget {
+  readonly limit: number;
+  #used = 0;
+  constructor(limit: number) {
+    if (!Number.isInteger(limit) || limit < 0) throw new RangeError('orçamento inválido');
+    this.limit = limit;
+  }
+  get used(): number {
+    return this.#used;
+  }
+  /** Reserva uma tentativa; lança (sem tocar na rede) se o orçamento acabou. */
+  reserve(): void {
+    if (this.#used >= this.limit) throw new IdentityBudgetExceeded(`orçamento de identidades esgotado (${this.#used}/${this.limit}): nenhuma nova tentativa de cadastro`);
+    this.#used += 1;
+  }
+}

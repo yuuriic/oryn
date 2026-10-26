@@ -270,24 +270,151 @@ Verificação, sem alterar nada:
   - O batimento das sessões fixas é encerrado no `afterAll` (também quando o `beforeAll` falha), espera a
     chamada em voo e é conferido pelo A2.
   - As peças puras ficam em `tests/remote/harness-utils.ts`, testadas sem rede em `tests/remote-harness-utils.test.ts`.
-- **Custo:** 9 cadastros anônimos por execução completa (1 no bloco sem sala, 3 na sala e 5 no #15); só 1 sem
-  convite. Limite padrão: 30/h por IP. Duração: ~3 min (o A2 espera 100 s).
-- **Execução (⛔ só depois da Fase 4):**
+- **CAPTCHA, fases e orçamento (02C.4E):**
+  - `ORYN_CAPTCHA_MODE=turnstile-test` é **obrigatório**. O projeto fica, só durante a janela, com o Turnstile
+    e o **secret de teste oficial** da Cloudflare. O harness envia sempre o token fictício oficial
+    (`XXXX.DUMMY.TOKEN.XXXX`). Um `ORYN_CAPTCHA_TOKEN` diferente dele é recusado, e tokens reais nunca passam.
+  - `ORYN_IT_PHASE=C1|C2` é **obrigatório**. Cada processo roda uma fase. A C1 recusa o convite no ambiente;
+    a C2 exige o convite e `ORYN_IT_PARTITIONS_CONFIRMED=1`.
+  - #5 na C1: o cadastro **sem** token tem de ser recusado (erro, sem sessão e sem usuário, sem depender do
+    texto do erro), e o cadastro **com** o token fictício cria um usuário com `is_anonymous = true`.
+  - **Orçamento:** no máximo **10 tentativas de cadastro por janela** (C1 = 2: o #5 positivo e o negativo;
+    C2 = 8: 3 + 5 no #15). `ORYN_IT_IDENTITY_BUDGET` (1..10, **obrigatório**) é o **saldo** da janela,
+    declarado pelo operador. O portão recusa um saldo menor que o da fase, e o processo para antes da rede
+    na tentativa que passar do saldo.
+  - **Limitação:** a contagem é **por processo**. O controle entre processos e reexecuções é operacional
+    (§10, passo 0 e "Reexecução").
+- **Execução:** só pela janela controlada do §10.
+
+## 10. Janela controlada de testes remotos (02C.4E; ⛔ cada passo marcado exige autorização própria)
+
+Princípios:
+- Uma janela tem **início e fim registrados (UTC)**, **um** responsável e **no máximo 10** tentativas de
+  cadastro anônimo.
+- Nada é alterado no painel sem a captura de **antes**, e tudo é restaurado com a captura de **depois**.
+- Tokens, chaves, convites e JWTs **nunca** vão para arquivo, log ou evidência: só nomes de variáveis.
+- Evidências em `integration/evidence/janela-<AAAAMMDD-HHMM>/` (pasta fora do Git).
+
+### 0. Captura do estado inicial (leitura; sem autorização nova)
+
+| Item | Como | Esperado |
+|---|---|---|
+| Auth › Providers › Anonymous | captura | desligado |
+| Auth › Attack Protection › CAPTCHA | captura | desligado |
+| Auth › Rate limits (anônimos) e Sessions/JWT | captura | 30/h por IP; JWT 3600 s |
+| Realtime › Settings | captura | "Allow public access" desligado |
+| Data API › Exposed schemas | captura | só `public`, `graphql_public` |
+| Histórico de migrações | `list_migrations` / `06` | `{0100, 0200, 0300}`; `cli_login_*` = `{}` |
+| Estado | `07` | `oryn_scope` `1a5a563d…f5a7` / 58; `platform` `4ce64373…1359` |
+| Políticas Realtime | `pg_policies` em `realtime.messages` | as 4 `oryn_*`, idênticas à 0300 |
+| Dados | contagens (`auth.users`, `is_anonymous`, `oryn.rooms`, `oryn.creator_invites`, `realtime.messages`, partições) | registrar (hoje: tudo 0) |
+| Advisors | segurança e performance | registrar |
+
+### 1. Autorização da janela ⛔
+
+Registrar: responsável, início previsto, duração máxima (proposta: 60 min), teto de 10 cadastros e quem restaura.
+
+### 2. Alteração manual das configurações (operador, no painel) ⛔
+
+1. Auth › Attack Protection: CAPTCHA **ligado**, provedor **Turnstile**, secret = **secret de teste oficial que
+   sempre aceita** (Cloudflare, "Turnstile › Testing"). É público e não é credencial, mas também não vai para
+   arquivo do repositório.
+2. Auth › Providers: **Anonymous sign-ins ligado**.
+3. Capturas de **depois da alteração**. Anotar a **hora de início da janela (UTC)**.
+
+### 3. C1 ⛔
 
 ```powershell
-$ref = Read-Host 'ref do projeto (<PROJECT_REF>)'               # digitado, não salvo
+$ref = Read-Host 'ref do projeto'                                # digitado, não salvo
 $env:ORYN_REMOTE = '1'; $env:ORYN_REMOTE_REF = $ref
 $env:ORYN_SUPABASE_URL = "https://$ref.supabase.co"
-$env:ORYN_PUBLISHABLE_KEY = Read-Host 'chave publicável'      # digitada, não salva
-# C1: SEM convite → pnpm test:remote; depois, D0 (leitura da partição de hoje)
-# C2: com convite E a confirmação (o portão recusa um sem o outro)
-$env:ORYN_IT_CREATOR_INVITE = Read-Host 'convite de criador'  # uso único
-$env:ORYN_IT_PARTITIONS_CONFIRMED = '1'                        # só depois do D0
+$env:ORYN_PUBLISHABLE_KEY = Read-Host 'chave publicável'        # digitada, não salva
+$env:ORYN_CAPTCHA_MODE = 'turnstile-test'
+$env:ORYN_IT_PHASE = 'C1'
+$env:ORYN_IT_IDENTITY_BUDGET = '<saldo do passo "Reexecução"; na 1ª C1 da janela: 10>'
 pnpm test:remote
-Remove-Item Env:ORYN_*                                         # limpar ao terminar
+Remove-Item Env:ORYN_*
 ```
 
-## 10. Fidelidade dos ambientes de teste (02C.2B)
+Esperado: 7 PASS (#5 ×2, #4 ×3, #3, S4). Salvar o relatório do Vitest, com as anotações, na pasta da janela.
+
+### 4. Confirmação das partições (D0; leitura)
+
+Consulta de `02C.4A`, seção 3. A partição de **hoje** tem de existir. Se não existir: **parar** (a C2 não começa).
+
+### 5. Autorização do convite do criador ⛔
+
+SQL editor (escrita): `select oryn.admin_issue_creator_invite(10, 1);`. O token aparece **uma vez**: digitar
+direto no `Read-Host` do passo 6, **sem** colar em arquivo ou chat. Validade de 10 min.
+
+### 6. C2 ⛔
+
+```powershell
+# mesmas variáveis de conexão do passo 3, digitadas de novo
+$env:ORYN_CAPTCHA_MODE = 'turnstile-test'
+$env:ORYN_IT_PHASE = 'C2'
+$env:ORYN_IT_IDENTITY_BUDGET = '<saldo; depois de uma C1 limpa: 8>'
+$env:ORYN_IT_PARTITIONS_CONFIRMED = '1'
+$env:ORYN_IT_CREATOR_INVITE = Read-Host 'convite de criador'    # uso único
+pnpm test:remote
+Remove-Item Env:ORYN_*
+```
+
+Esperado: 17 PASS. Salvar o relatório com as anotações (motivos de recusa, `track()`, ack, `httpSend`).
+
+### 7. Auditoria dos dados e da estrutura (leitura)
+
+- `06` e `07`: estrutura igual ao passo 0 (só `auth_users` e `realtime_messages.particoes` mudam).
+- N3/N4: `realtime.messages` em `oryn:*` só com `hello`/`bye`, payload só com `id`, `session_id` e `label`;
+  **nenhum** `signal`.
+- Contagens: anônimos na janela ≤ 10; 1 sala `it-02c4b-*`; o convite de criador usado.
+- Advisors: sem lint novo.
+
+### 8. Restauração das configurações ⛔ (sempre, mesmo se algum passo falhou)
+
+1. Auth › Providers: Anonymous sign-ins **desligado**.
+2. Auth › Attack Protection: CAPTCHA **desligado** (estado do passo 0) ou o secret **real**, se o widget de
+   produção já existir e o arquiteto decidir.
+3. Anotar a **hora de fim da janela (UTC)**.
+
+**Evidências de restauração** (comparar com o passo 0; qualquer divergência é registrada e levada ao arquiteto):
+
+| # | Item | Evidência |
+|---|---|---|
+| R1 | Anonymous sign-ins | captura: desligado |
+| R2 | CAPTCHA | captura: igual ao passo 0 (desligado) ou o secret real autorizado; **nunca** o secret de teste |
+| R3 | Rate limits e JWT | captura: iguais ao passo 0 |
+| R4 | Realtime "Allow public access" | captura: desligado |
+| R5 | Data API | captura: só `public`, `graphql_public` |
+| R6 | Políticas Realtime | as 4 `oryn_*`, idênticas (nome, modalidade, papéis, comando, USING e WITH CHECK) |
+| R7 | Histórico de migrações | `{0100, 0200, 0300}`; `cli_login_*` = `{}` |
+| R8 | Fingerprints (`07`) | `oryn_scope` `1a5a563d…f5a7` / 58; `platform` `4ce64373…1359` |
+| R9 | Advisors | iguais ao passo 0 |
+| R10 | Variáveis locais | `Get-ChildItem Env:ORYN_*` vazio; nenhum token em arquivo da pasta da janela |
+
+**Verificação funcional opcional (leitura do comportamento, sem cadastro):** nenhuma. Não fazer cadastro
+"para ver se desligou": isso gastaria orçamento e criaria usuário. A captura R1 basta.
+
+### 9. Limpeza dos dados ⛔ (autorização SEPARADA, depois da auditoria)
+
+Estratégia da `02C.4B.1`, seção 5:
+1. Listar por leitura os anônimos criados entre o início e o fim da janela.
+2. Apagar esses usuários pelo painel de Auth ou pela Admin API (cascade da 0100).
+3. Apagar o `creator_invite` usado.
+4. Conferir as contagens em 0 e o `07`.
+
+### Reexecução dentro da mesma janela (controle entre processos)
+
+O contador do harness é **por processo**. Antes de **cada** `pnpm test:remote`:
+1. Ler `auth.users` com `is_anonymous` e `created_at` ≥ início da janela (identidades **criadas**).
+2. Somar as tentativas **sem criação** já feitas: 1 por C1 executada (o #5 negativo).
+3. `saldo = 10 − (1) − (2)`. Registrar a conta na pasta da janela e passar em `ORYN_IT_IDENTITY_BUDGET`.
+
+O portão recusa um saldo menor que o da fase (C1 = 2, C2 = 8). Na prática, uma C2 que falhou depois do
+`beforeAll` **não** cabe numa segunda tentativa na mesma janela. Isso exige nova janela, com limpeza antes,
+ou uma decisão do arquiteto de ampliar o teto.
+
+## 11. Fidelidade dos ambientes de teste (02C.2B)
 
 | Aspecto | PGlite + shim (`pnpm test`) | PostgreSQL 17 embutido (`pnpm test:pg`) | Supabase real |
 |---|---|---|---|

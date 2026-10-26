@@ -1,6 +1,6 @@
 // Peças puras do harness remoto (02C.4B.1), sem rede: o que impede falso PASS e operação remota tardia.
 import { describe, expect, it } from 'vitest';
-import { guard, isCredentialRefusal, isServerReply, sanitize, sleep, testSignal, waitFor } from './remote/harness-utils.ts';
+import { guard, IdentityBudget, IdentityBudgetExceeded, isCredentialRefusal, isServerReply, sanitize, sleep, testSignal, waitFor } from './remote/harness-utils.ts';
 
 const UUID = '3f2b8c1e-9a4d-4e7b-8c2f-1a2b3c4d5e6f';
 
@@ -77,5 +77,25 @@ describe('encerramento: nada remoto depois do fim do teste', () => {
 
   it('sleep sem sinal (hooks) termina normalmente', async () => {
     await expect(sleep(5)).resolves.toBeUndefined();
+  });
+});
+
+describe('orçamento de identidades: contador do processo (02C.4E)', () => {
+  it('permite exatamente `limit` tentativas e bloqueia a seguinte antes da rede', () => {
+    const budget = new IdentityBudget(2);
+    budget.reserve();
+    budget.reserve();
+    expect(budget.used).toBe(2);
+    expect(() => budget.reserve()).toThrow(IdentityBudgetExceeded);
+    expect(() => budget.reserve()).toThrow(/esgotado \(2\/2\)/);
+    expect(budget.used).toBe(2); // a tentativa recusada não conta
+  });
+
+  it('orçamento zero (portão desligado) não deixa nenhuma tentativa', () => {
+    expect(() => new IdentityBudget(0).reserve()).toThrow(IdentityBudgetExceeded);
+  });
+
+  it.each([-1, 1.5, Number.NaN])('limite inválido %s → erro na construção', (limit) => {
+    expect(() => new IdentityBudget(limit)).toThrow(RangeError);
   });
 });

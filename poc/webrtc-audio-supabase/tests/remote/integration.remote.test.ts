@@ -3,12 +3,16 @@
 // integration/RUNBOOK-02C.1B.md). Só credencial de cliente (chave publicável + JWT de usuários anônimos de
 // teste). Os itens que exigem SQL privilegiado, publicação do operador ou Edge Function ficam como `todo`.
 //
-// Duas fases (02C.4B.1):
-//   C1 — sem ORYN_IT_CREATOR_INVITE: só o bloco "sem sala" (1 cadastro). É a 1ª conexão WebSocket, que cria
-//        as partições de realtime.messages. Não depende de D0.
-//   C2 — com o convite: o portão EXIGE ORYN_IT_PARTITIONS_CONFIRMED=1 (D0, leitura do operador depois da C1).
-// Custo da execução completa: 9 cadastros anônimos (1 na C1; 3 no beforeAll da sala + 5 no #15). Limite
-// padrão: 30/h por IP. Duração da C2: ~3 min, dos quais ~100 s são a espera de expiração do A2.
+// Duas fases, escolhidas por ORYN_IT_PHASE (02C.4B.1; explícitas desde o 02C.4E — cada processo roda UMA):
+//   C1 — sem sala: #5 (CAPTCHA), #3, #4, S4. É a 1ª conexão WebSocket, que cria as partições de
+//        realtime.messages. Não depende de D0. 2 tentativas de cadastro.
+//   C2 — sala: o portão EXIGE o convite e ORYN_IT_PARTITIONS_CONFIRMED=1 (D0, leitura do operador depois da
+//        C1). 8 tentativas de cadastro (3 no beforeAll + 5 no #15). Duração ~3 min (~100 s do A2).
+// CAPTCHA (02C.4E): o projeto fica, na janela, com o Turnstile e o SECRET DE TESTE oficial; todo cadastro
+// leva o token fictício oficial (ORYN_CAPTCHA_MODE=turnstile-test). Tokens reais nunca passam pelo harness.
+// Orçamento (02C.4E): no máximo 10 tentativas de cadastro por JANELA (C1 + C2 = 10). Cada processo conta as
+// suas e para antes da rede quando o saldo declarado (ORYN_IT_IDENTITY_BUDGET) acaba; o saldo entre
+// processos é controle do operador (runbook §10). Limite da plataforma: 30/h por IP.
 //
 // Confiabilidade (02C.4B.1):
 // - Recusa de entrada só conta se veio do SERVIDOR (resposta de erro com `reason`); queda de transporte,
@@ -22,13 +26,17 @@
 import { createClient, type RealtimeChannel, type SupabaseClient } from '@supabase/supabase-js';
 import { afterAll, afterEach, beforeAll, describe, expect, it, type TestContext } from 'vitest';
 import { parseControlEvent } from '../../src/contracts.ts';
-import { guard, isCredentialRefusal, isServerReply, sanitize, sleep, testSignal, waitFor } from './harness-utils.ts';
+import { guard, IdentityBudget, isCredentialRefusal, isServerReply, sanitize, sleep, testSignal, waitFor } from './harness-utils.ts';
 import { remoteGate, type RemoteEnv } from './remote-env.ts';
 
 const gate = remoteGate(process.env);
 const env = gate.enabled ? gate.env : (undefined as unknown as RemoteEnv);
-// O portão garante que o convite só vem junto com a confirmação da partição (C2 nunca começa sem D0).
-const hasRoomSetup = gate.enabled && env.creatorInvite !== undefined && env.partitionsConfirmed;
+const isC1 = gate.enabled && env.phase === 'C1';
+// O portão garante que a C2 só liga com o convite E a confirmação da partição (C2 nunca começa sem D0).
+const hasRoomSetup = gate.enabled && env.phase === 'C2' && env.creatorInvite !== undefined && env.partitionsConfirmed;
+
+/** Tentativas de cadastro deste processo; o saldo vem do operador e o portão já conferiu que cobre a fase. */
+const identities = new IdentityBudget(gate.enabled ? env.identityBudget : 0);
 
 /** Identifica os dados desta execução (nome da sala), para auditoria e limpeza posterior pelo operador. */
 const RUN = crypto.randomUUID().slice(0, 8);
@@ -56,9 +64,10 @@ function newClient(): SupabaseClient {
 
 async function newUser(): Promise<TestUser> {
   guard();
+  identities.reserve(); // antes da rede: tentativa conta mesmo se falhar
   const client = newClient();
-  const { data, error } = await client.auth.signInAnonymously(env.captchaToken ? { options: { captchaToken: env.captchaToken } } : undefined);
-  if (error || !data.session || !data.user) throw new Error(`signInAnonymously falhou: ${error?.message ?? 'sem sessão'}`);
+  const { data, error } = await client.auth.signInAnonymously({ options: { captchaToken: env.captchaToken } });
+  if (error || !data.session || !data.user) throw new Error(`signInAnonymously falhou: ${sanitize(error?.message ?? 'sem sessão')}`);
   await client.realtime.setAuth(data.session.access_token);
   return { client, uid: data.user.id, jwt: data.session.access_token };
 }
@@ -186,10 +195,30 @@ afterAll(async () => {
 
 // --- C1 -------------------------------------------------------------------------------------------------------
 
-describe.skipIf(!gate.enabled)('Supabase real — C1: sem sala (só cadastro anônimo)', () => {
+describe.skipIf(!isC1)('Supabase real — C1: sem sala (só cadastro anônimo)', () => {
   let stranger: TestUser;
-  beforeAll(async () => {
+
+  // #5 (02C.4E): o CAPTCHA está de fato exigido e o caminho do token funciona. Sem depender do texto do erro
+  // do Supabase: o critério é "erro + nenhuma sessão + nenhum usuário"; a mensagem fica anotada, sanitizada.
+  // Se o cadastro sem token for ACEITO, o teste falha e acusa CAPTCHA desligado (essa tentativa conta no
+  // orçamento e pode deixar 1 usuário). O positivo cria o `stranger` usado pelos testes seguintes da C1
+  // (ordem de declaração; arquivo sequencial).
+  rit('#5 cadastro anônimo SEM token de CAPTCHA é recusado (CAPTCHA exigido no projeto)', async (ctx) => {
+    guard();
+    identities.reserve();
+    const { data, error } = await newClient().auth.signInAnonymously();
+    await ctx.annotate(`sem token: ${error ? `recusado (${sanitize(error.message)})` : 'ACEITO'}`);
+    expect(error, 'o cadastro sem token deveria ser recusado').not.toBeNull();
+    expect(data.session).toBeNull();
+    expect(data.user).toBeNull();
+  });
+
+  rit('#5 cadastro anônimo COM o token fictício oficial é aceito (secret de teste no projeto) e é anônimo', async () => {
     stranger = await newUser();
+    expect(typeof stranger.uid === 'string' && stranger.uid.length > 0).toBe(true);
+    guard();
+    const { data } = await stranger.client.auth.getUser(stranger.jwt);
+    expect(data.user?.is_anonymous).toBe(true);
   });
 
   rit('#4 RPC sem JWT de usuário (só chave publicável) → permission denied', async () => {
@@ -484,7 +513,7 @@ describe.skipIf(!hasRoomSetup)('Supabase real — C2: sala de teste (convite + O
 describe('Supabase real — fora do harness de cliente', () => {
   it.todo('D0 partição de hoje em realtime.messages: leitura do operador (consulta em 02C.4A, seção 3) depois da C1; só então ORYN_IT_PARTITIONS_CONFIRMED=1 (o portão exige para a C2)');
   it.todo('#1/#2/#16 migrações, privilégios padrão e dono: integration/sql/00_preflight.sql e 01_postflight.sql (SQL editor)');
-  it.todo('#5 Turnstile: decisão B5 pendente (chaves de teste no ambiente isolado)');
+  it.todo('#5 Turnstile com chaves REAIS (widget de produção, WebView2): fora do harness; desafio real nunca é automatizado (02C.4D)');
   it.todo('A5/#12 revogação com autorização em cache RECEBENDO publicação: exige realtime.send do operador no tópico revogado (escrita autorizada) ou a Edge Function');
   it.todo('D4/#9 Broadcast REST com a chave secreta entrega só ao destinatário: Edge Function publicada ou operador');
   it.todo('N5/#10 Broadcast REST não persiste nem aparece no Replay: depende do D4 + leitura SQL');
