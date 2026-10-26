@@ -238,11 +238,40 @@ Verificação, sem alterar nada:
   - **aborta** se qualquer variável do ambiente tiver cara de credencial administrativa (`sb_secret_` ou JWT
     `service_role`), citando só o nome da variável.
 - **Dependência:** `@supabase/supabase-js` 2.118.0 (fixa; +9 pacotes no lockfile; `pnpm audit` limpo).
-- **Coberto pelo harness:** #3, #4, #6, #7, #8 (WebSocket e REST), #11 e #15 (HTTP, N=5). Os outros itens
-  ficam como `todo` com o motivo (SQL privilegiado, painel ou Edge Function).
+- **Coberto pelo harness:** #3, #4, #6, #7, #8 (WebSocket e REST), #11, #15 (HTTP, N=5) e #18. **02C.4B**
+  acrescentou (matriz da 02C.4A):
+  - S6 (`anon`), S7 (variações do tópico), S8/P5 (Presence);
+  - A1 (revogação), A2/A3 (expiração e nova sessão), A4 (segunda aba);
+  - P3 (REST só com a chave publicável), D2 (`bye`), D3 (sessão revogada com canal aberto não recebe).
+
+  Os outros itens ficam como `todo` com o motivo (SQL privilegiado, operador ou Edge Function).
+- **Correções do 02C.4B no harness:**
+  - `httpSend` rejeita a promessa em status ≠ 202, e o #8 REST quebrava com exceção quando o servidor
+    recusava corretamente. Agora o critério é a não entrega, e o status fica anotado.
+  - O `realtime-js` devolve o canal já existente do mesmo tópico, e um segundo `subscribe()` nunca responde.
+    Por isso o #8 dava `NO_REPLY`. Agora o canal anterior é removido antes de assinar, e canais recusados
+    são removidos na hora.
+  - Batimento automático das sessões fixas da sala: a execução passa de 90 s.
 - **Sala de teste:** só com `ORYN_IT_CREATOR_INVITE`, um convite de criador de **uso único** emitido no SQL editor
-  (`select oryn.admin_issue_creator_invite(10, 1);`). Sem ele, os testes de sala ficam pulados.
-- **Custo:** até 8 cadastros anônimos por execução (limite padrão: 30/h por IP).
+  (`select oryn.admin_issue_creator_invite(10, 1);`). Sem ele, os testes de sala ficam pulados. O nome da
+  sala leva um identificador por execução (`it-02c4b-<8 hex>`), para auditoria e limpeza.
+- **Duas fases e D0 (02C.4B.1):**
+  - **C1:** sem convite. Só o bloco "sem sala", com 1 cadastro. É a 1ª conexão WebSocket e cria as partições. Não depende de D0.
+  - **D0:** o operador confere, por leitura, a partição de hoje em `realtime.messages`.
+  - **C2:** com o convite. O portão **exige** `ORYN_IT_PARTITIONS_CONFIRMED=1` e aborta antes da rede sem
+    ela, o que também evita gastar o convite de uso único. Só `1` é aceito.
+- **Confiabilidade (02C.4B.1):**
+  - Um negativo de entrada no canal só passa com **recusa do servidor**. Timeout, falta de resposta ou queda
+    de transporte reprovam, e uma recusa por JWT/token só é aceita no S6 (`anon`).
+  - Todo negativo de entrega (P1, P2/P3, D3) roda **depois** de D1/D2 e termina com um **controle positivo**
+    no mesmo canal (um `hello` legítimo chega), ou com a prova de que o canal segue conectado (D3).
+  - Teste encerrado por timeout não inicia mais operação remota (`AsyncLocalStorage` + `signal` do Vitest).
+  - Os canais abertos são fechados no `afterEach`, mesmo em falha.
+  - O batimento das sessões fixas é encerrado no `afterAll` (também quando o `beforeAll` falha), espera a
+    chamada em voo e é conferido pelo A2.
+  - As peças puras ficam em `tests/remote/harness-utils.ts`, testadas sem rede em `tests/remote-harness-utils.test.ts`.
+- **Custo:** 9 cadastros anônimos por execução completa (1 no bloco sem sala, 3 na sala e 5 no #15); só 1 sem
+  convite. Limite padrão: 30/h por IP. Duração: ~3 min (o A2 espera 100 s).
 - **Execução (⛔ só depois da Fase 4):**
 
 ```powershell
@@ -250,7 +279,10 @@ $ref = Read-Host 'ref do projeto (<PROJECT_REF>)'               # digitado, não
 $env:ORYN_REMOTE = '1'; $env:ORYN_REMOTE_REF = $ref
 $env:ORYN_SUPABASE_URL = "https://$ref.supabase.co"
 $env:ORYN_PUBLISHABLE_KEY = Read-Host 'chave publicável'      # digitada, não salva
+# C1: SEM convite → pnpm test:remote; depois, D0 (leitura da partição de hoje)
+# C2: com convite E a confirmação (o portão recusa um sem o outro)
 $env:ORYN_IT_CREATOR_INVITE = Read-Host 'convite de criador'  # uso único
+$env:ORYN_IT_PARTITIONS_CONFIRMED = '1'                        # só depois do D0
 pnpm test:remote
 Remove-Item Env:ORYN_*                                         # limpar ao terminar
 ```

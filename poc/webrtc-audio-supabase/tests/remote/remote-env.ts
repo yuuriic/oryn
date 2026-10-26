@@ -10,6 +10,9 @@
 //   ORYN_CAPTCHA_TOKEN=…             opcional (Turnstile com chave de teste no ambiente isolado; B5)
 //   ORYN_IT_CREATOR_INVITE=…         opcional; convite de criador de USO ÚNICO emitido no SQL editor.
 //                                    Sem ele, os testes que precisam de sala ficam pulados.
+//   ORYN_IT_PARTITIONS_CONFIRMED=1   (02C.4B, D0) o operador confirmou, por leitura, que existe a partição de
+//                                    HOJE em realtime.messages. Sem ela, realtime.send descarta o evento em
+//                                    silêncio. OBRIGATÓRIA junto com ORYN_IT_CREATOR_INVITE (C2); a C1 não precisa.
 
 export interface RemoteEnv {
   url: string;
@@ -17,6 +20,7 @@ export interface RemoteEnv {
   publishableKey: string;
   captchaToken: string | undefined;
   creatorInvite: string | undefined;
+  partitionsConfirmed: boolean;
 }
 
 export type RemoteGate = { enabled: false; reason: string } | { enabled: true; env: RemoteEnv };
@@ -57,5 +61,16 @@ export function remoteGate(env: Record<string, string | undefined>): RemoteGate 
   const creatorInvite = env['ORYN_IT_CREATOR_INVITE'] || undefined;
   if (creatorInvite !== undefined && !/^[A-Za-z0-9_-]{43}$/.test(creatorInvite)) throw new RemoteConfigError('ORYN_IT_CREATOR_INVITE fora do formato');
 
-  return { enabled: true, env: { url, ref, publishableKey: key, captchaToken: env['ORYN_CAPTCHA_TOKEN'] || undefined, creatorInvite } };
+  const partitions = env['ORYN_IT_PARTITIONS_CONFIRMED'];
+  if (partitions !== undefined && partitions !== '' && partitions !== '1') throw new RemoteConfigError('ORYN_IT_PARTITIONS_CONFIRMED só aceita 1');
+  // 02C.4B.1: a C2 (sala) nunca começa sem D0. Abortar ANTES da rede também evita gastar o convite de uso
+  // único numa execução cujos testes de entrega não provariam nada.
+  if (creatorInvite !== undefined && partitions !== '1') {
+    throw new RemoteConfigError('ORYN_IT_CREATOR_INVITE (C2) exige ORYN_IT_PARTITIONS_CONFIRMED=1: confira a partição de hoje (D0) depois da C1');
+  }
+
+  return {
+    enabled: true,
+    env: { url, ref, publishableKey: key, captchaToken: env['ORYN_CAPTCHA_TOKEN'] || undefined, creatorInvite, partitionsConfirmed: partitions === '1' },
+  };
 }

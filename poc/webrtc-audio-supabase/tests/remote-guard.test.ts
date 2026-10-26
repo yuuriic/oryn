@@ -21,6 +21,27 @@ describe('portão dos testes remotos', () => {
     expect(remoteGate({ ...base, ORYN_PUBLISHABLE_KEY: fakeJwt({ role: 'anon' }) }).enabled).toBe(true);
   });
 
+  it('D0: a C1 (sem convite) não depende da confirmação de partição', () => {
+    expect(remoteGate(base)).toMatchObject({ enabled: true, env: { partitionsConfirmed: false, creatorInvite: undefined } });
+    expect(remoteGate({ ...base, ORYN_IT_PARTITIONS_CONFIRMED: '' })).toMatchObject({ env: { partitionsConfirmed: false } });
+    expect(remoteGate({ ...base, ORYN_IT_PARTITIONS_CONFIRMED: '1' })).toMatchObject({ env: { partitionsConfirmed: true } });
+  });
+
+  it('D0: a C2 (com convite) só liga com ORYN_IT_PARTITIONS_CONFIRMED=1', () => {
+    const invite = 'A'.repeat(43);
+    expect(() => remoteGate({ ...base, ORYN_IT_CREATOR_INVITE: invite })).toThrow(/ORYN_IT_PARTITIONS_CONFIRMED=1/);
+    expect(() => remoteGate({ ...base, ORYN_IT_CREATOR_INVITE: invite, ORYN_IT_PARTITIONS_CONFIRMED: '' })).toThrow(RemoteConfigError);
+    expect(remoteGate({ ...base, ORYN_IT_CREATOR_INVITE: invite, ORYN_IT_PARTITIONS_CONFIRMED: '1' })).toMatchObject({
+      enabled: true,
+      env: { creatorInvite: invite, partitionsConfirmed: true },
+    });
+  });
+
+  it('a recusa da C2 sem D0 não cita o valor do convite', () => {
+    const invite = 'B'.repeat(43);
+    expect(() => remoteGate({ ...base, ORYN_IT_CREATOR_INVITE: invite })).toThrow(expect.objectContaining({ message: expect.not.stringContaining(invite) }));
+  });
+
   it.each([
     ['chave secreta como publicável', { ORYN_PUBLISHABLE_KEY: SECRET }],
     ['service_role legada como publicável', { ORYN_PUBLISHABLE_KEY: fakeJwt({ role: 'service_role' }) }],
@@ -31,6 +52,7 @@ describe('portão dos testes remotos', () => {
     ['URL http', { ORYN_SUPABASE_URL: `http://${REF}.supabase.co` }],
     ['ref não confirmado', { ORYN_REMOTE_REF: 'outroprojetoxxxxxxxx' }],
     ['convite malformado', { ORYN_IT_CREATOR_INVITE: 'abc' }],
+    ['confirmação de partição ambígua', { ORYN_IT_PARTITIONS_CONFIRMED: 'true' }],
   ])('recusa: %s', (_label, over) => {
     expect(() => remoteGate({ ...base, ...over })).toThrow(RemoteConfigError);
   });
