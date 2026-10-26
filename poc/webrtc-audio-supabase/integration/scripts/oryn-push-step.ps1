@@ -13,6 +13,8 @@
     persistente no projeto; documentação oficial). Na CLI 2.122.0 a variável vale com `db push
     --project-ref` (só o `gen types` com ref avulso a ignora); senha vazia também criaria o papel.
   - Remove a senha, as variáveis e o workdir num bloco `finally`, inclusive se a CLI falhar.
+  - Exige a Supabase CLI EXATAMENTE 2.122.0 (`supabase --version`) antes de pedir credenciais e antes de
+    qualquer conexão com o projeto (02C.3B.1). CLI ausente, outra versão ou versão não identificável = recusa.
   - Recusa rodar se SUPABASE_DB_PASSWORD já existir (não sobrescreve nem apaga segredo alheio) ou se
     houver mudança não commitada em supabase/.
   - Sem -Apply: só `--dry-run`. Com -Apply: exige a confirmação digitada `APLICAR <versão>` e mantém o
@@ -41,6 +43,9 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# Versão em que todo o comportamento do procedimento foi lido (ajuda e binário). Não é parâmetro de propósito.
+$RequiredCliVersion = '2.122.0'
+
 $poc = (Resolve-Path (Join-Path $PSScriptRoot '..' '..')).Path
 $migrationsDir = Join-Path $poc 'supabase' 'migrations'
 $expected = @(Get-ChildItem -Path $migrationsDir -Filter '*.sql' | Sort-Object Name)
@@ -55,6 +60,26 @@ if (Test-Path Env:SUPABASE_DB_PASSWORD) { throw 'SUPABASE_DB_PASSWORD já está 
 $dirty = & git -C $poc status --porcelain -- supabase
 if ($LASTEXITCODE -ne 0) { throw 'git status falhou' }
 if ($dirty) { throw "há mudanças não commitadas em supabase/: $dirty" }
+
+# 1b. Versão exata da CLI, ANTES do workdir, das credenciais e de qualquer conexão com o projeto. O
+#     `--version` não recebe ref nem senha (pode só consultar se há versão nova, sem tocar no projeto).
+#     A versão tem de vir numa linha sozinha; o aviso de atualização ("A new version ... v2.122.0
+#     (currently installed v2.115.0)") não conta.
+try {
+  $versionOutput = @(& $SupabaseCli @SupabaseCliPrefix --version 2>&1 | ForEach-Object { "$_" })
+  $versionCode = $LASTEXITCODE
+} catch [System.Management.Automation.CommandNotFoundException] {
+  throw "Supabase CLI não encontrada ('$SupabaseCli'): instale a $RequiredCliVersion. Nada foi executado."
+}
+if ($versionCode -ne 0) { throw "não foi possível identificar a versão da Supabase CLI (código $versionCode). Nada foi executado." }
+$versions = @($versionOutput | ForEach-Object { if ($_ -match '^\s*v?(\d+\.\d+\.\d+)\s*$') { $Matches[1] } })
+if ($versions.Count -ne 1) {
+  $shown = ($versionOutput -join ' | ')
+  if ($shown.Length -gt 200) { $shown = $shown.Substring(0, 200) + '…' }
+  throw "não foi possível identificar a versão da Supabase CLI (saída: '$shown'). Nada foi executado."
+}
+if ($versions[0] -ne $RequiredCliVersion) { throw "Supabase CLI $($versions[0]) encontrada; o procedimento exige exatamente $RequiredCliVersion. Nada foi executado." }
+Write-Host "Supabase CLI $RequiredCliVersion confirmada."
 
 $base = Join-Path ([System.IO.Path]::GetTempPath()) ("oryn-push-" + [guid]::NewGuid().ToString('N'))
 $workdir = Join-Path $base "step$Step"

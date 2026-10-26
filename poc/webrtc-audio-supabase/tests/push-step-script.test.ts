@@ -25,18 +25,29 @@ interface Run {
   out: string;
   envAfter: string;
   log: { args: string[]; workdir: string; migrations: string[]; passwordLength: number | null } | null;
+  /** Argumentos de cada chamada `--version` (02C.3B.1). */
+  versionCalls: string[][];
 }
 
 /** Roda o script num pwsh novo e informa, no MESMO processo, se SUPABASE_DB_PASSWORD sobrou. */
-function run(opts: { step: number; apply?: boolean; confirmation?: string; mode?: string; applied?: string; ref?: string; preset?: boolean }): Run {
+function run(opts: {
+  step: number;
+  apply?: boolean;
+  confirmation?: string;
+  mode?: string;
+  applied?: string;
+  ref?: string;
+  preset?: boolean;
+  version?: string;
+  missingCli?: boolean;
+}): Run {
   const log = join(work, `cli-${Math.random().toString(36).slice(2)}.json`);
   const q = (s: string) => `'${s.replaceAll("'", "''")}'`;
   const params = [
     `-Step ${opts.step}`,
     opts.apply ? '-Apply' : '',
     opts.confirmation !== undefined ? `-Confirmation ${q(opts.confirmation)}` : '',
-    `-SupabaseCli ${q(process.execPath)}`,
-    `-SupabaseCliPrefix @(${q(fake)})`,
+    opts.missingCli ? `-SupabaseCli ${q('supabase-inexistente-oryn-teste')}` : `-SupabaseCli ${q(process.execPath)} -SupabaseCliPrefix @(${q(fake)})`,
     `-ProjectRef ${q(opts.ref ?? REF)}`,
     `-Password (ConvertTo-SecureString ${q(TEST_PASSWORD)} -AsPlainText -Force)`,
   ].join(' ');
@@ -49,14 +60,24 @@ function run(opts: { step: number; apply?: boolean; confirmation?: string; mode?
     "Write-Host ('ENV_AFTER=' + [string](Test-Path Env:SUPABASE_DB_PASSWORD))",
   ].join('; ');
   // Ambiente SEM SUPABASE_DB_PASSWORD (variável vazia ainda "existe" no Windows e o script recusaria).
-  const env: NodeJS.ProcessEnv = { ...process.env, FAKE_CLI_LOG: log, FAKE_CLI_MODE: opts.mode ?? 'ok', FAKE_APPLIED: opts.applied ?? '' };
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    FAKE_CLI_LOG: log,
+    FAKE_CLI_MODE: opts.mode ?? 'ok',
+    FAKE_APPLIED: opts.applied ?? '',
+    FAKE_CLI_VERSION: opts.version ?? 'ok',
+  };
   delete env['SUPABASE_DB_PASSWORD'];
   const out = execFileSync('pwsh', ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8', env });
+  const versionLog = `${log}.version`;
   return {
     ok: /OK=True/.test(out),
     out,
     envAfter: /ENV_AFTER=(\w+)/.exec(out)?.[1] ?? '?',
     log: existsSync(log) ? JSON.parse(readFileSync(log, 'utf8')) : null,
+    versionCalls: existsSync(versionLog)
+      ? readFileSync(versionLog, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as string[])
+      : [],
   };
 }
 
@@ -72,6 +93,9 @@ describe('oryn-push-step.ps1 (CLI falsa, sem rede)', () => {
     expect(r.out).not.toContain(TEST_PASSWORD);
     expect(r.envAfter).toBe('False');
     expect(existsSync(r.log!.workdir)).toBe(false); // workdir temporário apagado
+    // 02C.3B.1: versão conferida uma vez, só com `--version` (sem ref, sem workdir), apesar do aviso de atualização.
+    expect(r.versionCalls).toEqual([['--version']]);
+    expect(r.out).toMatch(/Supabase CLI 2\.122\.0 confirmada/);
   });
 
   it('Etapa 2 depois da 0100 aplicada: workdir com 0100+0200 e o dry-run só pode citar a 0200', () => {
@@ -125,6 +149,34 @@ describe('oryn-push-step.ps1 (CLI falsa, sem rede)', () => {
     expect(r.ok, r.out).toBe(true);
     expect(r.log!.args).toEqual(['--workdir', r.log!.workdir, 'db', 'push', '--project-ref', REF, '--skip-vault']);
     expect(r.envAfter).toBe('False');
+  });
+
+  describe('versão da CLI (02C.3B.1): recusa ANTES de credenciais, workdir e db push', () => {
+    const refused = (r: Run, message: RegExp) => {
+      expect(r.ok, r.out).toBe(false);
+      expect(r.out).toMatch(message);
+      expect(r.out).toMatch(/Nada foi executado/);
+      expect(r.log).toBeNull(); // db push nunca chamado
+      expect(r.out).not.toMatch(/workdir temporário/); // nem o workdir foi montado
+      expect(r.envAfter).toBe('False');
+    };
+
+    it('CLI ausente', () => {
+      const r = run({ step: 1, missingCli: true });
+      refused(r, /Supabase CLI não encontrada \('supabase-inexistente-oryn-teste'\): instale a 2\.122\.0/);
+      expect(r.versionCalls).toEqual([]);
+    });
+
+    it('versão incompatível (2.115.0), inclusive no -Apply com a confirmação certa', () => {
+      refused(run({ step: 1, version: 'old' }), /Supabase CLI 2\.115\.0 encontrada; o procedimento exige exatamente 2\.122\.0/);
+      refused(run({ step: 1, apply: true, confirmation: 'APLICAR 20261023000100', version: 'old' }), /exige exatamente 2\.122\.0/);
+    });
+
+    it('falha ao identificar a versão: código ≠ 0, saída sem versão, saída ambígua', () => {
+      refused(run({ step: 1, version: 'fail' }), /não foi possível identificar a versão da Supabase CLI \(código 1\)/);
+      refused(run({ step: 1, version: 'garbage' }), /não foi possível identificar a versão da Supabase CLI \(saída: 'Supabase CLI \(dev build\)'\)/);
+      refused(run({ step: 1, version: 'two' }), /não foi possível identificar a versão/);
+    });
   });
 
   it('ref fora do formato → recusa sem chamar a CLI', () => {

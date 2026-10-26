@@ -4,10 +4,28 @@
 //   ok    → imprime, como "dry-run", as migrações do workdir que não estão em FAKE_APPLIED (lista separada por vírgula);
 //   extra → idem, e cita também 20261023000300 (simula uma migração fora da etapa);
 //   fail  → sai com código 1 (simula erro de autenticação).
-import { readdirSync, writeFileSync } from 'node:fs';
+// `--version` (02C.3B.1) registra só em `${FAKE_CLI_LOG}.version` e responde conforme FAKE_CLI_VERSION:
+//   ok (padrão) → aviso de atualização no stderr (com OUTRAS versões) + `2.122.0` no stdout;
+//   old → `2.115.0`; fail → código 1; garbage → texto sem versão; two → duas linhas de versão.
+import { appendFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const args = process.argv.slice(2);
+if (args.includes('--version')) {
+  appendFileSync(`${process.env['FAKE_CLI_LOG'] ?? 'fake-cli.json'}.version`, JSON.stringify(args) + '\n');
+  const v = process.env['FAKE_CLI_VERSION'] ?? 'ok';
+  if (v === 'fail') {
+    console.error('unexpected error: version lookup failed');
+    process.exit(1);
+  }
+  if (v === 'garbage') console.log('Supabase CLI (dev build)');
+  else if (v === 'two') console.log('2.122.0\n2.115.0');
+  else {
+    console.error('A new version of Supabase CLI is available: v2.130.0 (currently installed v2.115.0)');
+    console.log(v === 'old' ? '2.115.0' : '2.122.0');
+  }
+  process.exit(0);
+}
 const workdir = args[args.indexOf('--workdir') + 1] ?? '';
 const migrations = (() => {
   try {

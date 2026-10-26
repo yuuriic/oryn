@@ -6,6 +6,16 @@ arquivo (repositório público): ele é digitado no terminal como `<PROJECT_REF>
 
 Complementa `RUNBOOK-02C.1B.md` (fases 0–6) e `EVIDENCE-02C.1B.md` (matriz dos 18 testes).
 
+## Decisão arquitetural (02C.3B.1)
+
+| Ferramenta | Papel | Motivo |
+|---|---|---|
+| **Supabase CLI 2.122.0** (`db push` via `oryn-push-step.ps1`) | **único** mecanismo de aplicação das migrações 0100–0300 | grava no histórico a versão do nome do arquivo (`20261023000100`…). Comportamento lido na ajuda e no binário (seção 1a) |
+| **Supabase MCP** | **só inspeção e auditoria**: `list_migrations`, `list_edge_functions`, `list_branches`, `get_advisors` e `execute_sql` **somente** com as consultas 🔎 (`00`, `05`, `06`, `07`, sempre `READ ONLY` + `ROLLBACK`) | `execute_sql` roda como `postgres` e respeita `BEGIN … READ ONLY` (lido em 2026-10-26) |
+| `apply_migration` (MCP) | **proibido** para 0100–0300 | a Management API não aceita `version` (só `query`, `name`, `rollback`). A versão seria gerada pela plataforma e divergiria do repositório. Consequências: a CLI pararia com `Remote migration versions not found…`, o `90_rollback.sql` não limparia o histórico e a integração GitHub tentaria reaplicar |
+| Wrapper via `execute_sql` | **não implementado** nesta etapa | avaliado no 02C.3B (versão exata e SHA-256 conferido dentro da transação; provado só localmente). Fica registrado como alternativa, sem uso |
+| SQL editor | proibido para aplicar | não grava o histórico |
+
 ## 0. Estado inicial confirmado (leitura, 2026-10-23, 02C.2C)
 
 | Item | Valor |
@@ -28,11 +38,11 @@ Complementa `RUNBOOK-02C.1B.md` (fases 0–6) e `EVIDENCE-02C.1B.md` (matriz dos
 - [ ] 🔎 `list_migrations`, `list_edge_functions` e `list_branches` = 0/0/0 **no momento** da aplicação.
 - [ ] 🔎 `integration/sql/00_preflight.sql` (SQL editor) igual ao esperado revisto no 02C.2B. P5: `rls_enabled = true`, `policy_grant = true`.
 - [ ] Integração GitHub sem mudança: Working directory `.`, Deploy to production desligado.
-- [ ] **Registro auditável do estado inicial (substitui o `supabase db dump`, que exige Docker).** Rodar 🔎 `integration/sql/07_initial_state.sql` e salvar o JSON em `integration/evidence/estado-inicial-<data>.json` (fora do Git). **⚠ Não é backup:** não tem dados nem definições completas e não restaura nada. Serve para provar o ponto de partida e para comparar depois de uma reversão (o `oryn_scope_fingerprint` tem de voltar ao valor inicial). Registrado em 2026-10-24 (02C.3A.1): `oryn_scope_fingerprint = e854d587…c513`, 7 objetos.
+- [ ] **Registro auditável do estado inicial (substitui o `supabase db dump`, que exige Docker).** Rodar 🔎 `integration/sql/07_initial_state.sql` e salvar o JSON em `integration/evidence/estado-inicial-<data>.json` (fora do Git). **⚠ Não é backup:** não tem dados nem definições completas e não restaura nada. Serve para provar o ponto de partida e para comparar depois de uma reversão (o `oryn_scope_fingerprint` tem de voltar ao valor inicial). Registrado em 2026-10-24 (02C.3A.1) e confirmado em 2026-10-26 (02C.3A.2 e, com a definição revista, 02C.3B.1): `oryn_scope_fingerprint = e854d587…c513`, 7 objetos; `platform_fingerprint = 4ce64373…1359`; `supabase_migrations_relacoes = []`. O que cada campo pode fazer depois: seção 1c.
 - [ ] **Autenticação explícita no banco, sem papel temporário.** Sem a senha, a CLI cria o papel `cli_login_postgres` no projeto (documentação oficial), mesmo num `--dry-run`. É uma escrita persistente, gerida pela plataforma, que só sai pela Management API. A senha vai **só** em `SUPABASE_DB_PASSWORD`, pedida como `SecureString` e removida num `finally` (seção 1a). Nunca usar `-p` na linha de comando, nem deixar a variável no perfil ou em arquivo. **Senha vazia também cria o papel** (texto da própria CLI 2.122.0): o script recusa senha vazia.
-- [ ] **CLI exatamente 2.122.0** (`supabase --version`). Todo comportamento abaixo foi lido nessa versão. Em 2026-10-26 a CLI não estava no `PATH` desta máquina, e o cache do `npx` tinha a **2.115.0**: instalar ou fixar a 2.122.0 antes. Versão diferente = interromper.
+- [ ] **CLI exatamente 2.122.0** (`supabase --version`). Todo comportamento abaixo foi lido nessa versão. Em 2026-10-26 a CLI não estava no `PATH` desta máquina, e o cache do `npx` tinha a **2.115.0**: instalar ou fixar a 2.122.0 antes (só com a confirmação do usuário). Versão diferente = interromper. **Desde o 02C.3B.1, o script também recusa sozinho**, antes de pedir credenciais.
 - [ ] **Linha de base dos efeitos da CLI:** 🔎 `integration/sql/06_cli_side_effects.sql` deve dar `cli_login_roles = {}`, `supabase_migrations = false` e `history = {}`.
-- [ ] Mesmo método nas três etapas: `integration/scripts/oryn-push-step.ps1`, que usa `supabase db push --skip-vault`. Nunca `apply_migration` do MCP nem o SQL editor.
+- [ ] Mesmo método nas três etapas: `integration/scripts/oryn-push-step.ps1`, que usa `supabase db push --skip-vault`. Nunca `apply_migration` do MCP nem o SQL editor (decisão arquitetural, acima).
 
 ### 1a. Procedimento de cada etapa (`integration/scripts/oryn-push-step.ps1`)
 
@@ -49,6 +59,13 @@ pwsh -NoProfile -File integration/scripts/oryn-push-step.ps1 -Step 1 -Apply
 ```
 
 O que o script garante (testado em `tests/push-step-script.test.ts` com uma CLI falsa, sem rede):
+- **(02C.3B.1)** antes do workdir, das credenciais e de qualquer conexão com o projeto, roda `supabase --version` e exige **exatamente** `2.122.0` numa linha sozinha (o aviso de atualização, que cita outras versões, não conta). Recusa, sem chamar o `db push`, se:
+  - a CLI não existir;
+  - a versão for outra;
+  - o `--version` sair com código ≠ 0;
+  - a saída não tiver versão ou tiver mais de uma.
+
+  O `--version` não recebe ref nem senha. Ele pode consultar se existe versão nova (rede pública), sem tocar no projeto;
 - recusa rodar se `SUPABASE_DB_PASSWORD` já existir (não sobrescreve nem apaga segredo alheio) ou se houver mudança não commitada em `supabase/`;
 - monta um `--workdir` temporário com **só** as N primeiras migrações e confere o SHA-256 de cada uma contra o repositório;
 - valida o formato do ref; a senha nunca aparece na tela, na linha de comando nem na saída;
@@ -85,6 +102,25 @@ Fonte: a ajuda (`supabase db push --help`, `supabase --help`) e as strings do bi
 - que o `--dry-run` com senha não grava nada. O código indica que não; a prova é o `06` antes e depois;
 - que a conexão com senha pelo pooler funciona com o `--project-ref` sem `supabase link`.
 
+### 1c. Impressões digitais do `07`: o que é esperado e o que interrompe (02C.3B.1)
+
+Rodar 🔎 `07_initial_state.sql` antes da Etapa 1, depois de cada dry-run, depois de cada etapa aplicada e depois de uma reversão. Salvar cada JSON em `integration/evidence/`.
+
+**Por que a definição mudou.** Na versão anterior, a primeira aplicação **sempre** mudaria o `platform_fingerprint`, porque o `db push` cria `supabase_migrations.schema_migrations` e o índice de chave primária. Depois de uma reversão, ele **não voltaria**, porque o `90_rollback.sql` não apaga esse schema. Outra fonte de mudança: o serviço Realtime cria partições diárias de `realtime.messages` por conta própria.
+
+Desde o 02C.3B.1, essas duas mudanças esperadas saem do `platform_fingerprint` e aparecem em campos próprios. Assim, **qualquer** outra mudança passa a ser motivo de interrupção. Enquanto os dois conjuntos estavam vazios, o valor de referência não mudou: `4ce64373…1359` antes e depois da revisão, lido no remoto em 2026-10-26.
+
+| Campo | Antes da Etapa 1 | Depois do dry-run | Depois da Etapa N aplicada | Depois do `90_rollback.sql` | Interromper se |
+|---|---|---|---|---|---|
+| `oryn_scope_fingerprint` / `oryn_scope_objetos` | `e854d587…c513` / 7 | **igual** | muda (esperado) | **volta** a `e854d587…c513` / 7 | mudou num dry-run; não voltou depois da reversão |
+| `platform_fingerprint` | `4ce64373…1359` | **igual** | **igual** | **igual** | **mudou em qualquer momento**. Pode ser atualização da plataforma: parar e investigar antes da próxima etapa |
+| `supabase_migrations` / `supabase_migrations_relacoes` | `false` / `[]` | **`false` / `[]`** | `true` / `["schema_migrations:r","schema_migrations_pkey:i"]` | `true` / mesma lista (o schema fica, vazio) | apareceu num dry-run; qualquer relação além dessas duas |
+| `cli_login_roles` | `[]` | `[]` | `[]` | `[]` | qualquer valor |
+| `realtime_messages.particoes` | 0 | ≥ 0 | ≥ 0 | ≥ 0 | nunca, sozinho (serviço Realtime). Já `dono`, `rls` e `politicas` seguem os critérios da etapa |
+| `realtime_messages.politicas` | 0 | 0 | 0 nas Etapas 1–2; 4 na Etapa 3 | 0 | qualquer outro valor |
+
+Testado em `tests/postflight-local.test.ts`: a DDL de histórico da CLI e uma partição nova não mudam o `platform_fingerprint`, e outra relação qualquer muda. Testes anteriores também provam que o `oryn_scope_fingerprint` volta ao valor inicial depois da reversão, nas 3 etapas.
+
 ## 2. Etapas
 
 Cada etapa é **independente**:
@@ -98,16 +134,18 @@ Cada etapa é **independente**:
 - 🔎 `integration/sql/05_step_checks.sql`: aprova com nenhuma linha `FAIL` e nenhuma `PENDING` com `step ≤ N`.
 - 🔎 Histórico: `select version from supabase_migrations.schema_migrations order by version;` deve ter exatamente as N versões aplicadas.
 - 🔎 `get_advisors` (segurança e performance): nenhum aviso de nível ERROR.
+- 🔎 `integration/sql/07_initial_state.sql`: conforme a coluna "Depois da Etapa N aplicada" da seção 1c.
 
-### Critérios de interrupção comuns a todas as etapas (revisados no 02C.3A.1)
+### Critérios de interrupção comuns a todas as etapas (revisados no 02C.3A.1 e no 02C.3B.1)
 
 | Classe | Sinal | Ação |
 |---|---|---|
 | **Autenticação** | `password authentication failed`, `connection refused`, timeout, `IPv6 is not supported on your current network`, pedido de login/token, aviso de banimento de IP | Parar. **Não** tentar sem senha (criaria `cli_login_postgres`) e **não** usar `-p` na linha de comando. Conferir a senha no painel e repetir **uma vez**, só o dry-run. Falhas repetidas podem banir o IP no pooler, e com senha a CLI não desbane sozinha. Desbanir é escrita remota ⛔ |
 | **Divergência de migrações** | dry-run lista outra versão, não lista o alvo, ou diz que o banco está em dia (`Remote database is up to date.`); a CLI acusa `Remote migration versions not found in local migrations directory.` ou `Found local migration files to be inserted before the last migration on remote database.`; histórico diferente das N versões; SHA-256 diferente | Parar. Nada de `--include-all` nem de `migration repair` sem nova autorização |
-| **Efeito colateral** | qualquer `cli_login_*`; `supabase_migrations` criado por um dry-run; o dry-run mostrou `Do you want to push` ou `Applying migration`; objeto fora do esperado para a etapa; mudança no RLS ou no dono de `realtime.messages`; aviso ERROR nos advisors; mudança no `platform_fingerprint` do `07` (investigar) | Parar e registrar. Um `cli_login_*` só sai pela Management API: **não** apagar por SQL. A reversão (`90_rollback.sql`) só com autorização |
+| **Efeito colateral** | qualquer `cli_login_*`; `supabase_migrations` criado por um dry-run; o dry-run mostrou `Do you want to push` ou `Applying migration`; objeto fora do esperado para a etapa; mudança no RLS ou no dono de `realtime.messages`; aviso ERROR nos advisors; qualquer sinal "Interromper se" da seção 1c (em especial **qualquer** mudança no `platform_fingerprint`, ou relação em `supabase_migrations` além de `schema_migrations` e do índice de chave primária) | Parar e registrar. Um `cli_login_*` só sai pela Management API: **não** apagar por SQL. A reversão (`90_rollback.sql`) só com autorização |
 | **Segredo exposto** | senha ou token em saída, log ou arquivo | Parar; trocar a senha do banco ou rotacionar o token no painel |
-| **Ambiente** | `SUPABASE_DB_PASSWORD` já definida; mudança não commitada em `supabase/`; `HEAD` diferente do aprovado; `supabase --version` ≠ 2.122.0 | Parar antes de chamar a CLI (o script já recusa os dois primeiros) |
+| **Ambiente** | `SUPABASE_DB_PASSWORD` já definida; mudança não commitada em `supabase/`; `HEAD` diferente do aprovado; CLI ausente, versão ≠ 2.122.0 ou versão não identificável | Parar antes de chamar a CLI. O script já recusa todos, exceto o `HEAD` |
+| **Mecanismo** | qualquer proposta de aplicar por `apply_migration`, pelo SQL editor ou por `execute_sql` com escrita | Parar: fora da decisão arquitetural do 02C.3B.1 |
 
 ### Etapa 1 — `20261023000100_oryn_schema.sql` ⛔
 
@@ -254,6 +292,7 @@ Ordem sugerida para o dia dos testes:
   - as linhas de histórico 0100–0300.
   - RLS e dono de `realtime.messages` ficam como o Supabase entregou.
 - **O que NÃO reverte:**
+  - o schema `supabase_migrations` e a tabela `schema_migrations`, que ficam **vazios** (esperado; seção 1c);
   - usuários de teste em `auth.users` e seus tokens (apagar pelo painel);
   - mensagens `hello`/`bye` retidas em `realtime.messages` por 3 a 4 dias;
   - logs da plataforma, da API e do Postgres;

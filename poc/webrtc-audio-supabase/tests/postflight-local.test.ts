@@ -155,6 +155,31 @@ describe('06_cli_side_effects.sql e 07_initial_state.sql (02C.3A.1)', () => {
     }
   });
 
+  it('07 (02C.3B.1): histórico da CLI e partições novas do Realtime NÃO mudam o platform_fingerprint; outra relação muda', async () => {
+    const db = await TestDb.createBare();
+    try {
+      const before = await state(db);
+      expect(before['supabase_migrations_relacoes']).toEqual([]);
+      // Mesma DDL de histórico que o `db push` da CLI 2.122.0 executa na primeira aplicação.
+      await db.pg.exec(`create schema if not exists supabase_migrations;
+                        create table if not exists supabase_migrations.schema_migrations (version text not null primary key);
+                        alter table supabase_migrations.schema_migrations add column if not exists statements text[];
+                        alter table supabase_migrations.schema_migrations add column if not exists name text;
+                        insert into supabase_migrations.schema_migrations values ('20261023000100', '{}', 'oryn_schema')`);
+      // Partição diária nova, como o serviço Realtime cria (o shim tem uma partição larga; aqui, outra faixa).
+      await db.pg.exec(`create table realtime.messages_2101_01_01 partition of realtime.messages for values from ('2101-01-01') to ('2101-01-02')`);
+      const after = await state(db);
+      expect(after['supabase_migrations_relacoes']).toEqual(['schema_migrations:r', 'schema_migrations_pkey:i']);
+      expect(after['platform_fingerprint']).toBe(before['platform_fingerprint']);
+      expect((after['realtime_messages'] as { particoes: number }).particoes).toBe((before['realtime_messages'] as { particoes: number }).particoes + 1);
+      // Qualquer outra relação de plataforma continua mudando a impressão digital (= interromper).
+      await db.pg.exec('create table realtime.objeto_inesperado (id int)');
+      expect((await state(db))['platform_fingerprint']).not.toBe(before['platform_fingerprint']);
+    } finally {
+      await db.close();
+    }
+  });
+
   it.each([1, 2, 3])('07: impressão digital do escopo da Oryn muda com %i etapa(s) e VOLTA ao valor inicial depois da reversão', async (n) => {
     const db = await TestDb.createBare();
     try {

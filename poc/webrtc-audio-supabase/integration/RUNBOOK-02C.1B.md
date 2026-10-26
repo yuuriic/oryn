@@ -58,9 +58,15 @@ Validação local feita agora: `00_preflight.sql` e `01_postflight.sql` rodam no
    - **(A) recomendado:** aplicar no próprio projeto `oryn` (vazio, dedicado à POC) por `supabase db push`
      (registra o histórico);
    - **(B):** branch de preview pela integração (exige plano com Branching e `config.toml`; tem custo).
-2. **Método de aplicação:** `supabase db push` (CLI, com `--dry-run` antes) ou `apply_migration` do MCP.
-   **Nunca pelo SQL editor:** ele não grava `supabase_migrations.schema_migrations`, e a integração
-   tentaria reaplicar tudo no primeiro merge em `main`, falhando com "already exists".
+2. ~~**Método de aplicação**~~ **decidido no 02C.3B.1:**
+   - **só** `supabase db push` com a CLI **2.122.0**, pelo `oryn-push-step.ps1`;
+   - o MCP serve **só** para inspeção e auditoria (consultas 🔎 `READ ONLY`, listas e advisors);
+   - `apply_migration` **não** é usado para 0100–0300, porque a Management API não aceita `version` e o histórico divergiria do repositório;
+   - o wrapper via `execute_sql` não foi implementado.
+
+   Detalhes: `DEPLOY-CHECKLIST-02C.md`, "Decisão arquitetural". **Nunca pelo SQL editor:** ele não grava
+   `supabase_migrations.schema_migrations`, e a integração tentaria reaplicar tudo no primeiro merge em
+   `main`, falhando com "already exists".
 3. ~~Correção B1/B2~~ feita localmente (02C.1B.0A); falta a revisão.
 4. ~~Dependência `@supabase/supabase-js`~~ adicionada (2.118.0, fixa, só de desenvolvimento).
 5. **Turnstile** no ambiente de teste (B5).
@@ -95,7 +101,7 @@ controle.
 ```powershell
 cd "C:\Dev\Projeto - Oryn\poc\webrtc-audio-supabase"
 pnpm install --frozen-lockfile; pnpm typecheck; pnpm test; pnpm test:pg; pnpm audit
-# esperado (02C.3A.1, 2026-10-26): test 244 passed / 18 todo (inclui 9 do script com CLI falsa e 4 do 06/07); test:pg 17 passed; audit limpo
+# esperado (02C.3B.1, 2026-10-26): test 248 passed / 18 todo (inclui 12 do script com CLI falsa, 3 deles de versão, e 5 do 06/07); test:pg 17 passed; audit limpo
 ```
 
 ### Fase 2 — Pré-voo remoto, somente leitura ⛔
@@ -110,7 +116,16 @@ Salvar a saída. **GO para a Fase 3 só se:**
 
 A CLI 2.122.0 não aplica "até a versão N". Por isso cada passo usa um `--workdir` temporário, fora do
 repositório, com só as N primeiras migrações; o histórico remoto faz o passo aplicar só a migração nova.
-Sempre o mesmo método: **não** misturar com `apply_migration` do MCP nem com o SQL editor.
+Sempre o mesmo método: **não** misturar com `apply_migration` do MCP nem com o SQL editor (decisão
+arquitetural do 02C.3B.1).
+
+**02C.3B.1:**
+- O script confere a versão exata da CLI (2.122.0) antes de montar o workdir, pedir credenciais ou
+  conectar. CLI ausente, outra versão ou versão não identificável = recusa sem chamar o `db push`.
+- O `07` foi revisto. O `platform_fingerprint` não inclui mais `supabase_migrations` (criado pela
+  primeira aplicação) nem as partições do Realtime, e tem de ficar **constante** em todo o procedimento.
+  Essas mudanças esperadas aparecem em campos próprios. Tabela completa em `DEPLOY-CHECKLIST-02C.md`,
+  seção 1c.
 
 **02C.3A.1 — autenticação explícita, sem papel temporário.**
 - Sem a senha do banco, a CLI cria o papel `cli_login_postgres` no projeto (documentação oficial), mesmo
@@ -132,13 +147,13 @@ Sempre o mesmo método: **não** misturar com `apply_migration` do MCP nem com o
 
 ```powershell
 cd "C:\Dev\Projeto - Oryn\poc\webrtc-audio-supabase"
-supabase --version                                                          # tem de ser 2.122.0; senão, parar
+supabase --version                                                          # tem de ser 2.122.0; senão, parar (o script também confere)
 supabase login                                                              # token pessoal só no terminal
 # 🔎 antes: 07_initial_state.sql (salvar o JSON) e 06_cli_side_effects.sql ({} / false / {})
 pwsh -NoProfile -File integration/scripts/oryn-push-step.ps1 -Step 1         # dry-run: SÓ a 0100
-# 🔎 06_cli_side_effects.sql de novo: tem de continuar {} / false / {}
+# 🔎 06 de novo: tem de continuar {} / false / {}; 07: tudo igual (checklist, seção 1c)
 pwsh -NoProfile -File integration/scripts/oryn-push-step.ps1 -Step 1 -Apply  # ⛔ só com a autorização da Etapa 1; no prompt [Y/n] da CLI, conferir a lista e digitar y (Enter vazio = aplica)
-# 🔎 05_step_checks.sql (passo 1) + 06 (history = {20261023000100}) + advisors
+# 🔎 05_step_checks.sql (passo 1) + 06 (history = {20261023000100}) + 07 (seção 1c) + advisors
 # Repetir com -Step 2 e -Step 3, cada um com a sua autorização.
 ```
 
