@@ -130,3 +130,48 @@ describe('reversão (90_rollback.sql) depois de cada etapa', () => {
     }
   });
 });
+
+describe('06_cli_side_effects.sql e 07_initial_state.sql (02C.3A.1)', () => {
+  const sideEffects = async (db: TestDb) => {
+    const res = await db.pg.exec(sql('06_cli_side_effects.sql'));
+    const rows = res.find((r) => r.fields.some((f) => f.name === 'actual'))!.rows as { item: string; actual: string }[];
+    return Object.fromEntries(rows.map((r) => [r.item.split(' ')[0], r.actual]));
+  };
+  const state = async (db: TestDb) => {
+    const res = await db.pg.exec(sql('07_initial_state.sql'));
+    return (res.find((r) => r.fields.some((f) => f.name === 'estado'))!.rows[0] as { estado: Record<string, unknown> }).estado;
+  };
+
+  it('06: sem histórico nem papéis temporários → tudo vazio; com histórico → as versões, em ordem', async () => {
+    const db = await TestDb.createBare();
+    try {
+      expect(await sideEffects(db)).toEqual({ cli_login_roles: '{}', supabase_migrations: 'false', history: '{}' });
+      await db.pg.exec(`create schema supabase_migrations; create table supabase_migrations.schema_migrations (version text primary key);
+                      insert into supabase_migrations.schema_migrations values ('20261023000200'), ('20261023000100');
+                      create role cli_login_postgres nologin`);
+      expect(await sideEffects(db)).toEqual({ cli_login_roles: '{cli_login_postgres}', supabase_migrations: 'true', history: '{20261023000100,20261023000200}' });
+    } finally {
+      await db.close();
+    }
+  });
+
+  it.each([1, 2, 3])('07: impressão digital do escopo da Oryn muda com %i etapa(s) e VOLTA ao valor inicial depois da reversão', async (n) => {
+    const db = await TestDb.createBare();
+    try {
+      const before = await state(db);
+      expect(before['aviso']).toBe('registro de estado; NÃO é backup');
+      expect(before['schemas_oryn']).toEqual([]);
+      const files = migrationFiles();
+      for (let i = 0; i < n; i++) await db.migrate(files[i]![1]);
+      const applied = await state(db);
+      expect(applied['oryn_scope_fingerprint']).not.toBe(before['oryn_scope_fingerprint']);
+      await db.migrate(sql('90_rollback.sql'));
+      const after = await state(db);
+      expect(after['oryn_scope_fingerprint']).toBe(before['oryn_scope_fingerprint']);
+      expect(after['oryn_scope_objetos']).toBe(before['oryn_scope_objetos']);
+      expect(after['realtime_messages']).toEqual(before['realtime_messages']);
+    } finally {
+      await db.close();
+    }
+  });
+});

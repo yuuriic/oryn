@@ -3,16 +3,12 @@
 // (o stop() do embedded-postgres espera um `exit` que já tinha acontecido). Aqui o servidor é obrigado a
 // falhar (parâmetro inválido) e o erro tem de chegar SOZINHO e rápido, com a etapa, a mensagem real do
 // Postgres e nenhuma senha, sem deixar diretório temporário para trás.
-import { readdirSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { PgServer, PgStartupError, TIMEOUTS, withTimeout } from './pg-server.ts';
 
-const tempDirs = () => readdirSync(tmpdir()).filter((d) => d.startsWith('oryn-pg17-')).sort();
-
 describe('diagnóstico de falha ao iniciar o PostgreSQL 17 embutido', () => {
   it('parâmetro inválido → falha rápida com a etapa e a mensagem do Postgres; nunca "undefined"; sem sobras', async () => {
-    const before = tempDirs();
     const t0 = Date.now();
     const error = await PgServer.start(['-c', 'shared_buffers=nao-numero']).then(
       () => null,
@@ -29,7 +25,9 @@ describe('diagnóstico de falha ao iniciar o PostgreSQL 17 embutido', () => {
     // Termina por conta própria: só initdb + falha imediata do servidor, muito abaixo do prazo interno de
     // início e do timeout do Vitest (o bug do 02C.2B.2 só terminava pelo timeout de 120 s do teste).
     expect(elapsed).toBeLessThan(TIMEOUTS.initdbMs / 2);
-    expect(tempDirs()).toEqual(before);
+    // Só o diretório DESTA tentativa (outros processos podem criar os seus ao mesmo tempo).
+    expect((error as PgStartupError).tempDir).toMatch(/oryn-pg17-/);
+    expect(existsSync((error as PgStartupError).tempDir!)).toBe(false);
   });
 });
 

@@ -10,5 +10,8 @@ export default defineConfig({
     exclude: ['**/node_modules/**', 'tests/remote/**', '**/*.remote.test.ts', 'tests/pg/**', '**/*.pg.test.ts'],
     environment: 'node',
     testTimeout: 30_000,
+    // 02C.3A.1: o beforeAll de cada arquivo cria um PGlite e aplica as migrações; sob contenção de CPU
+    // (reproduzido com o test:pg em paralelo) passava do padrão de 10 s do Vitest. Mesmo prazo dos testes.
+    hookTimeout: 30_000,
   },
 });

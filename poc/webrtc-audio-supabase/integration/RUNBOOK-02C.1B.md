@@ -95,7 +95,7 @@ controle.
 ```powershell
 cd "C:\Dev\Projeto - Oryn\poc\webrtc-audio-supabase"
 pnpm install --frozen-lockfile; pnpm typecheck; pnpm test; pnpm test:pg; pnpm audit
-# esperado (02C.2C.1): test 231 passed / 18 todo; test:pg 15 passed (14 de concorrência + 1 de diagnóstico, 02C.2B.1); audit limpo
+# esperado (02C.3A.1, 2026-10-26): test 244 passed / 18 todo (inclui 9 do script com CLI falsa e 4 do 06/07); test:pg 17 passed; audit limpo
 ```
 
 ### Fase 2 — Pré-voo remoto, somente leitura ⛔
@@ -108,31 +108,41 @@ Salvar a saída. **GO para a Fase 3 só se:**
 
 ### Fase 3 — Aplicação, uma migração por vez ⛔
 
-A CLI 2.122.0 não aplica "até a versão N". Para conferir cada migração antes da próxima, cada passo usa um
-`--workdir` temporário, fora do repositório, com só as N primeiras migrações. O histórico remoto faz cada
-passo aplicar só a migração nova. Sempre o mesmo método: **não** misturar com `apply_migration` do MCP nem
-com o SQL editor.
+A CLI 2.122.0 não aplica "até a versão N". Por isso cada passo usa um `--workdir` temporário, fora do
+repositório, com só as N primeiras migrações; o histórico remoto faz o passo aplicar só a migração nova.
+Sempre o mesmo método: **não** misturar com `apply_migration` do MCP nem com o SQL editor.
+
+**02C.3A.1 — autenticação explícita, sem papel temporário.**
+- Sem a senha do banco, a CLI cria o papel `cli_login_postgres` no projeto (documentação oficial), mesmo
+  num `--dry-run`. É uma escrita persistente, que só sai pela Management API.
+- Por isso todos os passos rodam pelo script `integration/scripts/oryn-push-step.ps1`, que:
+  - pede a senha como `SecureString`;
+  - a coloca em `SUPABASE_DB_PASSWORD` só durante a chamada;
+  - remove a senha e o workdir num `finally`, inclusive em erro;
+  - recusa senha vazia, porque senha vazia também cria o papel.
+- O `supabase db dump` (que exige Docker) foi substituído pelo registro somente leitura
+  `integration/sql/07_initial_state.sql`. **Não é backup.**
+- Lido na CLI 2.122.0 (ajuda e binário):
+  - no `db push --project-ref`, a `SUPABASE_DB_PASSWORD` vale (ela só é ignorada no `gen types` com ref avulso);
+  - a variável **não** aparece no `--help`;
+  - o dry-run não cria `supabase_migrations`;
+  - o prompt da CLI tem padrão **Sim**, então não é trava: a trava é o `APLICAR <versão>` do script.
+
+  Detalhes e o que continua NOT VERIFIED: `DEPLOY-CHECKLIST-02C.md`, seção 1a.
 
 ```powershell
 cd "C:\Dev\Projeto - Oryn\poc\webrtc-audio-supabase"
-supabase login                                       # token pessoal só no terminal; não salvar em arquivo
-$ref  = Read-Host 'ref do projeto (<PROJECT_REF>)'   # digitado, não salvo
-$base = Join-Path $env:TEMP 'oryn-push'
-foreach ($n in 1..3) {
-  $wd = Join-Path $base "step$n"
-  New-Item -ItemType Directory -Force (Join-Path $wd 'supabase\migrations') | Out-Null
-  Copy-Item supabase\config.toml (Join-Path $wd 'supabase')
-  Get-ChildItem supabase\migrations\*.sql | Sort-Object Name | Select-Object -First $n |
-    Copy-Item -Destination (Join-Path $wd 'supabase\migrations')
-}
-# Para cada passo N = 1, 2, 3 (senha do banco digitada no prompt; --skip-vault: nada de Vault a partir do config):
-supabase --workdir "$base\step1" db push --project-ref $ref --skip-vault --dry-run   # esperado: SÓ a 0100
-supabase --workdir "$base\step1" db push --project-ref $ref --skip-vault
-#   → rodar integration/sql/05_step_checks.sql: nenhum FAIL; nenhum PENDING com step <= 1
-#   → repetir com step2 (só a 0200) e step3 (só a 0300)
-supabase --workdir "$base\step3" migration list --project-ref $ref                 # 3 versões em Local e Remote
-Remove-Item -Recurse -Force $base
+supabase --version                                                          # tem de ser 2.122.0; senão, parar
+supabase login                                                              # token pessoal só no terminal
+# 🔎 antes: 07_initial_state.sql (salvar o JSON) e 06_cli_side_effects.sql ({} / false / {})
+pwsh -NoProfile -File integration/scripts/oryn-push-step.ps1 -Step 1         # dry-run: SÓ a 0100
+# 🔎 06_cli_side_effects.sql de novo: tem de continuar {} / false / {}
+pwsh -NoProfile -File integration/scripts/oryn-push-step.ps1 -Step 1 -Apply  # ⛔ só com a autorização da Etapa 1; no prompt [Y/n] da CLI, conferir a lista e digitar y (Enter vazio = aplica)
+# 🔎 05_step_checks.sql (passo 1) + 06 (history = {20261023000100}) + advisors
+# Repetir com -Step 2 e -Step 3, cada um com a sua autorização.
 ```
+
+Critérios de aprovação e de interrupção de cada passo: `DEPLOY-CHECKLIST-02C.md` (seções 1a e 2).
 
 As pastas `supabase/.temp/` dos workdirs temporários ficam fora do repositório; a do projeto já está no `.gitignore`.
 

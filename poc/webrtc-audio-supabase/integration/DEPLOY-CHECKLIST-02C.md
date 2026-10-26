@@ -28,9 +28,62 @@ Complementa `RUNBOOK-02C.1B.md` (fases 0–6) e `EVIDENCE-02C.1B.md` (matriz dos
 - [ ] 🔎 `list_migrations`, `list_edge_functions` e `list_branches` = 0/0/0 **no momento** da aplicação.
 - [ ] 🔎 `integration/sql/00_preflight.sql` (SQL editor) igual ao esperado revisto no 02C.2B. P5: `rls_enabled = true`, `policy_grant = true`.
 - [ ] Integração GitHub sem mudança: Working directory `.`, Deploy to production desligado.
-- [ ] Registro do schema antes da aplicação (só leitura): `supabase db dump --project-ref $ref -s public,realtime -f integration/evidence/pre-schema.sql`. A pasta fica fora do Git.
-- [ ] Workdirs temporários `step1`, `step2` e `step3` preparados (runbook, Fase 3), com as 1, 2 e 3 primeiras migrações.
-- [ ] Mesmo método nas três etapas: `supabase db push --skip-vault`. Nunca `apply_migration` do MCP nem o SQL editor.
+- [ ] **Registro auditável do estado inicial (substitui o `supabase db dump`, que exige Docker).** Rodar 🔎 `integration/sql/07_initial_state.sql` e salvar o JSON em `integration/evidence/estado-inicial-<data>.json` (fora do Git). **⚠ Não é backup:** não tem dados nem definições completas e não restaura nada. Serve para provar o ponto de partida e para comparar depois de uma reversão (o `oryn_scope_fingerprint` tem de voltar ao valor inicial). Registrado em 2026-10-24 (02C.3A.1): `oryn_scope_fingerprint = e854d587…c513`, 7 objetos.
+- [ ] **Autenticação explícita no banco, sem papel temporário.** Sem a senha, a CLI cria o papel `cli_login_postgres` no projeto (documentação oficial), mesmo num `--dry-run`. É uma escrita persistente, gerida pela plataforma, que só sai pela Management API. A senha vai **só** em `SUPABASE_DB_PASSWORD`, pedida como `SecureString` e removida num `finally` (seção 1a). Nunca usar `-p` na linha de comando, nem deixar a variável no perfil ou em arquivo. **Senha vazia também cria o papel** (texto da própria CLI 2.122.0): o script recusa senha vazia.
+- [ ] **CLI exatamente 2.122.0** (`supabase --version`). Todo comportamento abaixo foi lido nessa versão. Em 2026-10-26 a CLI não estava no `PATH` desta máquina, e o cache do `npx` tinha a **2.115.0**: instalar ou fixar a 2.122.0 antes. Versão diferente = interromper.
+- [ ] **Linha de base dos efeitos da CLI:** 🔎 `integration/sql/06_cli_side_effects.sql` deve dar `cli_login_roles = {}`, `supabase_migrations = false` e `history = {}`.
+- [ ] Mesmo método nas três etapas: `integration/scripts/oryn-push-step.ps1`, que usa `supabase db push --skip-vault`. Nunca `apply_migration` do MCP nem o SQL editor.
+
+### 1a. Procedimento de cada etapa (`integration/scripts/oryn-push-step.ps1`)
+
+Antes, uma vez por terminal: `supabase login` (token pessoal; o `--project-ref` pode precisar ler a configuração do pooler pela Management API).
+
+```powershell
+cd "C:\Dev\Projeto - Oryn\poc\webrtc-audio-supabase"
+# 1) dry-run (pede o ref e a senha; senha como SecureString)
+pwsh -NoProfile -File integration/scripts/oryn-push-step.ps1 -Step 1
+# 2) 🔎 06_cli_side_effects.sql: tem de continuar {} / false / {}   ← prova que o dry-run não gravou
+# 3) ⛔ só com a autorização desta etapa: aplica (pede 'APLICAR <versão>' e mantém o prompt da CLI)
+pwsh -NoProfile -File integration/scripts/oryn-push-step.ps1 -Step 1 -Apply
+# 4) 🔎 05_step_checks.sql + 06_cli_side_effects.sql + histórico + advisors (critérios da etapa)
+```
+
+O que o script garante (testado em `tests/push-step-script.test.ts` com uma CLI falsa, sem rede):
+- recusa rodar se `SUPABASE_DB_PASSWORD` já existir (não sobrescreve nem apaga segredo alheio) ou se houver mudança não commitada em `supabase/`;
+- monta um `--workdir` temporário com **só** as N primeiras migrações e confere o SHA-256 de cada uma contra o repositório;
+- valida o formato do ref; a senha nunca aparece na tela, na linha de comando nem na saída;
+- argumentos exatos: `--workdir <tmp> db push --project-ref <ref> --skip-vault [--dry-run]`;
+- no dry-run, interrompe se a saída **não** citar a versão-alvo ou citar **outra** migração;
+- no `-Apply`, exige a confirmação digitada `APLICAR <versão>` e roda a CLI no terminal, **sem `--yes`**, para o prompt dela aparecer;
+- **`finally`:** remove `SUPABASE_DB_PASSWORD`, as variáveis da senha e o workdir, **inclusive se a CLI falhar**.
+
+**⚠ O prompt da própria CLI não é trava.** Na 2.122.0, `Do you want to push these migrations to the remote database? [Y/n]` tem padrão **Sim**:
+- Enter vazio aplica;
+- com stdin que não é terminal, uma linha vazia ou o fim da entrada também aplicam;
+- com `--output-format json` ou `stream-json`, aplica sem perguntar.
+
+A trava é a confirmação `APLICAR <versão>` do script. No prompt da CLI, conferir que a lista tem **só** a migração da etapa e digitar `y` de propósito. Se a lista estiver diferente, digitar `n`.
+
+#### Evidência da CLI 2.122.0 (02C.3A.1)
+
+Fonte: a ajuda (`supabase db push --help`, `supabase --help`) e as strings do binário oficial `supabase@2.122.0` (npm, `cli-windows-x64`), lidos localmente sem acesso ao projeto.
+
+| Ponto | Fonte | O que mostra |
+|---|---|---|
+| `db push`: `--dry-run`, `--skip-vault`, `--project-ref`, `-p/--password`, `--include-all` | ajuda | sintaxe usada pelo script (inalterada) |
+| `--workdir` global | ajuda | "used exactly as given, with no ancestor directory search" |
+| `--yes`, `--output-format`, `--agent` | ajuda | globais; o script **não** usa nenhum deles |
+| `SUPABASE_DB_PASSWORD` | **não está na ajuda**; binário | a senha é resolvida nesta ordem: `--password` → `SUPABASE_DB_PASSWORD` → `supabase/.env` do workdir (o temporário não tem `.env`) |
+| `--project-ref` com a variável | binário | a variável só é ignorada quando o ref é "avulso" (`adHocProjectRef`), e esse modo só é ligado no `gen types`. No `db push --project-ref`, a variável vale |
+| Sem senha | ajuda (seção PERMISSIONS) e binário | cria o papel de login (`v1-create-login-role`). Se falhar 3 vezes pelo pooler, a CLI também **lê e apaga banimentos de rede** (`database_network_bans_*`). Com senha, nenhum dos dois acontece |
+| `--project-ref` sem `supabase link` | ajuda e binário | se o host direto (IPv6) for inalcançável, a CLI busca a configuração do pooler pela Management API (`database_pooling_config_read`). Por isso é preciso o `supabase login` |
+| `--dry-run` | binário | lista o histórico remoto (tabela ausente = histórico vazio, sem erro), imprime `Would push these migrations:` **no stderr** (o script junta stderr e stdout) e para. Não cria `supabase_migrations` e não atualiza o vault: o `CREATE SCHEMA IF NOT EXISTS supabase_migrations` só roda na aplicação |
+| Divergência | binário | `Remote migration versions not found in local migrations directory.` e `Found local migration files to be inserted before the last migration on remote database.` |
+
+**NOT VERIFIED contra o projeto** (a leitura do código não substitui a execução):
+- o formato exato da saída do dry-run (a checagem do script é pelo número da versão);
+- que o `--dry-run` com senha não grava nada. O código indica que não; a prova é o `06` antes e depois;
+- que a conexão com senha pelo pooler funciona com o `--project-ref` sem `supabase link`.
 
 ## 2. Etapas
 
@@ -41,9 +94,20 @@ Cada etapa é **independente**:
 - pode ser revertida sozinha, porque o `90_rollback.sql` é idempotente e funciona depois de qualquer etapa (testado nos 3 cenários).
 
 **Verificação comum depois de cada etapa:**
+- 🔎 `integration/sql/06_cli_side_effects.sql`: `cli_login_roles = {}` e `history` = exatamente as N versões.
 - 🔎 `integration/sql/05_step_checks.sql`: aprova com nenhuma linha `FAIL` e nenhuma `PENDING` com `step ≤ N`.
 - 🔎 Histórico: `select version from supabase_migrations.schema_migrations order by version;` deve ter exatamente as N versões aplicadas.
 - 🔎 `get_advisors` (segurança e performance): nenhum aviso de nível ERROR.
+
+### Critérios de interrupção comuns a todas as etapas (revisados no 02C.3A.1)
+
+| Classe | Sinal | Ação |
+|---|---|---|
+| **Autenticação** | `password authentication failed`, `connection refused`, timeout, `IPv6 is not supported on your current network`, pedido de login/token, aviso de banimento de IP | Parar. **Não** tentar sem senha (criaria `cli_login_postgres`) e **não** usar `-p` na linha de comando. Conferir a senha no painel e repetir **uma vez**, só o dry-run. Falhas repetidas podem banir o IP no pooler, e com senha a CLI não desbane sozinha. Desbanir é escrita remota ⛔ |
+| **Divergência de migrações** | dry-run lista outra versão, não lista o alvo, ou diz que o banco está em dia (`Remote database is up to date.`); a CLI acusa `Remote migration versions not found in local migrations directory.` ou `Found local migration files to be inserted before the last migration on remote database.`; histórico diferente das N versões; SHA-256 diferente | Parar. Nada de `--include-all` nem de `migration repair` sem nova autorização |
+| **Efeito colateral** | qualquer `cli_login_*`; `supabase_migrations` criado por um dry-run; o dry-run mostrou `Do you want to push` ou `Applying migration`; objeto fora do esperado para a etapa; mudança no RLS ou no dono de `realtime.messages`; aviso ERROR nos advisors; mudança no `platform_fingerprint` do `07` (investigar) | Parar e registrar. Um `cli_login_*` só sai pela Management API: **não** apagar por SQL. A reversão (`90_rollback.sql`) só com autorização |
+| **Segredo exposto** | senha ou token em saída, log ou arquivo | Parar; trocar a senha do banco ou rotacionar o token no painel |
+| **Ambiente** | `SUPABASE_DB_PASSWORD` já definida; mudança não commitada em `supabase/`; `HEAD` diferente do aprovado; `supabase --version` ≠ 2.122.0 | Parar antes de chamar a CLI (o script já recusa os dois primeiros) |
 
 ### Etapa 1 — `20261023000100_oryn_schema.sql` ⛔
 
@@ -54,11 +118,11 @@ Cada etapa é **independente**:
 
 | | |
 |---|---|
-| Comando | `supabase --workdir "$base\step1" db push --project-ref $ref --skip-vault --dry-run`; depois o mesmo **sem** `--dry-run` |
+| Comando | `oryn-push-step.ps1 -Step 1` (dry-run) → 🔎 `06` → ⛔ `oryn-push-step.ps1 -Step 1 -Apply` |
 | `--dry-run` aprova se | lista **só** `20261023000100` |
 | 🔎 Verificação específica | `select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public';` = **0**; `select count(*) from pg_policies where schemaname = 'realtime' and policyname like 'oryn_%';` = **0** |
 | **Aprova** | 05: passo 1 todo PASS (8 tabelas, RLS ligado, dono `postgres`, nenhum privilégio nem USAGE de cliente); histórico = 1 versão; nada fora do esperado |
-| **Interrompe** | qualquer erro da CLI; FAIL no passo 1; histórico ≠ 1; qualquer privilégio de `anon` ou `authenticated` em `oryn` |
+| **Interrompe** | qualquer critério comum (acima); FAIL no passo 1; histórico ≠ 1; qualquer privilégio de `anon` ou `authenticated` em `oryn` |
 | Reversão ⛔ | `90_rollback.sql` (apaga `oryn`, linha 0100 do histórico) |
 
 ### Etapa 2 — `20261023000200_oryn_functions.sql` ⛔
@@ -70,7 +134,7 @@ Cada etapa é **independente**:
 
 | | |
 |---|---|
-| Comando | `--workdir "$base\step2"`, mesmos flags; `--dry-run` deve listar **só** `20261023000200` |
+| Comando | `oryn-push-step.ps1 -Step 2` (dry-run: **só** `20261023000200`) → 🔎 `06` → ⛔ `-Apply` |
 | 🔎 Verificação específica | `select has_function_privilege('anon', 'public.join_room(uuid)', 'EXECUTE');` = **false**; `select has_function_privilege('authenticated', 'public.set_signal_state(uuid,text)', 'EXECUTE');` = **false**; políticas `oryn_*` em `realtime.messages` continuam **0** |
 | **Aprova** | 05: passos 1 e 2 todo PASS (exatamente 12 funções em `public`, todas DEFINER com `search_path` vazio; `anon` sem EXECUTE; `set_signal_state` só para `service_role`); histórico = 2 |
 | **Interrompe** | erro; FAIL; qualquer função extra em `public`; EXECUTE de `anon` ou de `PUBLIC` em qualquer função da Oryn |
@@ -85,7 +149,7 @@ Cada etapa é **independente**:
 
 | | |
 |---|---|
-| Comando | `--workdir "$base\step3"`; `--dry-run` deve listar **só** `20261023000300` |
+| Comando | `oryn-push-step.ps1 -Step 3` (dry-run: **só** `20261023000300`) → 🔎 `06` → ⛔ `-Apply` |
 | 🔎 Verificação específica | `select relrowsecurity, pg_get_userbyid(relowner) from pg_class where oid = 'realtime.messages'::regclass;` = `true`, `supabase_realtime_admin` (**inalterado**) |
 | **Aprova** | 05: passos 1–3 todo PASS; histórico = 3; depois, **`01_postflight.sql` com zero FAIL** (seção 3) |
 | **Interrompe** | erro (inclusive `oryn-0300: …`); dono ou RLS de `realtime.messages` diferente; número de políticas ≠ 4 |

@@ -27,7 +27,10 @@ export interface CallResult<T> {
 }
 
 /** Falha de inicialização com a etapa, a causa original e o fim da saída do Postgres (senha mascarada). */
-export class PgStartupError extends Error {}
+export class PgStartupError extends Error {
+  /** Diretório temporário desta tentativa (já apagado quando o erro chega a quem chamou). */
+  tempDir: string | undefined;
+}
 
 function startupError(stage: string, cause: unknown, output: string, secret: string): PgStartupError {
   const reason =
@@ -208,6 +211,7 @@ export class PgServer {
       if (pgCtl) await run(pgCtl, ['stop', '-D', dataDir, '-m', 'immediate', '-w'], join(base, 'pg_ctl.log')).catch(() => undefined);
       else await stopEmbedded(epg).catch(() => undefined);
       rmSync(base, { recursive: true, force: true });
+      if (error instanceof PgStartupError) error.tempDir = base;
       throw error;
     }
     const pool = new pg.Pool({ host: '127.0.0.1', port, user: 'postgres', password, database: 'postgres', max: 40 });
