@@ -128,9 +128,113 @@ describe('fases C1/C2 e D0', () => {
   });
 });
 
+describe('C0: sem identidade (02C.5B)', () => {
+  const c0 = { ORYN_REMOTE: '1', ORYN_REMOTE_REF: REF, ORYN_SUPABASE_URL: `https://${REF}.supabase.co`, ORYN_PUBLISHABLE_KEY: PUBLISHABLE, ORYN_IT_PHASE: 'C0' };
+
+  it('liga sem CAPTCHA, sem convite e sem orçamento; cadastro e login ficam em ZERO por construção', () => {
+    expect(remoteGate(c0)).toMatchObject({
+      enabled: true,
+      env: { phase: 'C0', identityBudget: 0, loginBudget: 0, credentials: undefined, allowWebSocket: false, identityMode: 'signup' },
+    });
+    expect(remoteGate({ ...c0, ORYN_IT_IDENTITY_BUDGET: '0' })).toMatchObject({ env: { identityBudget: 0 } });
+  });
+
+  it.each(['1', '2', '10'])('orçamento de cadastro %s na C0 → recusa (tem de ser 0)', (budget) => {
+    expectRefusal({ ...c0, ORYN_IT_IDENTITY_BUDGET: budget }, /tem de ser 0/);
+  });
+
+  it('WebSocket só com ORYN_IT_ALLOW_WS=1 explícito', () => {
+    expect(remoteGate({ ...c0, ORYN_IT_ALLOW_WS: '1' })).toMatchObject({ env: { allowWebSocket: true } });
+    expectRefusal({ ...c0, ORYN_IT_ALLOW_WS: 'true' }, /ORYN_IT_ALLOW_WS só aceita 1/);
+  });
+
+  it('ORYN_IT_ALLOW_WS fora da C0 → recusa', () => {
+    expectRefusal({ ...base, ORYN_IT_ALLOW_WS: '1' }, /só vale na C0/);
+    expectRefusal({ ...c2, ORYN_IT_ALLOW_WS: '1' }, /só vale na C0/);
+  });
+
+  it('convite na C0 → recusa, sem citar o valor', () => {
+    expectRefusal({ ...c0, ORYN_IT_CREATOR_INVITE: INVITE }, /não é usado na C0/, INVITE);
+  });
+
+  it('token de CAPTCHA real continua recusado mesmo na C0', () => {
+    expectRefusal({ ...c0, ORYN_CAPTCHA_TOKEN: 'qualquer-coisa' }, /ORYN_CAPTCHA_TOKEN/, 'qualquer-coisa');
+  });
+
+  it('credenciais de usuário no ambiente da C0 → recusa citando só os NOMES', () => {
+    const pw = 'senha-que-nao-pode-vazar';
+    expectRefusal({ ...c0, ORYN_IT_USER_OWNER_PASSWORD: pw }, /ORYN_IT_USER_OWNER_PASSWORD/, pw);
+  });
+
+  it('identidade password na C0 → recusa', () => {
+    expectRefusal({ ...c0, ORYN_IT_IDENTITY: 'password' }, /só vale na C2/);
+  });
+});
+
+describe('C2 com contas preexistentes (ORYN_IT_IDENTITY=password, 02C.5B)', () => {
+  const PW = { OWNER: 'pw-dono-SECRETA', MEMBER: 'pw-membro-SECRETA', STRANGER: 'pw-estranho-SECRETA' };
+  const creds = {
+    ORYN_IT_USER_OWNER_EMAIL: 'dono@teste.example', ORYN_IT_USER_OWNER_PASSWORD: PW.OWNER,
+    ORYN_IT_USER_MEMBER_EMAIL: 'membro@teste.example', ORYN_IT_USER_MEMBER_PASSWORD: PW.MEMBER,
+    ORYN_IT_USER_STRANGER_EMAIL: 'estranho@teste.example', ORYN_IT_USER_STRANGER_PASSWORD: PW.STRANGER,
+  };
+  const { ORYN_IT_IDENTITY_BUDGET: _b, ...c2NoBudget } = c2;
+  const c2pw = { ...c2NoBudget, ORYN_IT_IDENTITY: 'password', ...creds };
+  const secrets = Object.values(PW);
+
+  it('liga sem CAPTCHA e sem orçamento de cadastro; 3 logins permitidos, contados à parte', () => {
+    const { ORYN_CAPTCHA_MODE: _m, ...noCaptcha } = c2pw;
+    expect(remoteGate(noCaptcha)).toMatchObject({ enabled: true, env: { identityMode: 'password', identityBudget: 0, loginBudget: 3, phase: 'C2' } });
+    const gate = remoteGate(noCaptcha);
+    expect(gate.enabled && gate.env.credentials?.OWNER.email).toBe('dono@teste.example');
+  });
+
+  it('orçamento de CADASTRO diferente de 0 no modo password → recusa (logins não usam esse saldo)', () => {
+    expectRefusal({ ...c2pw, ORYN_IT_IDENTITY_BUDGET: '8' }, /tem de ser 0/, ...secrets);
+  });
+
+  it.each(['OWNER', 'MEMBER', 'STRANGER'] as const)('senha de %s ausente → recusa citando só o nome', (role) => {
+    expectRefusal({ ...c2pw, [`ORYN_IT_USER_${role}_PASSWORD`]: '' }, new RegExp(`ORYN_IT_USER_${role}_PASSWORD`), ...secrets);
+  });
+
+  it('e-mail inválido → recusa sem citar e-mail nem senhas', () => {
+    expectRefusal({ ...c2pw, ORYN_IT_USER_MEMBER_EMAIL: 'nao-e-email' }, /ORYN_IT_USER_MEMBER_EMAIL/, 'nao-e-email', ...secrets);
+  });
+
+  it('a mesma conta em dois papéis → recusa', () => {
+    expectRefusal({ ...c2pw, ORYN_IT_USER_STRANGER_EMAIL: 'DONO@teste.example' }, /3 contas DIFERENTES/, ...secrets);
+  });
+
+  it('a C2 password continua exigindo o convite e D0', () => {
+    const { ORYN_IT_PARTITIONS_CONFIRMED: _p, ...noD0 } = c2pw;
+    expectRefusal(noD0, /ORYN_IT_PARTITIONS_CONFIRMED=1/, ...secrets);
+    const { ORYN_IT_CREATOR_INVITE: _i, ...noInvite } = c2pw;
+    expectRefusal(noInvite, /exige ORYN_IT_CREATOR_INVITE/, ...secrets);
+  });
+
+  it('modo de identidade inválido → recusa', () => {
+    expectRefusal({ ...c2pw, ORYN_IT_IDENTITY: 'magic-link' }, /ORYN_IT_IDENTITY inválido/, ...secrets);
+  });
+
+  it('password fora da C2 → recusa', () => {
+    expectRefusal({ ...base, ORYN_IT_IDENTITY: 'password', ...creds }, /só vale na C2/, ...secrets);
+  });
+
+  it('credenciais no ambiente do modo signup (padrão) → recusa citando só os nomes', () => {
+    expectRefusal({ ...c2, ...creds }, /fora do modo password/, ...secrets);
+  });
+
+  it('C2 signup (padrão) segue como no 02C.4E: exige CAPTCHA de teste e saldo ≥ 8', () => {
+    expect(remoteGate(c2)).toMatchObject({ enabled: true, env: { identityMode: 'signup', identityBudget: 8, loginBudget: 0 } });
+    const { ORYN_CAPTCHA_MODE: _m, ...noCaptcha } = c2;
+    expectRefusal(noCaptcha, /ORYN_CAPTCHA_MODE/);
+  });
+});
+
 describe('orçamento de identidades por janela (02C.4E)', () => {
-  it('as duas fases somam exatamente o teto da janela (10)', () => {
+  it('as duas fases que cadastram somam exatamente o teto da janela (10); a C0 não cadastra', () => {
     expect(WINDOW_IDENTITY_LIMIT).toBe(10);
+    expect(PHASE_SIGNUPS.C0).toBe(0);
     expect(PHASE_SIGNUPS.C1 + PHASE_SIGNUPS.C2).toBe(WINDOW_IDENTITY_LIMIT);
   });
 

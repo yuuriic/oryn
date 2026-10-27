@@ -284,7 +284,8 @@ Verificação, sem alterar nada:
     na tentativa que passar do saldo.
   - **Limitação:** a contagem é **por processo**. O controle entre processos e reexecuções é operacional
     (§10, "Orçamento entre processos").
-- **Execução:** só pela janela controlada do §10.
+- **Execução:** só pela janela controlada do §10 (C1/C2 com cadastro anônimo) ou pelo §12 (C0 sem identidade;
+  C2 com contas preexistentes por e-mail/senha, sem tocar no Auth).
 
 ## 10. Janela controlada de testes remotos (02C.4E; ⛔ cada passo marcado exige autorização própria)
 
@@ -581,3 +582,124 @@ O que **só** o Supabase real prova:
 - Turnstile;
 - criação de partições;
 - o comportamento do `supautils`.
+
+## 12. C0 (sem identidade) e C2 com contas preexistentes (02C.5B; ⛔ cada execução exige autorização própria)
+
+Caminho **sem alterar Auth nem CAPTCHA** e sem infraestrutura paga. Usa `Clear-OrynEnv` (§10) e o mesmo cuidado
+com credenciais: digitadas, nunca salvas, nunca em log.
+
+| Fase | O que roda | Efeito remoto | Cadastros / logins |
+|---|---|---|---|
+| **C0-R** | Z1 (Auth: anônimo desligado, só leitura), Z2 (12 RPCs recusadas por permissão, `42501`), Z3 e Z4 (Data API: `PGRST106`) | só leituras e recusas | 0 / 0 |
+| **C0-W** | C0-R + Z6–Z8 (recusa de canal para `anon`: oryn privado, qualquer público, qualquer privado) | **cria as partições** de `realtime.messages` (1ª conexão) | 0 / 0 |
+| **C2 password** | todo o bloco de sala, menos o #15 (precisa de 5 identidades novas) | sala, sessões, eventos `hello`/`bye`, convite consumido | 0 / 3 |
+
+Z5 (Broadcast REST com a chave publicável) está **desabilitado**: não há controle positivo sem identidade.
+
+### 12.1 C0-R ⛔ (autorização simples: só leituras e recusas)
+
+Antes: contagens de dados e `07` (§10, passo 0, linhas de estrutura e dados).
+
+```powershell
+$dir = 'integration/evidence/c0-<AAAAMMDD-HHMM>'
+try {
+  $ref = Read-Host 'ref do projeto'
+  $env:ORYN_REMOTE = '1'; $env:ORYN_REMOTE_REF = $ref
+  $env:ORYN_SUPABASE_URL = "https://$ref.supabase.co"
+  $env:ORYN_PUBLISHABLE_KEY = Read-Host 'chave publicável'
+  $env:ORYN_IT_PHASE = 'C0'                                      # orçamento de cadastro e login = 0 por construção
+  pnpm test:remote --reporter=verbose 2>&1 | Tee-Object -FilePath "$dir/c0r.txt"
+  $c0Exit = $LASTEXITCODE
+} finally {
+  Clear-OrynEnv
+}
+"C0-R exit = $c0Exit"
+```
+
+Esperado: **4 PASS** (Z1–Z4), Z5–Z9 `todo` e C1/C2 pulados. Z1 falhando por "campo ausente" é
+**inconclusivo**: conferir o anônimo no painel. Depois, a leitura tem de mostrar 0 usuários, 0 mensagens,
+0 partições e o `07` igual.
+
+### 12.2 C0-W ⛔ (autorização **explícita**: cria as partições)
+
+O mesmo bloco do 12.1, com `$env:ORYN_IT_ALLOW_WS = '1'` logo depois de `ORYN_IT_PHASE` e a saída em `"$dir/c0w.txt"`.
+Esperado: **7 PASS** (Z1–Z4, Z6–Z8). Para cada recusa, o motivo fica anotado: *credencial* (a chave `sb_*`
+não é JWT) ou *autorização*. As duas formas provam o bloqueio do `anon`, mas só a segunda exercita o RLS.
+
+**Z9 (leitura, depois):**
+- partições de `realtime.messages` criadas, cobrindo hoje (consulta da 02C.4A, seção 3);
+- `realtime.messages` = 0, `auth.users` = 0;
+- `07` com `oryn_scope` e `platform` iguais;
+- nenhum `cli_login_*`.
+
+**As partições criadas aqui atendem ao D0 da C2.**
+
+### 12.3 C2 com contas preexistentes ⛔
+
+Pré-requisitos, nesta ordem:
+1. C0-R e C0-W com PASS, e Z9 registrado. A partição de hoje existe; no dia seguinte, refazer o D0.
+2. Z1 anotou `external.email = true`: o login por e-mail está habilitado. Senão: **parar** (habilitar é mudança no Auth, fora deste caminho).
+3. ⛔ O operador cria **3 contas confirmadas** no painel (Auth › Users › Add user › e-mail e senha, com
+   confirmação automática): dono, membro e estranho. Endereços de teste controlados pela equipe; senhas
+   longas e aleatórias; **nada** registrado fora do gerenciador de senhas do operador.
+4. ⛔ Convite de criador (§10, passo 5), logo antes da execução.
+
+```powershell
+$dir = 'integration/evidence/c2pw-<AAAAMMDD-HHMM>'
+function Read-Secret([string]$prompt) { [Net.NetworkCredential]::new('', (Read-Host $prompt -AsSecureString)).Password }
+try {
+  $ref = Read-Host 'ref do projeto'
+  $env:ORYN_REMOTE = '1'; $env:ORYN_REMOTE_REF = $ref
+  $env:ORYN_SUPABASE_URL = "https://$ref.supabase.co"
+  $env:ORYN_PUBLISHABLE_KEY = Read-Host 'chave publicável'
+  $env:ORYN_IT_PHASE = 'C2'
+  $env:ORYN_IT_IDENTITY = 'password'                             # sem cadastro e sem CAPTCHA; 3 logins
+  foreach ($role in 'OWNER', 'MEMBER', 'STRANGER') {
+    Set-Item -Path "Env:ORYN_IT_USER_${role}_EMAIL" -Value (Read-Host "e-mail $role")
+    Set-Item -Path "Env:ORYN_IT_USER_${role}_PASSWORD" -Value (Read-Secret "senha $role")
+  }
+  $env:ORYN_IT_PARTITIONS_CONFIRMED = '1'                        # declaração do operador (Z9/D0)
+  $env:ORYN_IT_CREATOR_INVITE = Read-Secret 'convite de criador'
+  pnpm test:remote --reporter=verbose 2>&1 | Tee-Object -FilePath "$dir/c2pw.txt"
+  $c2Exit = $LASTEXITCODE
+} finally {
+  Clear-OrynEnv                                                  # remove também ORYN_IT_USER_*
+}
+"C2 password exit = $c2Exit"
+```
+
+O harness encerra só a sessão local de cada conta no fim (`signOut` com escopo local).
+
+Esperado: **16 PASS** e o #15 pulado (`modo password`). O **subconjunto mínimo** que precisa passar para valer
+como primeira prova autenticada:
+
+| Verificação | Testes |
+|---|---|
+| Entrada autorizada em canal privado | S1, A4 |
+| Recusa para usuário não autorizado | S2/S3 (membro e estranho), S5, S6, S7 |
+| Criação e encerramento de sessão | A1 (join → assinável → leave → recusado + `session-invalid`) |
+| `hello` e `bye` | D1, D2 |
+| Bloqueio de publicação pelo cliente | P1 (WebSocket), P2/P3 (REST), com controle positivo |
+
+Nada disso está comprovado até a execução. Depois, a auditoria do §10, passo 7: N3/N4, `06`, `07` e advisors.
+Conferir que `Select-String -Path "$dir/*" -Pattern 'eyJ|sb_(publishable|secret)_'` vem vazio. As senhas não
+aparecem no relatório: o harness não as imprime, e as mensagens de erro citam só o papel.
+
+### 12.4 Riscos e limpeza
+
+- **Contas preexistentes:** são credenciais de longa duração. Depois da campanha, **trocar as senhas** ou apagar
+  as contas (painel; escrita autorizada). Apagar as contas remove, pelo cascade da 0100, a sala, os membros,
+  as sessões, o `signal_log` e o `pair_counters`; o `creator_invite` usado sai à parte (§10, passo 9).
+- **D1:** as políticas tratam `authenticated` igual com ou sem `is_anonymous`; está testado localmente e é a
+  premissa deste caminho. O fluxo anônimo com CAPTCHA (#5) continua dependendo da janela do §10.
+- **Reexecução: não é automática.** Sem orçamento de cadastro em jogo, a C2 password pode ser repetida, mas:
+  - cada execução consome um **convite de criador novo** (autorização) e deixa outra sala `it-02c4b-*` **aberta**,
+    porque não há RPC de fechar sala (F5 da 0200);
+  - o convite `admin_issue_creator_invite(10, 1)` concede **1 sala aberta**. Com a mesma conta de dono, a 2ª
+    execução **falha** no `beforeAll` (`create_room` → `limit-reached`).
+
+  Para repetir, escolher uma (decisão do arquiteto):
+  - (a) emitir o novo convite com o limite acumulado (`admin_issue_creator_invite(10, <n.º de execuções>)`; a
+    concessão usa o maior valor, até 5);
+  - (b) apagar a sala anterior (escrita autorizada);
+  - (c) recriar a conta do dono.

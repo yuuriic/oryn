@@ -3,11 +3,17 @@
 // integration/RUNBOOK-02C.1B.md). Só credencial de cliente (chave publicável + JWT de usuários anônimos de
 // teste). Os itens que exigem SQL privilegiado, publicação do operador ou Edge Function ficam como `todo`.
 //
-// Duas fases, escolhidas por ORYN_IT_PHASE (02C.4B.1; explícitas desde o 02C.4E — cada processo roda UMA):
+// Fases, escolhidas por ORYN_IT_PHASE (02C.4B.1; explícitas desde o 02C.4E — cada processo roda UMA):
+//   C0 — (02C.5B) SEM identidade: só recusas com a chave publicável. Z1–Z4 por REST; Z6–Z8 por WebSocket só com
+//        ORYN_IT_ALLOW_WS=1 (a 1ª conexão cria as partições). Orçamento de cadastro e de login = 0 por
+//        construção: qualquer tentativa de obter usuário lança ANTES da rede. Não roda nada da C1/C2.
 //   C1 — sem sala: #5 (CAPTCHA), #3, #4, S4. É a 1ª conexão WebSocket, que cria as partições de
 //        realtime.messages. Não depende de D0. 2 tentativas de cadastro.
 //   C2 — sala: o portão EXIGE o convite e ORYN_IT_PARTITIONS_CONFIRMED=1 (D0, leitura do operador depois da
-//        C1). 8 tentativas de cadastro (3 no beforeAll + 5 no #15). Duração ~3 min (~100 s do A2).
+//        C1). Duração ~3 min (~100 s do A2). Usuários conforme ORYN_IT_IDENTITY:
+//        signup   (padrão) 8 cadastros anônimos com o CAPTCHA de teste (3 no beforeAll + 5 no #15);
+//        password (02C.5B) login em 3 contas PREEXISTENTES (dono, membro, estranho), sem cadastro nem CAPTCHA;
+//                 o #15 (que precisa de 5 identidades novas) fica pulado.
 // CAPTCHA (02C.4E): o projeto fica, na janela, com o Turnstile e o SECRET DE TESTE oficial; todo cadastro
 // leva o token fictício oficial (ORYN_CAPTCHA_MODE=turnstile-test). Tokens reais nunca passam pelo harness.
 // Orçamento (02C.4E): no máximo 10 tentativas de cadastro por JANELA (C1 + C2 = 10). Cada processo conta as
@@ -27,16 +33,21 @@ import { createClient, type RealtimeChannel, type SupabaseClient } from '@supaba
 import { afterAll, afterEach, beforeAll, describe, expect, it, type TestContext } from 'vitest';
 import { parseControlEvent } from '../../src/contracts.ts';
 import { guard, IdentityBudget, isCredentialRefusal, isServerReply, sanitize, sleep, testSignal, waitFor } from './harness-utils.ts';
-import { remoteGate, type RemoteEnv } from './remote-env.ts';
+import { remoteGate, type PasswordRole, type RemoteEnv } from './remote-env.ts';
 
 const gate = remoteGate(process.env);
 const env = gate.enabled ? gate.env : (undefined as unknown as RemoteEnv);
+const isC0 = gate.enabled && env.phase === 'C0';
+const isC0Ws = isC0 && env.allowWebSocket;
 const isC1 = gate.enabled && env.phase === 'C1';
 // O portão garante que a C2 só liga com o convite E a confirmação da partição (C2 nunca começa sem D0).
 const hasRoomSetup = gate.enabled && env.phase === 'C2' && env.creatorInvite !== undefined && env.partitionsConfirmed;
+const signsUp = gate.enabled && env.identityMode === 'signup';
 
-/** Tentativas de cadastro deste processo; o saldo vem do operador e o portão já conferiu que cobre a fase. */
-const identities = new IdentityBudget(gate.enabled ? env.identityBudget : 0);
+/** Tentativas de CADASTRO deste processo; o saldo vem do operador e o portão já conferiu que cobre a fase. */
+const identities = new IdentityBudget(gate.enabled ? env.identityBudget : 0, 'cadastro');
+/** LOGINS em contas preexistentes (02C.5B): contador separado; nunca consome o saldo de cadastro. */
+const logins = new IdentityBudget(gate.enabled ? env.loginBudget : 0, 'login');
 
 /** Identifica os dados desta execução (nome da sala), para auditoria e limpeza posterior pelo operador. */
 const RUN = crypto.randomUUID().slice(0, 8);
@@ -71,6 +82,27 @@ async function newUser(): Promise<TestUser> {
   await client.realtime.setAuth(data.session.access_token);
   return { client, uid: data.user.id, jwt: data.session.access_token };
 }
+
+/**
+ * LOGIN numa conta preexistente (02C.5B, modo `password`). Não cadastra: só autentica. A senha vem do portão
+ * (variável do terminal) e nunca aparece em mensagem; o erro cita só o papel.
+ */
+const loggedIn: SupabaseClient[] = [];
+async function signInExisting(role: PasswordRole): Promise<TestUser> {
+  guard();
+  logins.reserve(); // antes da rede
+  const cred = env.credentials?.[role];
+  if (!cred) throw new Error(`credencial ${role} ausente`);
+  const client = newClient();
+  const { data, error } = await client.auth.signInWithPassword({ email: cred.email, password: cred.password });
+  if (error || !data.session || !data.user) throw new Error(`login ${role} falhou: ${sanitize(error?.message ?? 'sem sessão')}`);
+  loggedIn.push(client);
+  await client.realtime.setAuth(data.session.access_token);
+  return { client, uid: data.user.id, jwt: data.session.access_token };
+}
+
+/** Usuário da C2 conforme o modo: cadastro anônimo (signup) ou login numa conta preexistente (password). */
+const acquireUser = (role: PasswordRole): Promise<TestUser> => (signsUp ? newUser() : signInExisting(role));
 
 /** Segundo cliente do MESMO usuário (outra aba), sem novo cadastro. */
 async function sameUserClient(user: TestUser): Promise<SupabaseClient> {
@@ -191,6 +223,99 @@ afterEach(async () => {
 
 afterAll(async () => {
   for (const c of clients) await c.removeAllChannels().catch(() => undefined);
+  // 02C.5B: encerra SÓ a sessão deste processo nas contas preexistentes (escopo local; não derruba outras).
+  for (const c of loggedIn) await c.auth.signOut({ scope: 'local' }).catch(() => undefined);
+});
+
+// --- C0 (02C.5B): sem identidade --------------------------------------------------------------------------------
+// Nenhuma chamada a newUser/signInExisting/acquireUser/signUp/signInAnonymously neste bloco (verificado por teste
+// local estático em tests/remote-harness-c0.test.ts). Só a chave publicável (papel `anon`).
+
+/** As 12 RPCs de `public`, com argumentos bem formados (nomes da 0200), para que a recusa seja de PERMISSÃO. */
+const PUBLIC_RPCS: Record<string, Record<string, unknown>> = {
+  redeem_creator_invite: { p_token: 'A'.repeat(43) },
+  create_room: { p_name: 'it-c0', p_display_name: 'it-c0', p_max_members: 2 },
+  create_room_invite: { p_room_id: crypto.randomUUID(), p_ttl_minutes: 10 },
+  revoke_room_invite: { p_room_id: crypto.randomUUID() },
+  redeem_room_invite: { p_token: 'A'.repeat(43), p_display_name: 'it-c0' },
+  join_room: { p_room_id: crypto.randomUUID() },
+  touch_session: { p_session_id: crypto.randomUUID() },
+  leave_room: { p_session_id: crypto.randomUUID() },
+  get_roster: { p_room_id: crypto.randomUUID() },
+  authorize_signal: {
+    p_session_id: crypto.randomUUID(), p_to_session_id: crypto.randomUUID(), p_client_msg_id: crypto.randomUUID(),
+    p_kind: 'offer', p_pair_epoch: 0, p_payload_bytes: 1,
+  },
+  set_signal_state: { p_msg_id: crypto.randomUUID(), p_state: 'published' },
+  ack_signals: { p_session_id: crypto.randomUUID(), p_msg_ids: [crypto.randomUUID()] },
+};
+
+describe.skipIf(!isC0)('Supabase real — C0-R: sem identidade, REST (chave publicável)', () => {
+  rit('Z1 Auth: cadastro anônimo DESLIGADO (leitura de /auth/v1/settings, sem cadastrar)', async (ctx) => {
+    guard();
+    const res = await fetch(`${env.url}/auth/v1/settings`, { headers: { apikey: env.publishableKey } });
+    expect(res.status).toBe(200);
+    const settings = (await res.json()) as { external?: Record<string, unknown>; disable_signup?: unknown };
+    const anonymous = settings.external?.['anonymous_users'];
+    await ctx.annotate(`external.anonymous_users=${String(anonymous)}; external.email=${String(settings.external?.['email'])}; disable_signup=${String(settings.disable_signup)}`);
+    // Campo ausente = INCONCLUSIVO, não PASS: o teste falha e pede verificação no painel.
+    expect(typeof anonymous, 'campo external.anonymous_users ausente: inconclusivo, conferir no painel').toBe('boolean');
+    expect(anonymous).toBe(false);
+  });
+
+  rit('Z2 as 12 RPCs de public são recusadas por PERMISSÃO só com a chave publicável (código 42501)', async (ctx) => {
+    const anon = newClient();
+    const codes: Record<string, string> = {};
+    for (const [fn, args] of Object.entries(PUBLIC_RPCS)) {
+      guard();
+      const { error } = await anon.rpc(fn, args);
+      codes[fn] = error?.code ?? 'SEM ERRO';
+    }
+    await ctx.annotate(Object.entries(codes).map(([fn, c]) => `${fn}=${c}`).join('; '));
+    expect(Object.keys(codes).length).toBe(12);
+    // Código, não texto: 42501 = insufficient_privilege. PGRST202 (função não achada) reprovaria o teste.
+    expect(Object.entries(codes).filter(([, c]) => c !== '42501').map(([fn]) => fn)).toEqual([]);
+  }, 60_000);
+
+  rit('Z3 Data API: tabelas de oryn, oryn_realtime e realtime inalcançáveis (PGRST106)', async () => {
+    const anon = newClient();
+    guard();
+    const oryn = await anon.schema('oryn').from('rooms').select('id').limit(1);
+    guard();
+    const orynRealtime = await anon.schema('oryn_realtime').from('x').select('*').limit(1);
+    guard();
+    const realtime = await anon.schema('realtime').from('messages').select('id').limit(1);
+    expect([oryn.error?.code, orynRealtime.error?.code, realtime.error?.code]).toEqual(['PGRST106', 'PGRST106', 'PGRST106']);
+  });
+
+  rit('Z4 Data API: realtime.send e oryn_realtime.can_receive_topic inalcançáveis (PGRST106)', async () => {
+    const anon = newClient();
+    guard();
+    const send = await anon.schema('realtime').rpc('send', { payload: {}, event: 'x', topic: `oryn:s:${crypto.randomUUID()}`, private: true });
+    guard();
+    const can = await anon.schema('oryn_realtime').rpc('can_receive_topic', { p_topic: `oryn:s:${crypto.randomUUID()}` });
+    expect([send.error?.code, can.error?.code]).toEqual(['PGRST106', 'PGRST106']);
+  });
+
+  it.todo('Z5 Broadcast REST só com a chave publicável: DESABILITADO na 1ª implementação (sem controle positivo; efeito nas partições NOT VERIFIED)');
+});
+
+describe.skipIf(!isC0Ws)('Supabase real — C0-W: sem identidade, WebSocket (exige ORYN_IT_ALLOW_WS=1; cria partições)', () => {
+  // A chave publicável sb_* não é JWT: o Realtime pode recusar por credencial antes do RLS. A recusa do SERVIDOR
+  // é aceita nos dois casos (é o bloqueio do `anon`), e o motivo fica anotado para distinguir.
+  rit('Z6 anon não assina oryn:s:<uuid> privado', async (ctx) => {
+    await expectRefused(await subscribe(newClient(), topicOf(crypto.randomUUID())), ctx, 'anon oryn privado', { allowCredentialError: true });
+  });
+
+  rit('Z7 anon não assina tópico qualquer com private:false ("Allow public access" desligado)', async (ctx) => {
+    await expectRefused(await subscribe(newClient(), `it-c0-${RUN}`, { private: false }), ctx, 'anon público', { allowCredentialError: true });
+  });
+
+  rit('Z8 anon não assina tópico qualquer com private:true (nenhuma política permissiva para anon)', async (ctx) => {
+    await expectRefused(await subscribe(newClient(), `it-c0-${RUN}-p`), ctx, 'anon privado qualquer', { allowCredentialError: true });
+  });
+
+  it.todo('Z9 depois de Z6–Z8 (leitura SQL do operador): partições criadas; realtime.messages = 0; auth.users = 0; 07 com fingerprints iguais');
 });
 
 // --- C1 -------------------------------------------------------------------------------------------------------
@@ -269,9 +394,11 @@ describe.skipIf(!hasRoomSetup)('Supabase real — C2: sala de teste (convite + O
   let keepaliveFailures = 0;
 
   beforeAll(async () => {
-    owner = await newUser();
-    member = await newUser();
-    stranger = await newUser();
+    owner = await acquireUser('OWNER');
+    member = await acquireUser('MEMBER');
+    stranger = await acquireUser('STRANGER');
+    // 02C.5B: no modo password, as 3 contas têm de ser identidades distintas (o portão compara e-mails; aqui, uid).
+    if (new Set([owner.uid, member.uid, stranger.uid]).size !== 3) throw new Error('dono, membro e estranho precisam ser 3 contas distintas');
     const grant = await rpc<number>(owner, 'redeem_creator_invite', { p_token: env.creatorInvite });
     if (grant.message) throw new Error(`convite de criador recusado: ${grant.message}`);
     const created = await rpc<string>(owner, 'create_room', { p_name: `it-02c4b-${RUN}`, p_display_name: 'it-owner', p_max_members: 10 });
@@ -499,7 +626,9 @@ describe.skipIf(!hasRoomSetup)('Supabase real — C2: sala de teste (convite + O
       expect(results.filter((r) => r.data![0]!.duplicate === false).length).toBe(1);
     });
 
-    rit('#15 HTTP: 5 resgates SIMULTÂNEOS do mesmo convite → exatamente 1 sucesso', async () => {
+    rit('#15 HTTP: 5 resgates SIMULTÂNEOS do mesmo convite → exatamente 1 sucesso', async (ctx) => {
+      // Precisa de 5 identidades NOVAS: só no modo signup. No modo password não há cadastro (02C.5B).
+      ctx.skip(!signsUp, 'modo password: sem cadastro de identidades novas');
       const invite = await rpc<{ token: string }[]>(owner, 'create_room_invite', { p_room_id: room, p_ttl_minutes: 5 });
       expect(invite.data?.[0]?.token !== undefined).toBe(true);
       const racers = await Promise.all(Array.from({ length: 5 }, () => newUser()));

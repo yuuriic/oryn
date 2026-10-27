@@ -78,17 +78,20 @@ export class IdentityBudgetExceeded extends Error {}
  */
 export class IdentityBudget {
   readonly limit: number;
+  /** O que é contado (02C.5B): cadastros e logins usam instâncias SEPARADAS, nunca o mesmo saldo. */
+  readonly what: string;
   #used = 0;
-  constructor(limit: number) {
+  constructor(limit: number, what = 'cadastro') {
     if (!Number.isInteger(limit) || limit < 0) throw new RangeError('orçamento inválido');
     this.limit = limit;
+    this.what = what;
   }
   get used(): number {
     return this.#used;
   }
   /** Reserva uma tentativa; lança (sem tocar na rede) se o orçamento acabou. */
   reserve(): void {
-    if (this.#used >= this.limit) throw new IdentityBudgetExceeded(`orçamento de identidades esgotado (${this.#used}/${this.limit}): nenhuma nova tentativa de cadastro`);
+    if (this.#used >= this.limit) throw new IdentityBudgetExceeded(`orçamento de ${this.what} esgotado (${this.#used}/${this.limit}): nenhuma nova tentativa de ${this.what}`);
     this.#used += 1;
   }
 }
