@@ -591,48 +591,95 @@ com credenciais: digitadas, nunca salvas, nunca em log.
 | Fase | O que roda | Efeito remoto | Cadastros / logins |
 |---|---|---|---|
 | **C0-R** | Z1 (Auth: anônimo desligado, só leitura), Z2 (12 RPCs recusadas por permissão, `42501`), Z3 e Z4 (Data API: `PGRST106`) | só leituras e recusas | 0 / 0 |
-| **C0-W** | C0-R + Z6–Z8 (recusa de canal para `anon`: oryn privado, qualquer público, qualquer privado) | **cria as partições** de `realtime.messages` (1ª conexão) | 0 / 0 |
+| **C0-W** | só Z6–Z8 (02C.6A: filtro `-t C0-W`); recusa de canal para `anon`: oryn privado, qualquer público, qualquer privado | **cria as partições** de `realtime.messages` (1ª conexão) | 0 / 0 |
 | **C2 password** | todo o bloco de sala, menos o #15 (precisa de 5 identidades novas) | sala, sessões, eventos `hello`/`bye`, convite consumido | 0 / 3 |
 
 Z5 (Broadcast REST com a chave publicável) está **desabilitado**: não há controle positivo sem identidade.
+
+### Executor da C0 (02C.6A)
+
+C0-R e C0-W rodam pelo executor versionado `integration/scripts/oryn-c0.ps1`, num processo próprio do
+PowerShell 7. Ele substitui o bloco colado à mão, que falhou na 1ª C0-R por causa do console (02C.5C).
+
+| Garantia | Como |
+|---|---|
+| Só o commit aprovado | `-ApprovedCommit <sha>` obrigatório. Branch, HEAD e árvore limpa conferidos antes de qualquer pergunta |
+| Ambiente limpo | Nenhuma `ORYN_*`, `*CAPTCHA*` ou credencial administrativa antes; o conjunto exato de `ORYN_*` da fase depois de preencher; `Clear-OrynEnv` no `finally` |
+| Só o bloco do modo | `-t C0-R` ou `-t C0-W` (Vitest). Validado offline com a rede bloqueada: `-t C0-W` executa só Z6–Z8 |
+| Pasta de evidências | `integration/evidence/c0-r-…` ou `c0-w-…` (UTC; `-2`, `-3`, nunca sobrescreve), criada **antes** do relatório. Precisa ser ignorada pelo Git |
+| Exit code | Lido logo depois do pipeline, com `PSNativeCommandUseErrorActionPreference = $false`; gravado em `horario.txt` (`ausente` se não houver) |
+| Relatório legível | Console em UTF-8 e `NO_COLOR=1` durante a execução, com restauração depois. O validador ainda remove ANSI e repara a cp850 |
+| Validação | Exatamente os Z do modo com `✓`, 0 falhas, nada aprovado fora do bloco. Exit 0 **sozinho** nunca basta |
+| Sigilo | Só contagens de padrões sensíveis; quarentena do bruto se houver; compartilhar só `*.resumo.txt` e `horario.txt` |
+
+Autoteste offline (sem rede, sem Supabase), a rodar antes de cada autorização:
+`pwsh -NoProfile -File integration/scripts/oryn-c0.selftest.ps1`
 
 ### 12.1 C0-R ⛔ (autorização simples: só leituras e recusas)
 
 Antes: contagens de dados e `07` (§10, passo 0, linhas de estrutura e dados).
 
 ```powershell
-$dir = 'integration/evidence/c0-<AAAAMMDD-HHMM>'
-try {
-  $ref = Read-Host 'ref do projeto'
-  $env:ORYN_REMOTE = '1'; $env:ORYN_REMOTE_REF = $ref
-  $env:ORYN_SUPABASE_URL = "https://$ref.supabase.co"
-  $env:ORYN_PUBLISHABLE_KEY = Read-Host 'chave publicável'
-  $env:ORYN_IT_PHASE = 'C0'                                      # orçamento de cadastro e login = 0 por construção
-  pnpm test:remote --reporter=verbose 2>&1 | Tee-Object -FilePath "$dir/c0r.txt"
-  $c0Exit = $LASTEXITCODE
-} finally {
-  Clear-OrynEnv
-}
-"C0-R exit = $c0Exit"
+pwsh -NoProfile -File integration/scripts/oryn-c0.ps1 -Mode R -ApprovedCommit <sha aprovado>
 ```
 
-Esperado: **4 PASS** (Z1–Z4), Z5–Z9 `todo` e C1/C2 pulados. Z1 falhando por "campo ausente" é
-**inconclusivo**: conferir o anônimo no painel. Depois, a leitura tem de mostrar 0 usuários, 0 mensagens,
-0 partições e o `07` igual.
+Esperado: **4 PASS** (Z1–Z4); o resto pulado ou `todo`. Z1 falhando por "campo ausente" é **inconclusivo**:
+conferir o anônimo no painel. Depois, a leitura tem de mostrar 0 usuários, 0 mensagens, 0 partições e o
+`07` igual. Executada em 2026-10-27 (02C.5C) e auditada (02C.5D).
 
-### 12.2 C0-W ⛔ (autorização **explícita**: cria as partições)
+### 12.2 C0-W ⛔ (autorização **explícita**: abre WebSocket e cria as partições)
 
-O mesmo bloco do 12.1, com `$env:ORYN_IT_ALLOW_WS = '1'` logo depois de `ORYN_IT_PHASE` e a saída em `"$dir/c0w.txt"`.
-Esperado: **7 PASS** (Z1–Z4, Z6–Z8). Para cada recusa, o motivo fica anotado: *credencial* (a chave `sb_*`
-não é JWT) ou *autorização*. As duas formas provam o bloqueio do `anon`, mas só a segunda exercita o RLS.
+**Pré-condições** (todas; senão, não executar):
+1. C0-R aprovada e auditada.
+2. Autorização explícita da C0-W. O executor pede que o operador digite `C0-W`.
+3. Painel, Realtime › Settings: **"Allow public access" desligado**. Ligado, o Z7 falha, e é uma falha
+   verdadeira: a configuração não está como o plano exige.
+4. Leitura de **antes**: `integration/sql/11_c0w_postflight.sql`. Tudo PASS, menos o item 1, que dá **FAIL
+   com 0**, como esperado antes. Mais o `07`.
+5. Autoteste do executor: 0 FAIL.
 
-**Z9 (leitura, depois):**
-- partições de `realtime.messages` criadas, cobrindo hoje (consulta da 02C.4A, seção 3);
-- `realtime.messages` = 0, `auth.users` = 0;
-- `07` com `oryn_scope` e `platform` iguais;
-- nenhum `cli_login_*`.
+```powershell
+pwsh -NoProfile -File integration/scripts/oryn-c0.ps1 -Mode W -ApprovedCommit <sha aprovado>
+```
 
-**As partições criadas aqui atendem ao D0 da C2.**
+O que cada teste faz (cada um com um cliente novo, só a chave publicável, papel `anon`):
+
+| Teste | Tópico | Canal | Operação |
+|---|---|---|---|
+| Z6 | `oryn:s:<uuid aleatório>` | privado | `subscribe` (entrada no canal) |
+| Z7 | `it-c0-<execução>` | **público** (`private: false`) | `subscribe` |
+| Z8 | `it-c0-<execução>-p` | privado | `subscribe` |
+
+- Nenhum teste publica (`send`, `httpSend`, Presence), cria identidade, faz login ou usa papel
+  administrativo. Isso é garantido por teste estático: `tests/remote-harness-c0.test.ts`.
+- **PASS** de cada um: estado `CHANNEL_ERROR` **e** recusa vinda do servidor (payload de erro da resposta de
+  entrada, não fechamento de socket).
+- **Timeout não é recusa.** Sem resposta em 10 s (`TIMED_OUT`) ou 12 s (`NO_REPLY`), queda de transporte ou
+  `SUBSCRIBED` reprovam o teste.
+- Canal recusado é removido na hora, sem novas tentativas. O socket fecha quando o cliente fica sem canais, e o
+  `afterAll` remove todos.
+- O motivo fica anotado e é classificado pelo executor:
+  - *credencial*: o motivo cita `jwt` ou `token`, porque a chave `sb_*` não é JWT;
+  - *autorização*: o RLS ou a configuração recusou.
+  As duas formas provam o bloqueio do `anon`, mas só a segunda exercita o RLS.
+
+Esperado: **3 PASS** (Z6–Z8), nada mais aprovado.
+
+**Efeitos no Supabase:**
+- **Esperados** (operacionais do Realtime): as partições diárias `realtime.messages_AAAA_MM_DD` e seus
+  índices, criados na 1ª conexão. Ficam **fora** dos dois fingerprints por construção.
+- **Indevidos:** qualquer linha em `realtime.messages`; qualquer usuário, sessão, sala ou convite; fingerprint
+  diferente; migração nova; `cli_login_*`. Qualquer um deles = **FAIL** e investigação antes da C2.
+
+**Z9 (leitura de depois)**, com a autorização de leitura: `integration/sql/11_c0w_postflight.sql` e `07`.
+- Itens 1–11 PASS. O item 1 é a partição cobrindo **agora** (UTC) = D0.
+- Partições só no padrão `messages_AAAA_MM_DD`.
+- `07` igual ao baseline.
+- Se a C0-W passar **sem** criar partição (item 1 FAIL depois), a segurança está provada, mas a premissa D0
+  não: a C2 fica bloqueada até um novo diagnóstico.
+
+**As partições criadas aqui atendem ao D0 da C2 no mesmo dia (UTC).** O Realtime remove as antigas, então no dia
+seguinte é preciso refazer o D0.
 
 ### 12.3 C2 com contas preexistentes ⛔
 
@@ -646,7 +693,9 @@ Pré-requisitos, nesta ordem:
 
 ```powershell
 $dir = 'integration/evidence/c2pw-<AAAAMMDD-HHMM>'
+New-Item -ItemType Directory -Path $dir -ErrorAction Stop | Out-Null   # 02C.6A: o Tee-Object não cria a pasta
 function Read-Secret([string]$prompt) { [Net.NetworkCredential]::new('', (Read-Host $prompt -AsSecureString)).Password }
+$env:NO_COLOR = '1'; [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)   # relatório sem ANSI nem cp850
 try {
   $ref = Read-Host 'ref do projeto'
   $env:ORYN_REMOTE = '1'; $env:ORYN_REMOTE_REF = $ref

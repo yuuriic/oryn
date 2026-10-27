@@ -33,6 +33,28 @@ describe('harness remoto: bloco C0 sem identidade', () => {
     expect(code).not.toMatch(pattern);
   });
 
+  // 02C.6A: a C0-W só ASSINA. Nenhuma publicação (WebSocket, REST ou Presence), nenhum token trocado.
+  it.each([
+    ['send (Broadcast pelo WebSocket)', /\.send\(/],
+    ['httpSend (Broadcast REST)', /httpSend/],
+    ['track (Presence)', /\.track\(/],
+    ['presence: true', /presence:\s*true/],
+    ['setAuth', /setAuth\(/],
+  ])('o bloco C0 não publica: sem %s', (_label, pattern) => {
+    const code = c0.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+    expect(code).not.toMatch(pattern);
+  });
+
+  it('o helper subscribe usado pela C0-W só assina: sem send/track/httpSend e com timeout que não vira recusa', () => {
+    const body = source.slice(source.indexOf('async function subscribe('), source.indexOf('const release ='));
+    expect(body.length).toBeGreaterThan(200);
+    expect(body).not.toMatch(/\.send\(|\.track\(|httpSend/);
+    // Sem resposta do servidor em 12 s → NO_REPLY; o expectRefused só aceita CHANNEL_ERROR vindo do servidor.
+    expect(body).toMatch(/setTimeout\(\(\) => finish\('NO_REPLY'\)/);
+    expect(source).toMatch(/expect\(sub\.status, `\$\{label\}: estado`\)\.toBe\('CHANNEL_ERROR'\)/);
+    expect(source).toMatch(/expect\(sub\.refusedByServer, [^)]*\)\.toBe\(true\)/);
+  });
+
   it('autocontrole: o padrão do helper `rpc(` reprovaria uma chamada livre e aceita `anon.rpc(`', () => {
     expect('await rpc(user, "x", {})').toMatch(/(?<![.\w])rpc\(/);
     expect('await anon.rpc("x", {})').not.toMatch(/(?<![.\w])rpc\(/);

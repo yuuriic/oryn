@@ -200,3 +200,67 @@ describe('06_cli_side_effects.sql e 07_initial_state.sql (02C.3A.1)', () => {
     }
   });
 });
+
+describe('11_c0w_postflight.sql (02C.6A, Z9)', () => {
+  // O shim não tem as tabelas de sessão do Auth nem o histórico da CLI: stubs mínimos com o mesmo nome.
+  const stubs = `create table auth.identities (id uuid primary key);
+                 create table auth.sessions (id uuid primary key);
+                 create table auth.refresh_tokens (id bigint primary key);
+                 create schema supabase_migrations;
+                 create table supabase_migrations.schema_migrations (version text primary key);
+                 insert into supabase_migrations.schema_migrations values ('20261023000100'), ('20261023000200'), ('20261023000300')`;
+  const z9 = async (db: TestDb) => {
+    const res = await db.pg.exec(sql('11_c0w_postflight.sql'));
+    const rows = res.find((r) => r.fields.some((f) => f.name === 'status'))!.rows as Row[];
+    return Object.fromEntries(rows.map((r) => [r.item.startsWith('INFO') ? r.item : r.item.split(' ')[0]!, r]));
+  };
+  const PARTS = 'INFO partições criadas (esperado: só realtime.messages_AAAA_MM_DD)';
+  const OFF_PATTERN = 'INFO partições fora do padrão de nome messages_AAAA_MM_DD';
+
+  it('banco migrado e vazio: dados, migrações e papéis PASS; fingerprints FAIL fora do Supabase (baseline do projeto real)', async () => {
+    const db = await TestDb.create();
+    try {
+      await db.pg.exec(stubs);
+      const r = await z9(db);
+      for (const item of ['1', '2', '3', '4', '5', '6', '7', '10', '11']) expect(r[item]!.status, `item ${item}: ${r[item]!.actual}`).toBe('PASS');
+      // O shim tem objetos de teste a mais: os md5 do projeto real não batem aqui, e o script acusa.
+      expect(r['8']!.status).toBe('FAIL');
+      expect(r['9']!.status).toBe('FAIL');
+      // A partição larga do shim cobre agora (item 1) e é registrada; o nome fora do padrão diário é acusado.
+      expect(r[PARTS]!.actual).toMatch(/^messages_shim FOR VALUES FROM/);
+      expect(r[OFF_PATTERN]!.status).toBe('FAIL');
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('acusa mensagem gravada, usuário, migração nova e cli_login_*; sem partição cobrindo agora, o D0 falha', async () => {
+    const db = await TestDb.create();
+    try {
+      await db.pg.exec(stubs);
+      await db.pg.exec(`insert into realtime.messages (topic, extension, payload, event) values ('it-c0-x', 'broadcast', '{}', 'x');
+                        insert into auth.users (id) values (gen_random_uuid());
+                        insert into supabase_migrations.schema_migrations values ('20261099000400');
+                        create role cli_login_postgres nologin`);
+      let r = await z9(db);
+      expect(['2', '4', '10', '11'].map((i) => r[i]!.status)).toEqual(['FAIL', 'FAIL', 'FAIL', 'FAIL']);
+      // Só partições diárias de outro dia: D0 não satisfeito, e o nome no padrão não é acusado.
+      await db.pg.exec(`delete from realtime.messages; alter table realtime.messages detach partition realtime.messages_shim;
+                        create table realtime.messages_2101_01_01 partition of realtime.messages for values from ('2101-01-01') to ('2101-01-02')`);
+      r = await z9(db);
+      expect(r['1']!.status).toBe('FAIL');
+      expect(r['1']!.actual).toBe('0');
+      expect(r[OFF_PATTERN]!.status).toBe('INFO');
+      expect(r[PARTS]!.actual).toMatch(/^messages_2101_01_01 FOR VALUES FROM/);
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('roda em transação somente leitura e termina em ROLLBACK; nenhum comando de escrita', () => {
+    const text = sql('11_c0w_postflight.sql');
+    expect(text).toMatch(/^begin;\r?\nset transaction read only;/m);
+    expect(text.trimEnd()).toMatch(/rollback;$/);
+    expect(text.replace(/--.*$/gm, '')).not.toMatch(/\b(insert|update|delete|truncate|create|drop|alter|grant|revoke|copy)\b/i);
+  });
+});
