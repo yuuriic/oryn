@@ -55,6 +55,31 @@ describe('harness remoto: bloco C0 sem identidade', () => {
     expect(source).toMatch(/expect\(sub\.refusedByServer, [^)]*\)\.toBe\(true\)/);
   });
 
+  // 02C.6E: cada recusa exige o MOTIVO certo. A 1ª C0-W aprovou um MissingPartition por falta disto.
+  it.each([
+    ['Z6', /rit\('Z6 [^']*'[\s\S]*?expectRefused\([^;]*'anon oryn privado', 'authorization'\)/],
+    ['Z7', /rit\('Z7 [^']*'[\s\S]*?expectRefused\([^;]*\{ private: false \}\)[^;]*'anon público', 'private-only'\)/],
+    ['Z8', /rit\('Z8 [^']*'[\s\S]*?expectRefused\([^;]*'anon privado qualquer', 'authorization'\)/],
+  ])('%s exige o motivo esperado', (_z, pattern) => {
+    expect(c0).toMatch(pattern);
+  });
+
+  it('C2: #7/S5 exige PrivateOnly; S6 (anon) exige Unauthorized; ninguém tolera erro de credencial', () => {
+    expect(source).toMatch(/\{ private: false \}\), ctx, 'private:false', 'private-only'\)/);
+    expect(source).toMatch(/subscribe\(newClient\(\), topicOf\(ownerSession\)\), ctx, 'anon', 'authorization'\)/);
+    expect(source).not.toMatch(/allowCredentialError|isCredentialRefusal/);
+  });
+
+  it('expectRefused decide pelo resultado classificado e anota o veredito para o executor', () => {
+    const body = source.slice(source.indexOf('async function expectRefused('), source.indexOf('/** Broadcast REST'));
+    expect(body).toMatch(/refusalVerdict\(sub\.outcome, expected\)/);
+    expect(body).toMatch(/\[motivo=\$\{sub\.outcome\}; esperado=\$\{expected\}; veredito=\$\{verdict\}\]/);
+    expect(body).toMatch(/expect\(sub\.outcome, `[^`]*`\)\.toBe\(expected\)/);
+    // O resultado é classificado a partir do texto BRUTO do servidor, não do sanitizado/truncado.
+    expect(source).toMatch(/rawReason = serverReason\(err\)/);
+    expect(source).toMatch(/result\.outcome = joinOutcome\(status, result\.refusedByServer, rawReason\)/);
+  });
+
   it('autocontrole: o padrão do helper `rpc(` reprovaria uma chamada livre e aceita `anon.rpc(`', () => {
     expect('await rpc(user, "x", {})').toMatch(/(?<![.\w])rpc\(/);
     expect('await anon.rpc("x", {})').not.toMatch(/(?<![.\w])rpc\(/);

@@ -23,6 +23,8 @@
 // Confiabilidade (02C.4B.1):
 // - Recusa de entrada só conta se veio do SERVIDOR (resposta de erro com `reason`); queda de transporte,
 //   timeout ou falta de resposta reprovam o teste negativo em vez de passar por engano.
+// - (02C.6E) E só com o MOTIVO esperado: `Unauthorized` (RLS) ou `PrivateOnly` (canal público desligado).
+//   Credencial, infraestrutura (ex.: MissingPartition) ou motivo desconhecido = INCONCLUSIVO, nunca PASS.
 // - Todo teste de NÃO entrega termina com um controle positivo no mesmo canal (um evento legítimo do servidor
 //   chega), e por isso fica no bloco de entrega, depois de D1/D2.
 // - Teste encerrado (timeout/cancelamento) não inicia mais nenhuma operação remota (AsyncLocalStorage + signal).
@@ -32,7 +34,9 @@
 import { createClient, type RealtimeChannel, type SupabaseClient } from '@supabase/supabase-js';
 import { afterAll, afterEach, beforeAll, describe, expect, it, type TestContext } from 'vitest';
 import { parseControlEvent } from '../../src/contracts.ts';
-import { guard, IdentityBudget, isCredentialRefusal, isServerReply, sanitize, sleep, testSignal, waitFor } from './harness-utils.ts';
+import {
+  guard, IdentityBudget, isServerReply, joinOutcome, refusalVerdict, sanitize, serverReason, sleep, testSignal, waitFor, type JoinOutcome,
+} from './harness-utils.ts';
 import { remoteGate, type PasswordRole, type RemoteEnv } from './remote-env.ts';
 
 const gate = remoteGate(process.env);
@@ -130,7 +134,10 @@ const joinRoom = async (user: TestUser, room: string): Promise<string> => {
 interface Sub {
   status: string;
   refusedByServer: boolean;
+  /** Motivo sanitizado, para anotação. */
   reason: string;
+  /** Resultado classificado a partir do motivo BRUTO do servidor (02C.6E). */
+  outcome: JoinOutcome;
   client: SupabaseClient;
   channel: RealtimeChannel;
   received: { event: string; payload: unknown }[];
@@ -156,7 +163,8 @@ async function subscribe(client: SupabaseClient, topic: string, opts: { private:
       ...(opts.presence ? { presence: { key: `it-${RUN}`, enabled: true } } : {}),
     };
     const channel = client.channel(topic, { config });
-    const result: Sub = { status: 'PENDING', refusedByServer: false, reason: '', client, channel, received: [], presenceJoins: 0 };
+    const result: Sub = { status: 'PENDING', refusedByServer: false, reason: '', outcome: 'transport', client, channel, received: [], presenceJoins: 0 };
+    let rawReason = '';
     channel.on('broadcast', { event: '*' }, (msg) => result.received.push({ event: String(msg['event']), payload: msg['payload'] }));
     if (opts.presence) channel.on('presence', { event: 'join' }, () => void (result.presenceJoins += 1));
     let done = false;
@@ -165,6 +173,7 @@ async function subscribe(client: SupabaseClient, topic: string, opts: { private:
       done = true;
       clearTimeout(noReply);
       result.status = status;
+      result.outcome = joinOutcome(status, result.refusedByServer, rawReason);
       resolve(result);
     };
     const noReply = setTimeout(() => finish('NO_REPLY'), 12_000);
@@ -172,7 +181,8 @@ async function subscribe(client: SupabaseClient, topic: string, opts: { private:
       if (status !== 'SUBSCRIBED' && status !== 'CHANNEL_ERROR' && status !== 'TIMED_OUT' && status !== 'CLOSED') return;
       if (status === 'CHANNEL_ERROR' && !done) {
         result.refusedByServer = isServerReply(err);
-        result.reason = sanitize(err?.message);
+        rawReason = serverReason(err);
+        result.reason = sanitize(rawReason);
       }
       finish(status);
     }, 10_000);
@@ -188,14 +198,19 @@ const release = async (sub: Sub) => {
 };
 
 /**
- * Negativo de entrada: só passa com RECUSA DO SERVIDOR. Timeout, falta de resposta ou queda de transporte
- * reprovam (falso PASS evitado). Recusa por credencial (JWT/token) só é aceita onde o teste a espera (anon).
+ * Negativo de entrada (02C.6E): só passa com RECUSA DO SERVIDOR pelo MOTIVO esperado.
+ * - `authorization` (padrão): `Unauthorized` do RLS em realtime.messages;
+ * - `private-only`: `PrivateOnly`, canal público desligado no projeto.
+ * A anotação carrega o veredito para o executor: `[motivo=…; esperado=…; veredito=PASS|FAIL|INCONCLUSIVO]`.
+ * Entrada aceita ou o outro motivo de acesso = FAIL; credencial, infraestrutura, desconhecido, timeout ou
+ * transporte = INCONCLUSIVO. Os dois reprovam o teste: só o veredito difere.
  */
-async function expectRefused(sub: Sub, ctx: TestContext, label: string, opts: { allowCredentialError?: boolean } = {}) {
-  await ctx.annotate(`${label}: ${sub.status}${sub.reason ? ` (${sub.reason})` : ''}`);
+async function expectRefused(sub: Sub, ctx: TestContext, label: string, expected: 'authorization' | 'private-only' = 'authorization') {
+  const verdict = refusalVerdict(sub.outcome, expected);
+  await ctx.annotate(`${label}: ${sub.status}${sub.reason ? ` (${sub.reason})` : ''} [motivo=${sub.outcome}; esperado=${expected}; veredito=${verdict}]`);
   expect(sub.status, `${label}: estado`).toBe('CHANNEL_ERROR');
   expect(sub.refusedByServer, `${label}: a recusa veio do servidor, não do transporte`).toBe(true);
-  if (!opts.allowCredentialError) expect(isCredentialRefusal(sub.reason), `${label}: recusa por credencial, não por autorização`).toBe(false);
+  expect(sub.outcome, `${label}: motivo da recusa (veredito ${verdict})`).toBe(expected);
 }
 
 /** Broadcast REST pelo cliente: `httpSend` REJEITA em qualquer status ≠ 202 (realtime-js 2.118). */
@@ -301,18 +316,19 @@ describe.skipIf(!isC0)('Supabase real — C0-R: sem identidade, REST (chave publ
 });
 
 describe.skipIf(!isC0Ws)('Supabase real — C0-W: sem identidade, WebSocket (exige ORYN_IT_ALLOW_WS=1; cria partições)', () => {
-  // A chave publicável sb_* não é JWT: o Realtime pode recusar por credencial antes do RLS. A recusa do SERVIDOR
-  // é aceita nos dois casos (é o bloqueio do `anon`), e o motivo fica anotado para distinguir.
-  rit('Z6 anon não assina oryn:s:<uuid> privado', async (ctx) => {
-    await expectRefused(await subscribe(newClient(), topicOf(crypto.randomUUID())), ctx, 'anon oryn privado', { allowCredentialError: true });
+  // 02C.6E: a 1ª C0-W mostrou que a chave publicável é ACEITA como credencial (Z7 entrou; Z8 recusado pelo RLS).
+  // Recusa por credencial não prova nada aqui: só o motivo exato passa. Z6 e Z8 testam o RLS (`Unauthorized`);
+  // Z7 testa a CONFIGURAÇÃO do projeto (`PrivateOnly`; canal público não passa pelo RLS).
+  rit('Z6 anon não assina oryn:s:<uuid> privado (Unauthorized)', async (ctx) => {
+    await expectRefused(await subscribe(newClient(), topicOf(crypto.randomUUID())), ctx, 'anon oryn privado', 'authorization');
   });
 
-  rit('Z7 anon não assina tópico qualquer com private:false ("Allow public access" desligado)', async (ctx) => {
-    await expectRefused(await subscribe(newClient(), `it-c0-${RUN}`, { private: false }), ctx, 'anon público', { allowCredentialError: true });
+  rit('Z7 anon não assina tópico qualquer com private:false (PrivateOnly: "Allow public access" desligado)', async (ctx) => {
+    await expectRefused(await subscribe(newClient(), `it-c0-${RUN}`, { private: false }), ctx, 'anon público', 'private-only');
   });
 
-  rit('Z8 anon não assina tópico qualquer com private:true (nenhuma política permissiva para anon)', async (ctx) => {
-    await expectRefused(await subscribe(newClient(), `it-c0-${RUN}-p`), ctx, 'anon privado qualquer', { allowCredentialError: true });
+  rit('Z8 anon não assina tópico qualquer com private:true (Unauthorized: nenhuma política permissiva para anon)', async (ctx) => {
+    await expectRefused(await subscribe(newClient(), `it-c0-${RUN}-p`), ctx, 'anon privado qualquer', 'authorization');
   });
 
   it.todo('Z9 depois de Z6–Z8 (leitura SQL do operador): partições criadas; realtime.messages = 0; auth.users = 0; 07 com fingerprints iguais');
@@ -447,11 +463,11 @@ describe.skipIf(!hasRoomSetup)('Supabase real — C2: sala de teste (convite + O
     }, 60_000);
 
     rit('#7/S5 o próprio tópico sem private:true é recusado ("Allow public access" desligado)', async (ctx) => {
-      await expectRefused(await subscribe(await sameUserClient(owner), topicOf(ownerSession), { private: false }), ctx, 'private:false');
+      await expectRefused(await subscribe(await sameUserClient(owner), topicOf(ownerSession), { private: false }), ctx, 'private:false', 'private-only');
     });
 
     rit('S6 só a chave publicável (papel anon, sem JWT de usuário) não assina uma sessão viva', async (ctx) => {
-      await expectRefused(await subscribe(newClient(), topicOf(ownerSession)), ctx, 'anon', { allowCredentialError: true });
+      await expectRefused(await subscribe(newClient(), topicOf(ownerSession)), ctx, 'anon', 'authorization');
     });
 
     rit('S7 variações do próprio tópico são recusadas (maiúsculas, UUID maiúsculo, outro prefixo, sufixo)', async (ctx) => {
@@ -474,6 +490,8 @@ describe.skipIf(!hasRoomSetup)('Supabase real — C2: sala de teste (convite + O
         await ctx.annotate(`${label}: ${sub.status}${sub.reason ? ` (${sub.reason})` : ''}`);
         expect(['SUBSCRIBED', 'CHANNEL_ERROR'], `${label}: entrada conclusiva`).toContain(sub.status);
         if (sub.status === 'CHANNEL_ERROR') expect(sub.refusedByServer, `${label}: recusa do servidor`).toBe(true);
+        // 02C.6E: recusa só vale se for do RLS; MissingPartition ou outro erro não é "Presence bloqueada".
+        if (sub.status === 'CHANNEL_ERROR') expect(sub.outcome, `${label}: motivo da recusa`).toBe('authorization');
       }
       if (tracker.status === 'SUBSCRIBED') {
         guard();

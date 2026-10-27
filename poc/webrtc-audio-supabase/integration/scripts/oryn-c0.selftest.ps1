@@ -1,6 +1,7 @@
-# ORYN — autoteste OFFLINE do executor C0 (02C.6A). Carrega só oryn-c0.lib.ps1 (funções); nenhuma rede, nenhum
-# Supabase, nenhum Git de escrita. Uso: pwsh -NoProfile -File integration/scripts/oryn-c0.selftest.ps1 [-RealC0R <c0r.txt>]
-param([string]$RealC0R)
+# ORYN — autoteste OFFLINE do executor C0 (02C.6A; motivos de recusa no 02C.6E). Carrega só oryn-c0.lib.ps1
+# (funções); nenhuma rede, nenhum Supabase, nenhum Git de escrita. Uso:
+#   pwsh -NoProfile -File integration/scripts/oryn-c0.selftest.ps1 [-RealC0R <c0r.txt>] [-RealC0W <c0w.txt>]
+param([string]$RealC0R, [string]$RealC0W)
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'oryn-c0.lib.ps1')
 $results = [System.Collections.Generic.List[string]]::new()
@@ -104,50 +105,108 @@ Check 'C0-R: relatório no modo W reprova (Z errados)' { if ((Test-C0Report -Lin
 
 # --- relatório C0-W ---
 $wBlock = 'Supabase real — C0-W: sem identidade, WebSocket (exige ORYN_IT_ALLOW_WS=1; cria partições)'
-function New-WReport([string[]]$Notes, [string]$Tests = '3 passed | 39 skipped | 1 todo (43)') {
-  @(' ↓ tests/remote/integration.remote.test.ts > Supabase real — C0-R: sem identidade, REST (chave publicável) > Z1 Auth')
-  $names = @('Z6 anon não assina oryn:s:<uuid> privado', 'Z7 anon não assina tópico qualquer com private:false', 'Z8 anon não assina tópico qualquer com private:true')
-  for ($i = 0; $i -lt 3; $i++) {
-    " ✓ tests/remote/integration.remote.test.ts > $wBlock > $($names[$i]) 300ms"; ''
-    "   ❯ tests/remote/integration.remote.test.ts:195:15 notice"
-    "     ↳ $($Notes[$i])"; ''
+# 02C.6E: textos REAIS do Realtime (`<Código>: <mensagem>`), como na 1ª C0-W.
+$R = @{
+  authz   = 'Unauthorized: You do not have permissions to read from this Channel topic: it-c0-x'
+  private = 'PrivateOnly: This project only allows private channels'
+  missing = 'MissingPartition: Realtime was unable to find the expected messages partition'
+  jwt     = 'InvalidJWTToken: Token expiration time is invalid'
+  unknown = 'UnknownErrorOnChannel: boom'
+}
+$wExpected = @{ Z6 = 'authorization'; Z7 = 'private-only'; Z8 = 'authorization' }
+$wLabels = @{ Z6 = 'anon oryn privado'; Z7 = 'anon público'; Z8 = 'anon privado qualquer' }
+# Reproduz o expectRefused do harness: anotação com [motivo; esperado; veredito] e ✓ só com PASS.
+function New-HarnessZ([string]$Z, [string]$Status, [string]$Reason = '') {
+  $outcome = Get-JoinOutcome $Status $Reason
+  $verdict = Get-RefusalVerdict $outcome $wExpected[$Z]
+  [pscustomobject]@{ Z = $Z; Marker = $(if ($verdict -eq 'PASS') { '✓' } else { '×' })
+    Note = "$($wLabels[$Z]): $Status$(if ($Reason) { " ($Reason)" }) [motivo=$outcome; esperado=$($wExpected[$Z]); veredito=$verdict]" }
+}
+function New-WReport([object[]]$Zs) {
+  $names = @{ Z6 = 'Z6 anon não assina oryn:s:<uuid> privado (Unauthorized)'; Z7 = 'Z7 anon não assina tópico qualquer com private:false (PrivateOnly)'; Z8 = 'Z8 anon não assina tópico qualquer com private:true (Unauthorized)' }
+  ' ↓ tests/remote/integration.remote.test.ts > Supabase real — C0-R: sem identidade, REST (chave publicável) > Z1 Auth'
+  foreach ($z in $Zs) {
+    " $($z.Marker) tests/remote/integration.remote.test.ts > $wBlock > $($names[$z.Z]) 300ms"; ''
+    if ($z.Note) { '   ❯ tests/remote/integration.remote.test.ts:199:15 notice'; "     ↳ $($z.Note)"; '' }
   }
   " □ tests/remote/integration.remote.test.ts > $wBlock > Z9 depois de Z6–Z8"
-  ' Test Files  1 passed (1)'
-  "      Tests  $Tests"
+  $p = @($Zs | Where-Object Marker -eq '✓').Count; $f = @($Zs | Where-Object Marker -eq '×').Count
+  " Test Files  1 $(if ($f) { 'failed' } else { 'passed' }) (1)"
+  "      Tests  $(if ($f) { "$f failed | " })$p passed | 39 skipped | 1 todo (43)"
 }
-$authz = 'CHANNEL_ERROR (Unauthorized: You do not have permissions to read from this Channel topic: x)'
-$okW = New-WReport @("anon oryn privado: $authz", "anon público: $authz", "anon privado qualquer: $authz")
-Check 'C0-W: Z6–Z8 com recusa do servidor = Ok; motivo classificado' {
-  $r = Test-C0Report -Lines $okW -Mode W
-  if (-not $r.Ok -or $r.ZFound -ne 'Z6,Z7,Z8') { throw ($r | ConvertTo-Json -Compress -Depth 3) }
-  if (@($r.PerZ | Where-Object Kind -ne 'autorização').Count) { throw 'classificação errada' }
+$goodZ = @{ Z6 = (New-HarnessZ Z6 CHANNEL_ERROR $R.authz); Z7 = (New-HarnessZ Z7 CHANNEL_ERROR $R.private); Z8 = (New-HarnessZ Z8 CHANNEL_ERROR $R.authz) }
+function With([string]$Z, $Replacement) { foreach ($k in 'Z6', 'Z7', 'Z8') { if ($k -eq $Z) { $Replacement } else { $goodZ[$k] } } }
+function VerdictOf($lines) { $r = Test-C0Report -Lines $lines -Mode W; [pscustomobject]@{ All = $r.Verdict; Z = @{ Z6 = $r.PerZ[0].Verdict; Z7 = $r.PerZ[1].Verdict; Z8 = $r.PerZ[2].Verdict }; Ok = $r.Ok; R = $r } }
+$okW = New-WReport (With '' $null)
+
+Check 'classificação (espelho do harness): motivos reais e correspondência estrita' {
+  # Pares (não hashtable: as chaves do PowerShell ignoram maiúsculas, e a diferença de caixa é um dos casos).
+  $cases = @(
+    @($R.authz, 'authorization'), @('Unauthorized: You do not have permissions to read from this Channel topic', 'authorization'),
+    @('Unauthorized: You do not have permissions to read from this Channel topic: it-token-jwt', 'authorization'),
+    @($R.private, 'private-only'), @($R.missing, 'infrastructure'), @('RealtimeRestarting: Realtime is restarting, please standby', 'infrastructure'),
+    @('Realtime was unable to connect to the project database', 'infrastructure'), @($R.jwt, 'credential'), @('MalformedJWT: x', 'credential'),
+    @('Unauthorized: something else', 'unknown'), @('PrivateOnly: This project only allows private channels, mostly', 'unknown'),
+    @('unauthorized: You do not have permissions to read from this Channel topic', 'unknown'),
+    @('error: Unauthorized: You do not have permissions to read from this Channel topic', 'unknown'), @($R.unknown, 'unknown'), @('', 'unknown')
+  )
+  foreach ($c in $cases) { $got = Get-RefusalKind $c[0]; if ($got -cne $c[1]) { throw "'$($c[0])' → $got (esperado $($c[1]))" } }
 }
-Check 'C0-W: formato do console do operador = Ok' { if (-not (Test-C0Report -Lines (ConvertTo-OperatorConsole $okW) -Mode W).Ok) { throw 'reprovou' } }
-Check 'C0-W: recusa por credencial é aceita e classificada como credencial' {
-  $l = New-WReport @('anon oryn privado: CHANNEL_ERROR (invalid JWT: unable to parse)', "anon público: $authz", "anon privado qualquer: $authz")
-  $r = Test-C0Report -Lines $l -Mode W; if (-not $r.Ok -or $r.PerZ[0].Kind -ne 'credencial') { throw ($r.PerZ | ConvertTo-Json -Compress) }
-}
-Check 'C0-W: ✓ com anotação TIMED_OUT/NO_REPLY/SUBSCRIBED reprova (timeout não é recusa)' {
-  foreach ($st in 'TIMED_OUT', 'NO_REPLY', 'SUBSCRIBED', 'CLOSED') {
-    if ((Test-C0Report -Lines (New-WReport @("anon oryn privado: $st", "anon público: $authz", "anon privado qualquer: $authz")) -Mode W).Ok) { throw "aprovou com $st" }
+Check 'C0-W: Z6/Z8 Unauthorized e Z7 PrivateOnly = PASS (também no formato do console do operador)' {
+  foreach ($l in @($okW, (ConvertTo-OperatorConsole $okW))) {
+    $v = VerdictOf $l; if (-not $v.Ok -or $v.All -ne 'PASS' -or $v.R.ZFound -ne 'Z6,Z7,Z8') { throw ($v.R | ConvertTo-Json -Compress -Depth 4) }
   }
 }
-Check 'C0-W: ✓ sem anotação reprova' {
-  $l = @($okW | Where-Object { $_ -notmatch 'anon público' })
-  if ((Test-C0Report -Lines $l -Mode W).Ok) { throw 'aprovou sem anotação do Z7' }
+Check 'C0-W: Unauthorized só passa onde é esperado (no Z7 = FAIL)' {
+  $v = VerdictOf (New-WReport (With Z7 (New-HarnessZ Z7 CHANNEL_ERROR $R.authz)))
+  if ($v.Z.Z7 -ne 'FAIL' -or $v.All -ne 'FAIL') { throw "Z7=$($v.Z.Z7) total=$($v.All)" }
+}
+Check 'C0-W: PrivateOnly só passa onde é esperado (no Z6 e no Z8 = FAIL)' {
+  foreach ($z in 'Z6', 'Z8') { $v = VerdictOf (New-WReport (With $z (New-HarnessZ $z CHANNEL_ERROR $R.private))); if ($v.Z[$z] -ne 'FAIL' -or $v.All -ne 'FAIL') { throw "$z=$($v.Z[$z]) total=$($v.All)" } }
+}
+Check 'C0-W: MissingPartition nunca é PASS (INCONCLUSIVO em cada Z; ✓ forjado = FAIL)' {
+  foreach ($z in 'Z6', 'Z7', 'Z8') {
+    $v = VerdictOf (New-WReport (With $z (New-HarnessZ $z CHANNEL_ERROR $R.missing)))
+    if ($v.Z[$z] -ne 'INCONCLUSIVO' -or $v.All -ne 'INCONCLUSIVO' -or $v.Ok) { throw "$z=$($v.Z[$z]) total=$($v.All)" }
+    $forged = New-HarnessZ $z CHANNEL_ERROR $R.missing; $forged.Marker = '✓'
+    $v = VerdictOf (New-WReport (With $z $forged)); if ($v.Z[$z] -ne 'FAIL' -or $v.Ok) { throw "✓ forjado $z=$($v.Z[$z])" }
+  }
+}
+Check 'C0-W: erro de credencial e motivo desconhecido não aprovam Z6–Z8 (INCONCLUSIVO)' {
+  foreach ($reason in $R.jwt, $R.unknown) { foreach ($z in 'Z6', 'Z7', 'Z8') {
+    $v = VerdictOf (New-WReport (With $z (New-HarnessZ $z CHANNEL_ERROR $reason))); if ($v.Z[$z] -ne 'INCONCLUSIVO' -or $v.Ok) { throw "$z com '$reason' = $($v.Z[$z])" }
+  } }
+}
+Check 'C0-W: SUBSCRIBED reprova cada um dos três (FAIL)' {
+  foreach ($z in 'Z6', 'Z7', 'Z8') { $v = VerdictOf (New-WReport (With $z (New-HarnessZ $z SUBSCRIBED))); if ($v.Z[$z] -ne 'FAIL' -or $v.All -ne 'FAIL') { throw "$z=$($v.Z[$z]) total=$($v.All)" } }
+}
+Check 'C0-W: TIMED_OUT, NO_REPLY e CLOSED não aprovam (INCONCLUSIVO)' {
+  foreach ($st in 'TIMED_OUT', 'NO_REPLY', 'CLOSED') { foreach ($z in 'Z6', 'Z7', 'Z8') {
+    $v = VerdictOf (New-WReport (With $z (New-HarnessZ $z $st))); if ($v.Z[$z] -ne 'INCONCLUSIVO' -or $v.Ok) { throw "$z $st = $($v.Z[$z])" }
+  } }
+}
+Check 'C0-W: FAIL prevalece sobre INCONCLUSIVO no total' {
+  $zs = @((New-HarnessZ Z6 CHANNEL_ERROR $R.missing), (New-HarnessZ Z7 SUBSCRIBED), $goodZ.Z8)
+  $v = VerdictOf (New-WReport $zs); if ($v.All -ne 'FAIL') { throw "total=$($v.All)" }
+}
+Check 'C0-W: incoerências = FAIL (harness diz PASS mas o texto é outro; ✓ sem anotação; anotação ✓ sem veredito)' {
+  $lie = [pscustomobject]@{ Z = 'Z6'; Marker = '✓'; Note = "anon oryn privado: CHANNEL_ERROR ($($R.missing)) [motivo=authorization; esperado=authorization; veredito=PASS]" }
+  if ((VerdictOf (New-WReport (With Z6 $lie))).Z.Z6 -ne 'FAIL') { throw 'aceitou harness incoerente com o texto' }
+  $bare = [pscustomobject]@{ Z = 'Z7'; Marker = '✓'; Note = '' }
+  if ((VerdictOf (New-WReport (With Z7 $bare))).Z.Z7 -ne 'FAIL') { throw 'aceitou ✓ sem anotação' }
+}
+Check 'C0-W: × sem anotação (teste parou antes de decidir) = INCONCLUSIVO; Z ausente = FAIL' {
+  $v = VerdictOf (New-WReport (With Z8 ([pscustomobject]@{ Z = 'Z8'; Marker = '×'; Note = '' })))
+  if ($v.Z.Z8 -ne 'INCONCLUSIVO') { throw "× sem anotação = $($v.Z.Z8)" }
+  $v = VerdictOf (New-WReport @($goodZ.Z6, $goodZ.Z7)); if ($v.Z.Z8 -ne 'FAIL' -or $v.All -ne 'FAIL') { throw "Z8 ausente = $($v.Z.Z8)/$($v.All)" }
 }
 Check 'C0-W: Z1–Z4 também aprovados (filtro esquecido) reprova' {
   $l = @($okR | Select-Object -Index 1, 3, 4, 5) + $okW -replace '3 passed \|', '7 passed |'
-  $r = Test-C0Report -Lines $l -Mode W; if ($r.Ok -or $r.Outside -ne 4) { throw ($r | ConvertTo-Json -Compress -Depth 3) }
+  $r = Test-C0Report -Lines $l -Mode W; if ($r.Ok -or $r.Outside -ne 4 -or $r.Verdict -ne 'FAIL') { throw ($r | ConvertTo-Json -Compress -Depth 3) }
 }
 Check 'C0-W: 0 aprovados com exit 0 (sem ALLOW_WS) reprova' {
   $l = @(" ↓ tests/remote/integration.remote.test.ts > $wBlock > Z6 x", ' Test Files  1 skipped (1)', '      Tests  42 skipped | 1 todo (43)')
-  if ((Test-C0Report -Lines $l -Mode W).Ok) { throw 'aprovou sem testes' }
-}
-Check 'C0-W: Z7 falhou (Allow public access ligado) reprova' {
-  $l = $okW -replace '^(\s*)✓(.*Z7 )', '$1×$2' -replace '3 passed \|', '2 passed | 1 failed |'
-  if ((Test-C0Report -Lines $l -Mode W).Ok) { throw 'aprovou com Z7 falho' }
+  $r = Test-C0Report -Lines $l -Mode W; if ($r.Ok -or $r.Verdict -ne 'FAIL') { throw 'aprovou sem testes' }
 }
 
 # --- sensíveis e resumo ---
@@ -212,7 +271,16 @@ if ($RealC0R) {
   }
 }
 
+# --- relatório REAL da 1ª C0-W (opcional; anterior ao 02C.6E, sem veredito do harness) ---
+if ($RealC0W) {
+  Check 'C0-W REAL reclassificada: Z6 INCONCLUSIVO (MissingPartition), Z7 FAIL (SUBSCRIBED), Z8 PASS (Unauthorized); total FAIL' {
+    $r = Test-C0Report -Lines @(Get-Content -LiteralPath $RealC0W -Encoding utf8) -Mode W
+    $got = ($r.PerZ | ForEach-Object { "$($_.Z)=$($_.Verdict)/$($_.Outcome)" }) -join ' '
+    if ($got -ne 'Z6=INCONCLUSIVO/infrastructure Z7=FAIL/subscribed Z8=PASS/authorization' -or $r.Verdict -ne 'FAIL' -or $r.Ok) { throw "$got total=$($r.Verdict)" }
+  }
+}
+
 $results
-$fail = @($results | Where-Object { $_ -like 'FAIL*' }).Count
+$fail =@($results | Where-Object { $_ -like 'FAIL*' }).Count
 "--- $(@($results | Where-Object { $_ -like 'PASS*' }).Count) PASS / $fail FAIL"
 exit $(if ($fail) { 1 } else { 0 })

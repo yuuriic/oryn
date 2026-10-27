@@ -4,19 +4,66 @@
 # Modos:
 #   R  C0-R  Z1–Z4 (REST: leituras e recusas). Nenhum WebSocket.
 #   W  C0-W  Z6–Z8 (WebSocket: recusas de canal para `anon`). A 1ª conexão cria as partições de realtime.messages.
+#            (02C.6E) Z6/Z8 exigem `Unauthorized` (RLS); Z7 exige `PrivateOnly` (canal público desligado).
+#            Resultado: PASS, FAIL ou INCONCLUSIVO (sem decisão de acesso, ex.: MissingPartition). Nunca repete.
 # Os dois: sem identidade, sem login, sem CAPTCHA, sem convite, orçamento 0, só a chave publicável.
 
 $script:C0Specs = @{
   R = [pscustomobject]@{
     Mode = 'R'; Name = 'C0-R'; Block = 'Supabase real — C0-R'; Filter = 'C0-R'; Report = 'c0r.txt'; Summary = 'c0r.resumo.txt'
-    Expected = @('Z1', 'Z2', 'Z3', 'Z4'); NeedsRefusalNotes = $false
+    Expected = @('Z1', 'Z2', 'Z3', 'Z4'); ExpectedRefusal = $null
     EnvNames = @('ORYN_IT_PHASE', 'ORYN_PUBLISHABLE_KEY', 'ORYN_REMOTE', 'ORYN_REMOTE_REF', 'ORYN_SUPABASE_URL')
   }
+  # 02C.6E: cada Z da C0-W exige o MOTIVO exato da recusa (a 1ª C0-W aprovou um MissingPartition por falta disto).
   W = [pscustomobject]@{
     Mode = 'W'; Name = 'C0-W'; Block = 'Supabase real — C0-W'; Filter = 'C0-W'; Report = 'c0w.txt'; Summary = 'c0w.resumo.txt'
-    Expected = @('Z6', 'Z7', 'Z8'); NeedsRefusalNotes = $true
+    Expected = @('Z6', 'Z7', 'Z8'); ExpectedRefusal = @{ Z6 = 'authorization'; Z7 = 'private-only'; Z8 = 'authorization' }
     EnvNames = @('ORYN_IT_ALLOW_WS', 'ORYN_IT_PHASE', 'ORYN_PUBLISHABLE_KEY', 'ORYN_REMOTE', 'ORYN_REMOTE_REF', 'ORYN_SUPABASE_URL')
   }
+}
+
+# Regras de recusa do Realtime: a MESMA fonte do harness (tests/remote/realtime-refusals.json).
+$script:RefusalRules = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\tests\remote\realtime-refusals.json') -Raw -Encoding utf8 | ConvertFrom-Json
+
+# Espelho de classifyRefusal (harness-utils.ts): `<Código>: <mensagem>`; código E mensagem têm de bater.
+function Get-RefusalKind([string]$Reason) {
+  $r = $script:RefusalRules; $t = $Reason.Trim()
+  if ($t -cnotmatch '^(?<code>[A-Za-z]+): (?<msg>[\s\S]*)$') {
+    if (@($r.infrastructureMessages | Where-Object { $t -cmatch $_ }).Count) { return 'infrastructure' }
+    return 'unknown'
+  }
+  $code = $Matches['code']; $msg = $Matches['msg']
+  if ($code -ceq $r.authorization.code) { if ($msg -cmatch $r.authorization.message) { return 'authorization' } else { return 'unknown' } }
+  if ($code -ceq $r.privateOnly.code) { if ($msg -cmatch $r.privateOnly.message) { return 'private-only' } else { return 'unknown' } }
+  if ($r.credentialCodes -ccontains $code) { return 'credential' }
+  if ($r.infrastructureCodes -ccontains $code) { return 'infrastructure' }
+  return 'unknown'
+}
+
+# Espelho de joinOutcome: só a partir da anotação (estado e motivo). A origem da recusa (servidor × transporte)
+# só o harness sabe: por isso o executor exige também o motivo anotado pelo harness para dar PASS.
+function Get-JoinOutcome([string]$Status, [string]$Reason) {
+  switch -CaseSensitive ($Status) {
+    'SUBSCRIBED' { return 'subscribed' }
+    { $_ -in 'TIMED_OUT', 'NO_REPLY' } { return 'timeout' }
+    'CHANNEL_ERROR' { return Get-RefusalKind $Reason }
+    default { return 'transport' }
+  }
+}
+
+# Espelho de refusalVerdict: PASS só com o motivo esperado; FAIL se o servidor decidiu outra coisa; INCONCLUSIVO
+# se não houve decisão de acesso (credencial, infraestrutura, desconhecido, timeout, transporte).
+function Get-RefusalVerdict([string]$Outcome, [string]$Expected) {
+  if ($Outcome -ceq $Expected) { return 'PASS' }
+  if ($Outcome -cin 'subscribed', 'authorization', 'private-only') { return 'FAIL' }
+  return 'INCONCLUSIVO'
+}
+
+# Anotação do expectRefused: "<rótulo>: <ESTADO>[ (<motivo>)][ [motivo=…; esperado=…; veredito=…]]".
+function ConvertFrom-RefusalNote([string]$Note) {
+  $re = '^(?<label>.+?): (?<status>[A-Z_]+)(?: \((?<reason>.*)\))?(?: \[motivo=(?<motivo>[a-z-]+); esperado=(?<esperado>[a-z-]+); veredito=(?<veredito>[A-Z]+)\])?\s*$'
+  if ($Note -cnotmatch $re) { return $null }
+  [pscustomobject]@{ Status = $Matches['status']; Reason = "$($Matches['reason'])"; Motivo = "$($Matches['motivo'])"; Esperado = "$($Matches['esperado'])"; Veredito = "$($Matches['veredito'])" }
 }
 
 function Get-C0Spec([ValidateSet('R', 'W')][string]$Mode) { $script:C0Specs[$Mode] }
@@ -79,11 +126,41 @@ function ConvertTo-PlainReportLine([string]$Line) {
   try { return $script:StrictUtf8.GetString($bytes) } catch { return $s }
 }
 
-# Relatório do Vitest (--reporter=verbose) no modo dado. Ok só se:
+# Veredito de UM Z da C0-W, a partir do marcador do Vitest e da anotação do expectRefused (02C.6E).
+# PASS exige TUDO: ✓, anotação do harness com veredito=PASS e motivo=esperado, e a reclassificação local do estado
+# e do motivo também igual ao esperado. Qualquer incoerência entre harness, marcador e motivo = FAIL.
+function Get-RefusalZVerdict([string]$Marker, [string]$Note, [string]$Expected) {
+  if (-not $Marker -or $Marker -eq '↓' -or $Marker -eq '□') { return [pscustomobject]@{ Verdict = 'FAIL'; Outcome = ''; Why = 'não executado' } }
+  $n = if ($Note) { ConvertFrom-RefusalNote $Note } else { $null }
+  if (-not $n) {
+    # × sem anotação: o teste parou antes de decidir (ex.: exceção). ✓ sem anotação: relatório incoerente.
+    if ($Marker -eq '×') { return [pscustomobject]@{ Verdict = 'INCONCLUSIVO'; Outcome = ''; Why = 'sem anotação' } }
+    return [pscustomobject]@{ Verdict = 'FAIL'; Outcome = ''; Why = 'aprovado sem anotação de recusa' }
+  }
+  $local = Get-JoinOutcome $n.Status $n.Reason
+  if (-not $n.Motivo) {
+    # Relatório anterior ao 02C.6E (sem o veredito do harness): o ✓ antigo não prova nada; vale só a
+    # reclassificação do estado e do motivo que o servidor devolveu.
+    return [pscustomobject]@{ Verdict = (Get-RefusalVerdict $local $Expected); Outcome = $local; Why = 'relatório sem veredito do harness (reclassificado)' }
+  }
+  # O motivo do harness é a fonte (só ele sabe se a recusa veio do servidor ou do transporte).
+  $outcome = $n.Motivo
+  $verdict = Get-RefusalVerdict $outcome $Expected
+  if ($verdict -eq 'PASS' -and ($Marker -ne '✓' -or $local -cne $Expected -or $n.Veredito -cne 'PASS' -or $n.Esperado -cne $Expected)) {
+    return [pscustomobject]@{ Verdict = 'FAIL'; Outcome = $outcome; Why = "incoerência: marcador $Marker, local=$local, harness=$($n.Motivo)/$($n.Veredito)" }
+  }
+  if ($verdict -ne 'PASS' -and $Marker -eq '✓') {
+    return [pscustomobject]@{ Verdict = 'FAIL'; Outcome = $outcome; Why = "aprovado pelo Vitest com motivo $outcome" }
+  }
+  [pscustomobject]@{ Verdict = $verdict; Outcome = $outcome; Why = '' }
+}
+
+# Relatório do Vitest (--reporter=verbose) no modo dado. Ok (PASS) só se:
 #  - a linha "Tests" existe, com exatamente N aprovados (N = Z esperados) e 0 falhas;
 #  - cada Z esperado aparece UMA vez com ✓, dentro do bloco do modo; nenhum ✓ fora dele; nenhuma linha ×;
-#  - (C0-W) cada Z tem a anotação do harness com CHANNEL_ERROR: a recusa veio do servidor (o teste já exige; o
-#    validador confere de novo e extrai o motivo, credencial × autorização).
+#  - (C0-W, 02C.6E) cada Z com veredito PASS: recusa do servidor pelo MOTIVO esperado (Get-RefusalZVerdict).
+# Verdict: PASS; FAIL (alguma decisão errada, Z ausente, aprovado fora do bloco ou sem resumo); INCONCLUSIVO
+# (nenhum FAIL, mas algum Z sem decisão de acesso: credencial, infraestrutura, desconhecido, timeout, transporte).
 # Exit 0 SOZINHO nunca basta: sem ORYN_IT_ALLOW_WS o filtro C0-W sai com 0 e nenhum teste executado.
 function Test-C0Report([string[]]$Lines, [ValidateSet('R', 'W')][string]$Mode) {
   $spec = Get-C0Spec $Mode
@@ -96,30 +173,40 @@ function Test-C0Report([string[]]$Lines, [ValidateSet('R', 'W')][string]$Mode) {
   $outside = @($passedLines | Where-Object { $_ -notmatch "$blockRe[^>]*> (Z\d) " -or $spec.Expected -notcontains $Matches[1] })
 
   $perZ = foreach ($z in $spec.Expected) {
-    $idx = @(for ($i = 0; $i -lt $Lines.Count; $i++) { if ($Lines[$i] -match "^\s*✓ .*$blockRe[^>]*> $z ") { $i } })
-    $note = ''
+    $idx = @(for ($i = 0; $i -lt $Lines.Count; $i++) { if ($Lines[$i] -match "^\s*(✓|×|↓|□) .*$blockRe[^>]*> $z ") { $i } })
+    $marker = ''; $note = ''
     if ($idx.Count -eq 1) {
+      $marker = ($Lines[$idx[0]].TrimStart())[0].ToString()
       for ($j = $idx[0] + 1; $j -lt $Lines.Count -and -not (& $isResult $Lines[$j]); $j++) {
         if ($Lines[$j] -match '^\s*↳ (?<n>.+)$') { $note = $Matches['n'].Trim(); break }
       }
     }
-    $refused = $note -match ': CHANNEL_ERROR\b'
-    $reason = if ($note -match ': CHANNEL_ERROR \((?<r>.*)\)\s*$') { $Matches['r'] } else { '' }
+    $v = if ($spec.ExpectedRefusal) { Get-RefusalZVerdict $marker $note $spec.ExpectedRefusal[$z] }
+         elseif ($marker -eq '✓') { [pscustomobject]@{ Verdict = 'PASS'; Outcome = ''; Why = '' } }
+         else { [pscustomobject]@{ Verdict = 'FAIL'; Outcome = ''; Why = if ($marker) { "marcador $marker" } else { 'ausente' } } }
     [pscustomobject]@{
       Z        = $z
-      Passed   = $idx.Count -eq 1
+      Passed   = $marker -eq '✓'
       Note     = $note
-      Refused  = $refused
-      Kind     = if (-not $refused) { '' } elseif ($reason -match 'jwt|token') { 'credencial' } else { 'autorização' }
+      Expected = if ($spec.ExpectedRefusal) { $spec.ExpectedRefusal[$z] } else { '' }
+      Outcome  = $v.Outcome
+      Verdict  = $v.Verdict
+      Why      = $v.Why
     }
   }
 
   $summary = [regex]::Match($text, '(?m)^\s*Tests\s+(?<body>[^\r\n]+)')
   $passed = if ($summary.Success -and $summary.Groups['body'].Value -match '(\d+) passed') { [int]$Matches[1] } else { -1 }
   $failed = if ($summary.Success -and $summary.Groups['body'].Value -match '(\d+) failed') { [int]$Matches[1] } else { 0 }
-  $zOk = @($perZ | Where-Object { $_.Passed -and (-not $spec.NeedsRefusalNotes -or $_.Refused) })
+  $zPass = @($perZ | Where-Object Verdict -eq 'PASS')
+  $ok = ($passed -eq $spec.Expected.Count) -and ($failed -eq 0) -and ($failedLines.Count -eq 0) -and ($outside.Count -eq 0) -and ($zPass.Count -eq $spec.Expected.Count)
+  $verdict = if ($ok) { 'PASS' }
+             elseif (-not $summary.Success -or $outside.Count -gt 0 -or @($perZ | Where-Object Verdict -eq 'FAIL').Count) { 'FAIL' }
+             elseif (@($perZ | Where-Object Verdict -eq 'INCONCLUSIVO').Count) { 'INCONCLUSIVO' }
+             else { 'FAIL' }
   [pscustomobject]@{
-    Ok          = ($passed -eq $spec.Expected.Count) -and ($failed -eq 0) -and ($failedLines.Count -eq 0) -and ($outside.Count -eq 0) -and ($zOk.Count -eq $spec.Expected.Count)
+    Ok          = $ok
+    Verdict     = $verdict
     Mode        = $spec.Name
     Passed      = $passed
     Failed      = $failed + 0

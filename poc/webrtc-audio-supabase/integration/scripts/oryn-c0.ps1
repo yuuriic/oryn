@@ -7,6 +7,8 @@
 # - O ref e a chave publicável são DIGITADOS; nada é gravado, e nada sensível é impresso.
 # - Aborta antes da rede se a branch, o commit ou a árvore divergirem, ou se o ambiente tiver algo proibido.
 # - Só o bloco do modo roda (filtro -t do Vitest); o validador exige exatamente os Z do modo aprovados.
+# - (02C.6E) C0-W: cada Z exige o motivo exato da recusa. Resultado PASS (saída 0), INCONCLUSIVO (2) ou FALHOU (1).
+#   Nada é repetido automaticamente.
 param(
   [Parameter(Mandatory)][ValidateSet('R', 'W')][string]$Mode,
   [Parameter(Mandatory)][ValidatePattern('^[0-9a-f]{40}$')][string]$ApprovedCommit,
@@ -86,12 +88,18 @@ if ($outcome -ne 'ABORTADO') {
       Move-Item -LiteralPath $reportPath -Destination $q
       "O relatório bruto contém $($sens.total) padrão(ões) sensível(is). NÃO compartilhar. Usar só $($spec.Summary) (mascarado)." | Set-Content -LiteralPath (Join-Path $dir 'LEIA-ME.txt') -Encoding utf8
     }
-    "resultado: $($check.SummaryLine) | Z aprovados: $($check.ZFound) | aprovados fora do modo: $($check.Outside) | linhas de falha: $($check.FailedLines)"
-    foreach ($z in $check.PerZ) { "  $($z.Z): $(if ($z.Passed) { 'PASS' } else { 'NÃO APROVADO' })$(if ($z.Kind) { " — recusa por $($z.Kind)" }) — $($z.Note)" }
-    if ($exitCode -ne 0) { $outcome = 'FALHOU'; $reason = "pnpm saiu com código $exitCode" }
-    elseif (-not $check.Ok) { $outcome = 'FALHOU'; $reason = "o relatório não mostra exatamente $($spec.Expected -join ', ') aprovados$(if ($spec.NeedsRefusalNotes) { ' com recusa do servidor anotada' })" }
-    elseif ($sens.total -gt 0) { $outcome = 'FALHOU'; $reason = 'relatório com padrão sensível (em quarentena)' }
-    else { $outcome = 'PASS' }
+    "resultado: $($check.SummaryLine) | Z aprovados: $($check.ZFound) | aprovados fora do modo: $($check.Outside) | linhas de falha: $($check.FailedLines) | veredito: $($check.Verdict)"
+    foreach ($z in $check.PerZ) {
+      $detail = if ($z.Expected) { " — motivo=$(if ($z.Outcome) { $z.Outcome } else { '?' }) (esperado $($z.Expected))" } else { '' }
+      "  $($z.Z): $($z.Verdict)$detail$(if ($z.Why) { " — $($z.Why)" }) — $($z.Note)"
+    }
+    # 02C.6E: INCONCLUSIVO = nenhuma decisão de acesso errada, mas algum Z sem decisão (ex.: MissingPartition).
+    # Não é PASS e NÃO é repetido aqui: nova execução exige autorização separada.
+    if ($sens.total -gt 0) { $outcome = 'FALHOU'; $reason = 'relatório com padrão sensível (em quarentena)' }
+    elseif ($exitCode -eq 0 -and $check.Ok) { $outcome = 'PASS' }
+    elseif ($exitCode -ne 0 -and $check.Verdict -eq 'INCONCLUSIVO') { $outcome = 'INCONCLUSIVO'; $reason = "pnpm saiu com código $exitCode; nenhum Z com decisão errada, mas algum sem decisão de acesso (ver acima)" }
+    elseif ($exitCode -ne 0) { $outcome = 'FALHOU'; $reason = "pnpm saiu com código $exitCode; veredito do relatório: $($check.Verdict)" }
+    else { $outcome = 'FALHOU'; $reason = "exit 0, mas o relatório não mostra exatamente $($spec.Expected -join ', ') aprovados$(if ($spec.ExpectedRefusal) { ' com o motivo de recusa esperado' })" }
   }
 }
 $keyForScan = $null; Remove-Variable keyForScan -ErrorAction SilentlyContinue
@@ -102,4 +110,6 @@ if ($dir) { "resultado=$outcome" | Add-Content -LiteralPath (Join-Path $dir 'hor
 "$($spec.Name): $outcome$(if ($reason) { " — $reason" })"
 if ($dir) { "Compartilhar SOMENTE: $(Join-Path $dir $spec.Summary) e horario.txt" }
 if ($Mode -eq 'W' -and $null -ne $exitCode) { 'Próximo passo: leitura de depois (Z9) com integration/sql/11_c0w_postflight.sql e 07_initial_state.sql.' }
-exit $(if ($outcome -eq 'PASS') { 0 } else { 1 })
+if ($outcome -ne 'PASS' -and $null -ne $exitCode) { 'Não repetir: uma nova execução exige análise e autorização separada.' }
+# Saída: 0 = PASS; 2 = INCONCLUSIVO; 1 = FALHOU ou ABORTADO.
+exit $(switch ($outcome) { 'PASS' { 0 } 'INCONCLUSIVO' { 2 } default { 1 } })

@@ -591,7 +591,7 @@ com credenciais: digitadas, nunca salvas, nunca em log.
 | Fase | O que roda | Efeito remoto | Cadastros / logins |
 |---|---|---|---|
 | **C0-R** | Z1 (Auth: anônimo desligado, só leitura), Z2 (12 RPCs recusadas por permissão, `42501`), Z3 e Z4 (Data API: `PGRST106`) | só leituras e recusas | 0 / 0 |
-| **C0-W** | só Z6–Z8 (02C.6A: filtro `-t C0-W`); recusa de canal para `anon`: oryn privado, qualquer público, qualquer privado | **cria as partições** de `realtime.messages` (1ª conexão) | 0 / 0 |
+| **C0-W** | só Z6–Z8 (02C.6A: filtro `-t C0-W`); recusa de canal para `anon`: oryn privado e qualquer privado (`Unauthorized`), qualquer público (`PrivateOnly`) | **cria as partições** de `realtime.messages` (1ª conexão) | 0 / 0 |
 | **C2 password** | todo o bloco de sala, menos o #15 (precisa de 5 identidades novas) | sala, sessões, eventos `hello`/`bye`, convite consumido | 0 / 3 |
 
 Z5 (Broadcast REST com a chave publicável) está **desabilitado**: não há controle positivo sem identidade.
@@ -609,7 +609,7 @@ PowerShell 7. Ele substitui o bloco colado à mão, que falhou na 1ª C0-R por c
 | Pasta de evidências | `integration/evidence/c0-r-…` ou `c0-w-…` (UTC; `-2`, `-3`, nunca sobrescreve), criada **antes** do relatório. Precisa ser ignorada pelo Git |
 | Exit code | Lido logo depois do pipeline, com `PSNativeCommandUseErrorActionPreference = $false`; gravado em `horario.txt` (`ausente` se não houver) |
 | Relatório legível | Console em UTF-8 e `NO_COLOR=1` durante a execução, com restauração depois. O validador ainda remove ANSI e repara a cp850 |
-| Validação | Exatamente os Z do modo com `✓`, 0 falhas, nada aprovado fora do bloco. Exit 0 **sozinho** nunca basta |
+| Validação | Exatamente os Z do modo com `✓`, 0 falhas, nada aprovado fora do bloco. Exit 0 **sozinho** nunca basta. C0-W: motivo exato por Z; resultado PASS, INCONCLUSIVO ou FALHOU (02C.6E) |
 | Sigilo | Só contagens de padrões sensíveis; quarentena do bruto se houver; compartilhar só `*.resumo.txt` e `horario.txt` |
 
 Autoteste offline (sem rede, sem Supabase), a rodar antes de cada autorização:
@@ -629,14 +629,39 @@ conferir o anônimo no painel. Depois, a leitura tem de mostrar 0 usuários, 0 m
 
 ### 12.2 C0-W ⛔ (autorização **explícita**: abre WebSocket e cria as partições)
 
-**Pré-condições** (todas; senão, não executar):
+**1ª execução (2026-10-27, `2e195b2`; evidência 02C.6D):**
+
+| Teste | Observado | Reclassificado (02C.6E) |
+|---|---|---|
+| Z6 | `CHANNEL_ERROR (MissingPartition: …)`, 4,98 s | **INCONCLUSIVO**: o critério antigo aprovou indevidamente |
+| Z7 | `SUBSCRIBED`, 146 ms | **FAIL**: o Realtime avaliou `private_only = false` |
+| Z8 | `CHANNEL_ERROR (Unauthorized: …)`, 4,23 s | **PASS** |
+
+- A Z9 passou: 5 partições de 26 a 30/10, banco íntegro.
+- Nos logs do Realtime, o tenant inicializou às 02:36:30.552 ("Creating partitions") e o `MissingPartition` do Z6
+  veio 178 ms depois.
+- A chave publicável foi **aceita** como credencial. Nenhuma recusa foi por credencial.
+
+**Pré-condições** (todas; senão, não executar). Uma nova C0-W exige **autorização separada**:
 1. C0-R aprovada e auditada.
 2. Autorização explícita da C0-W. O executor pede que o operador digite `C0-W`.
-3. Painel, Realtime › Settings: **"Allow public access" desligado**. Ligado, o Z7 falha, e é uma falha
-   verdadeira: a configuração não está como o plano exige.
-4. Leitura de **antes**: `integration/sql/11_c0w_postflight.sql`. Tudo PASS, menos o item 1, que dá **FAIL
-   com 0**, como esperado antes. Mais o `07`.
-5. Autoteste do executor: 0 FAIL.
+3. **Configuração efetiva `private_only = true`**, lida (não só declarada) no terminal do operador. O token
+   pessoal nunca vai para o ambiente do harness:
+   ```powershell
+   $pat = [Net.NetworkCredential]::new('', (Read-Host 'PAT do Supabase' -AsSecureString)).Password
+   try { (Invoke-RestMethod -Headers @{ Authorization = "Bearer $pat" } `
+          -Uri 'https://api.supabase.com/v1/projects/<ref>/config/realtime').private_only }
+   finally { Remove-Variable pat }
+   ```
+   - Mais a captura do painel (Realtime › Settings, "Allow public access" **desligado**) depois de recarregar a página.
+   - Se vier `false`: alterar é escrita (autorização própria). Depois, ler de novo.
+   - Se vier `true` e o Z7 da 1ª execução tiver entrado: suspeita de cache do tenant no Realtime. Esperar e
+     registrar o horário da leitura.
+4. Leitura de **antes**: `integration/sql/11_c0w_postflight.sql`.
+   - Antes da 1ª C0-W: tudo PASS, menos o item 1, que dá **FAIL com 0**, como esperado.
+   - Depois dela: tudo PASS enquanto houver partição de hoje.
+   - Mais o `07`.
+5. Autoteste do executor: 0 FAIL. Commit aprovado com as correções do 02C.6E.
 
 ```powershell
 pwsh -NoProfile -File integration/scripts/oryn-c0.ps1 -Mode W -ApprovedCommit <sha aprovado>
@@ -652,16 +677,46 @@ O que cada teste faz (cada um com um cliente novo, só a chave publicável, pape
 
 - Nenhum teste publica (`send`, `httpSend`, Presence), cria identidade, faz login ou usa papel
   administrativo. Isso é garantido por teste estático: `tests/remote-harness-c0.test.ts`.
-- **PASS** de cada um: estado `CHANNEL_ERROR` **e** recusa vinda do servidor (payload de erro da resposta de
-  entrada, não fechamento de socket).
-- **Timeout não é recusa.** Sem resposta em 10 s (`TIMED_OUT`) ou 12 s (`NO_REPLY`), queda de transporte ou
-  `SUBSCRIBED` reprovam o teste.
 - Canal recusado é removido na hora, sem novas tentativas. O socket fecha quando o cliente fica sem canais, e o
   `afterAll` remove todos.
-- O motivo fica anotado e é classificado pelo executor:
-  - *credencial*: o motivo cita `jwt` ou `token`, porque a chave `sb_*` não é JWT;
-  - *autorização*: o RLS ou a configuração recusou.
-  As duas formas provam o bloqueio do `anon`, mas só a segunda exercita o RLS.
+
+**Critérios (02C.6E).** As regras de classificação estão em `tests/remote/realtime-refusals.json` (fonte única
+do harness e do executor). A resposta do servidor tem o formato `<Código>: <mensagem>`. Código **e** mensagem
+precisam bater:
+
+| Teste | O que prova | PASS **somente** com |
+|---|---|---|
+| Z6 | RLS: `anon` não lê `oryn:s:*` | `CHANNEL_ERROR` do servidor com `Unauthorized: You do not have permissions to read from this Channel topic…` |
+| Z7 | **Configuração** do projeto: canal público desligado (não passa pelo RLS) | `CHANNEL_ERROR` do servidor com `PrivateOnly: This project only allows private channels` |
+| Z8 | RLS: `anon` não lê tópico privado qualquer | igual ao Z6 (`Unauthorized`) |
+
+| Resultado | Veredito do Z |
+|---|---|
+| Motivo esperado | **PASS** |
+| `SUBSCRIBED`, ou o outro motivo de acesso (`PrivateOnly` onde se espera `Unauthorized`, e vice-versa) | **FAIL**: o servidor decidiu errado |
+| Credencial (`InvalidJWTToken`, `MalformedJWT`, `JwtSignatureError`, `JwtSignerError`) | **INCONCLUSIVO** |
+| Infraestrutura (`MissingPartition`, `InitializingProjectConnection`, `RealtimeRestarting`, limites de taxa…) | **INCONCLUSIVO** |
+| Código ou mensagem desconhecidos; `TIMED_OUT` (10 s), `NO_REPLY` (12 s), `CLOSED`, transporte | **INCONCLUSIVO** |
+
+- O harness anota `[motivo=…; esperado=…; veredito=…]`. O executor reclassifica pelo texto e exige coerência
+  entre o marcador do Vitest, a anotação e o motivo.
+- **Resultado da execução:**
+  - `PASS` (saída 0) com os 3 Z PASS;
+  - `FALHOU` (saída 1) com algum FAIL, que prevalece;
+  - `INCONCLUSIVO` (saída 2) quando não há FAIL, mas algum Z ficou sem decisão.
+- **Nada é repetido automaticamente.** INCONCLUSIVO pede análise e nova autorização.
+- O mesmo rigor vale na C2:
+  - #6/S4, S2/S3, S6 (anon), S7, A1, A2/A3 exigem `Unauthorized`;
+  - #7/S5 exige `PrivateOnly`;
+  - S8/P5, se recusado, exige `Unauthorized`.
+
+**Risco: `MissingPartition` na inicialização do tenant.**
+- O Realtime cria as partições de forma **assíncrona** quando o tenant inicializa (1ª conexão, ou depois de
+  ficar ocioso).
+- Uma entrada em canal privado nesse intervalo pode receber `MissingPartition`, que não é decisão de acesso.
+- No teste, isso conta como INCONCLUSIVO. No produto, o cliente precisa repetir a entrada com espera progressiva.
+- O risco diminui com as partições já criadas (até 30/10 na 1ª execução), mas reaparece se o tenant reinicializar
+  sem a partição do dia.
 
 Esperado: **3 PASS** (Z6–Z8), nada mais aprovado.
 
