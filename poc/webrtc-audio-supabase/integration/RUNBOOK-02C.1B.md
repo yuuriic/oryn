@@ -736,46 +736,128 @@ Esperado: **3 PASS** (Z6–Z8), nada mais aprovado.
 **As partições criadas aqui atendem ao D0 da C2 no mesmo dia (UTC).** O Realtime remove as antigas, então no dia
 seguinte é preciso refazer o D0.
 
-### 12.3 C2 com contas preexistentes ⛔
+### 12.3 C2 com contas preexistentes ⛔ (caminho P; executor 02C.7P-A)
 
-Pré-requisitos, nesta ordem:
-1. C0-R e C0-W com PASS, e Z9 registrado. A partição de hoje existe; no dia seguinte, refazer o D0.
-2. Z1 anotou `external.email = true`: o login por e-mail está habilitado. Senão: **parar** (habilitar é mudança no Auth, fora deste caminho).
-3. ⛔ O operador cria **3 contas confirmadas** no painel (Auth › Users › Add user › e-mail e senha, com
-   confirmação automática): dono, membro e estranho. Endereços de teste controlados pela equipe; senhas
-   longas e aleatórias; **nada** registrado fora do gerenciador de senhas do operador.
-4. ⛔ Convite de criador (§10, passo 5), logo antes da execução.
+Sem anônimo, sem CAPTCHA, sem secret de teste: 3 **logins** em contas criadas pelo operador. Cada passo marcado
+exige autorização própria; a da C0-W não vale aqui.
 
+**Pré-requisitos, nesta ordem:**
+1. C0-R e C0-W com PASS, e Z9 registrado.
+2. Z1 anotou `external.email = true`: o login por e-mail está habilitado. Senão: **parar** (habilitar é mudança no
+   Auth, fora deste caminho).
+3. ⛔ **Provisionamento (escrita no Auth, pelo painel):** Auth › Users › Add user › e-mail e senha, com **Auto
+   Confirm User** (nenhum e-mail é enviado): dono, membro e estranho.
+   - Endereços de teste controlados pela equipe (ex.: aliases `+oryn-…`), nunca de terceiros.
+   - Senhas longas e aleatórias, **só** no gerenciador de senhas do operador.
+   - Não usar Admin API, chave secreta, `INSERT` em `auth.users` nem `signUp` pelo cliente.
+4. **G3 — conferência do provisionamento (leitura):** `integration/sql/12_c2_preflight.sql` logo depois de criar as
+   contas. Itens A1–A7 PASS: exatamente 3 contas, não anônimas, confirmadas, distintas, utilizáveis, 1 identidade
+   `email` cada, nenhuma sessão de Auth ativa. A saída não traz e-mail: só id curto e impressão md5.
+5. **No dia da execução (UTC):** `12_c2_preflight.sql` de novo (leitura de antes). Tudo PASS:
+   - contas (A1–A7);
+   - D0 (D1: partição cobrindo agora);
+   - nenhuma sala aberta (D2), **nenhum convite de criador utilizável** (D3), nenhuma sessão de sala viva (D4);
+   - `realtime.messages` só com `hello`/`bye` e payload `{id, session_id, label}` (D5);
+   - estrutura (S1–S5).
+
+   Mais o `07`. Qualquer FAIL: não executar.
+6. Autoteste do executor: `pwsh -NoProfile -File integration/scripts/oryn-c2.selftest.ps1` com 0 FAIL.
+7. ⛔ **Convite de criador (G6)**, por último, com autorização própria. Escrita do operador no SQL editor:
+   ```sql
+   select oryn.admin_issue_creator_invite(10, 1) as convite, now() as emitido_em;
+   ```
+   - O executor **nunca** emite convite. O token aparece uma vez: copiar direto para o executor, nunca para arquivo,
+     chat ou captura.
+   - Prazo de 10 min. O executor recusa um convite com menos de 2 min restantes, com horário no futuro, ou já usado
+     numa execução anterior (impressão de 16 hex do SHA-256 em `c2pw-*/convite.impressao`). O banco também recusa
+     convite usado.
+
+**Execução (uma por autorização):**
 ```powershell
-$dir = 'integration/evidence/c2pw-<AAAAMMDD-HHMM>'
-New-Item -ItemType Directory -Path $dir -ErrorAction Stop | Out-Null   # 02C.6A: o Tee-Object não cria a pasta
-function Read-Secret([string]$prompt) { [Net.NetworkCredential]::new('', (Read-Host $prompt -AsSecureString)).Password }
-$env:NO_COLOR = '1'; [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)   # relatório sem ANSI nem cp850
-try {
-  $ref = Read-Host 'ref do projeto'
-  $env:ORYN_REMOTE = '1'; $env:ORYN_REMOTE_REF = $ref
-  $env:ORYN_SUPABASE_URL = "https://$ref.supabase.co"
-  $env:ORYN_PUBLISHABLE_KEY = Read-Host 'chave publicável'
-  $env:ORYN_IT_PHASE = 'C2'
-  $env:ORYN_IT_IDENTITY = 'password'                             # sem cadastro e sem CAPTCHA; 3 logins
-  foreach ($role in 'OWNER', 'MEMBER', 'STRANGER') {
-    Set-Item -Path "Env:ORYN_IT_USER_${role}_EMAIL" -Value (Read-Host "e-mail $role")
-    Set-Item -Path "Env:ORYN_IT_USER_${role}_PASSWORD" -Value (Read-Secret "senha $role")
-  }
-  $env:ORYN_IT_PARTITIONS_CONFIRMED = '1'                        # declaração do operador (Z9/D0)
-  $env:ORYN_IT_CREATOR_INVITE = Read-Secret 'convite de criador'
-  pnpm test:remote --reporter=verbose 2>&1 | Tee-Object -FilePath "$dir/c2pw.txt"
-  $c2Exit = $LASTEXITCODE
-} finally {
-  Clear-OrynEnv                                                  # remove também ORYN_IT_USER_*
-}
-"C2 password exit = $c2Exit"
+pwsh -NoProfile -File integration/scripts/oryn-c2.ps1 -ApprovedCommit <sha aprovado>
 ```
+O executor (`integration/scripts/oryn-c2.ps1`, funções em `oryn-c2.lib.ps1`):
+- confere branch, commit e árvore limpa; recusa ambiente com `ORYN_*`, `SUPABASE_ACCESS_TOKEN`/`SERVICE_ROLE_KEY`/
+  `SECRET_KEY(S)`/`DB_PASSWORD`, `*CAPTCHA*`, ou valor com `sb_secret_`, `sbp_` ou `service_role`;
+- recusa o início entre **23:45 e 00:15 UTC** (a execução atravessaria a troca de partição do dia);
+- pede, nesta ordem (entrada protegida = 🔒):
+  1. a confirmação `C2-PASSWORD`;
+  2. a data UTC do D0 (tem de ser hoje);
+  3. o ref;
+  4. 🔒 a chave publicável;
+  5. para OWNER, depois MEMBER, depois STRANGER: o e-mail (às claras; não é segredo) e 🔒 a senha;
+  6. 🔒 o convite de criador;
+  7. o `emitido_em` do convite;
+- valida tudo **antes** de criar variáveis ou abrir rede. As mensagens citam só o papel e o campo, nunca o valor;
+- cria `integration/evidence/c2pw-<UTC>/` (ignorada pelo Git) e grava `convite.impressao` **antes** da rede;
+- roda só o bloco da sala (`-t "C2: sala de teste"`), com `NO_COLOR` e UTF-8, sem repetição;
+- grava o relatório bruto **já com o nome** `c2pw.BRUTO-NAO-COMPARTILHAR.txt`;
+- no `finally`, remove todas as `ORYN_*` (inclusive `ORYN_IT_USER_*`) **antes** de qualquer outra coisa;
+- pós-processa (`Complete-C2Run`) sempre que o bruto existir, mesmo depois de uma exceção:
+  1. lê e mede em memória: JWT, chaves, PAT **e os literais digitados** (chave, senhas, convite, e-mails). Se não
+     conseguir medir, apaga o bruto sem análise: INCONCLUSIVO;
+  2. grava `contagens.txt` (só números) e `c2pw.resumo.txt` (só resultados e anotações; literais, e-mails, UUID, JWT
+     e chaves mascarados **antes** de gravar);
+  3. com qualquer ocorrência sensível, **apaga o bruto** e grava `LEIA-ME.txt`; a execução sai como FALHOU;
+  4. só então interpreta o relatório, dentro de `try`. Falha da análise: INCONCLUSIVO (FALHOU se havia segredo);
+  5. sem `fim_utc` no `horario.txt`, nunca PASS;
+- mascara também o que imprime no console (motivos, linhas de erro);
+- termina listando os **únicos** arquivos compartilháveis: `c2pw.resumo.txt`, `horario.txt` e `contagens.txt`.
 
-O harness encerra só a sessão local de cada conta no fim (`signOut` com escopo local).
+**Critérios (G5).** O validador exige os **17** testes do bloco, cada um uma única vez, e nada aprovado fora dele.
+A tabela de testes do executor é conferida contra o código do harness por `tests/remote-harness-c2.test.ts`.
 
-Esperado: **16 PASS** e o #15 pulado (`modo password`). O **subconjunto mínimo** que precisa passar para valer
-como primeira prova autenticada:
+| Testes | PASS **somente** com |
+|---|---|
+| #6/S1, A4, #11/D1, D2, #8/P1, #8/P2/P3, D3, #18 M5, #18 `authorize_signal` | `✓` |
+| #6/S2/S3 (2 recusas), S6, S7 (4), A1, A2/A3 (2) | `✓` e **cada** recusa anotada com `Unauthorized: You do not have permissions to read from this Channel topic…` |
+| #7/S5 | `✓` e `PrivateOnly: This project only allows private channels` |
+| S8/P5 | `✓`, observador e rastreador com `SUBSCRIBED` ou `Unauthorized`, e nenhuma presença propagada |
+| #15 | **pulado** (`↓`) com a nota exata `modo password: sem cadastro de identidades novas` |
+
+| Situação | Veredito do teste |
+|---|---|
+| Motivo esperado em todas as recusas do teste | PASS |
+| `SUBSCRIBED` numa recusa; o outro motivo de acesso; positivo reprovado; presença propagada; #15 executado ou sem a nota; ✓ sem todas as recusas anotadas; anotação incoerente com o texto do servidor | **FAIL** |
+| Infraestrutura (`MissingPartition`…), credencial, código ou mensagem desconhecidos, `TIMED_OUT`/`NO_REPLY`/`CLOSED`/transporte, timeout do Vitest, `beforeAll` que falhou (login, convite), execução interrompida sem resumo | **INCONCLUSIVO** |
+
+- **Resultado da execução:**
+  - `PASS` (saída 0): 16 PASS e o #15 pulado;
+  - `FALHOU` (saída 1): algum FAIL (prevalece sobre INCONCLUSIVO) ou padrão sensível no relatório;
+  - `INCONCLUSIVO` (saída 2): nenhum FAIL e algum teste sem decisão, falha da análise, ou T1 ausente;
+  - abortos antes da rede saem com 1 (`ABORTADO`), sem pasta de evidências se o aborto vier antes da última
+    entrada.
+- **Convite marcado localmente sem uso remoto.** Um aborto **depois** de criada a pasta (por ex. variáveis de
+  ambiente fora do esperado) já gravou `convite.impressao`, mas não chegou à rede: o convite continua válido no
+  banco até vencer. Mesmo assim ele **não** é reutilizado: o executor o recusa, e um convite novo exige autorização.
+  O vencimento em 10 min o inutiliza; o D3 do `12` confirma (nenhum utilizável) antes da próxima execução.
+- **Classificação conservadora (risco residual B2).** Um positivo, ou uma recusa que falha **antes** de anotar (por
+  ex. `fetch failed` no `join_room`), sai FAIL e não INCONCLUSIVO: só uma anotação do Realtime prova "sem decisão".
+  Diagnosticar pela linha de erro antes de concluir que houve decisão errada.
+
+**Interrupção e encerramento forçado.** O `finally` e o pós-processamento **não são garantidos**: Ctrl+C durante a
+análise, janela fechada, `taskkill` ou queda da máquina os interrompem. Sinal: `horario.txt` **sem** `resultado=`.
+O bruto, se existir, já tem nome de não compartilhar. Recuperação, nesta ordem e **sem rede**:
+1. Conferir se sobrou processo do harness e encerrá-lo (só os do Vitest desta execução):
+   ```powershell
+   Get-CimInstance Win32_Process -Filter "name='node.exe'" | Where-Object CommandLine -match 'vitest' | Select-Object ProcessId, CommandLine
+   Stop-Process -Id <ProcessId> -Confirm   # um por um, depois de conferir a linha de comando
+   ```
+   Um `node` órfão ainda tem as variáveis `ORYN_*` e pode continuar os testes.
+2. Rodar a recuperação offline:
+   ```powershell
+   pwsh -NoProfile -Command ". integration/scripts/oryn-c2.lib.ps1; Invoke-C2Recovery -Dir integration/evidence/c2pw-<AAAAMMDD-HHMM>"
+   ```
+   - Apaga o bruto **sem análise**: os literais digitados não estão mais disponíveis para a medição.
+   - Grava um `c2pw.resumo.txt` só com as linhas de resultado (nomes fixos do harness, sem anotações).
+   - Sem `fim_utc` (T1 ausente), grava `fim_utc_estimado` = hora da recuperação, limitado a T0 + 29 min.
+   - Grava `resultado=INCONCLUSIVO (interrompida; …)`.
+3. Leitura de depois (`13`) com T1 = `fim_utc` ou, se ausente, `fim_utc_estimado`. Depois, **sempre**, a
+   recuperação de sessões do §12.4: o `afterAll` (saída da sala e `signOut`) pode não ter rodado.
+4. Se o PowerShell de recuperação também não puder rodar: apagar à mão o `c2pw.BRUTO-NAO-COMPARTILHAR.txt`,
+   registrar INCONCLUSIVO e usar como T1 o horário do encerramento (anotado pelo operador).
+
+O **subconjunto mínimo** que precisa passar para valer como primeira prova autenticada:
 
 | Verificação | Testes |
 |---|---|
@@ -785,25 +867,100 @@ como primeira prova autenticada:
 | `hello` e `bye` | D1, D2 |
 | Bloqueio de publicação pelo cliente | P1 (WebSocket), P2/P3 (REST), com controle positivo |
 
-Nada disso está comprovado até a execução. Depois, a auditoria do §10, passo 7: N3/N4, `06`, `07` e advisors.
-Conferir que `Select-String -Path "$dir/*" -Pattern 'eyJ|sb_(publishable|secret)_'` vem vazio. As senhas não
-aparecem no relatório: o harness não as imprime, e as mensagens de erro citam só o papel.
+**Leitura de depois (sempre, qualquer que seja o resultado):** `integration/sql/13_c2_postflight.sql`.
+- Trocar `<<T0_UTC>>` e `<<T1_UTC>>` pelo `inicio_utc` e pelo `fim_utc` do `horario.txt` (ou pelo
+  `fim_utc_estimado`, depois de uma recuperação). Copiar o valor inteiro, com as 7 casas decimais. Sem a troca, a
+  consulta falha de propósito.
+- **J1:** a janela tem de ter T0 < T1 e durar menos de 30 min. FAIL aqui = horários trocados ou de outra
+  execução: corrigir e rodar de novo (é leitura).
+- A janela separa o que **esta** execução criou do que já existia (INFO). T0/T1 vêm do relógio do operador e os
+  carimbos, do servidor: conferir que o `INFO agora (UTC)` do `12` bateu com o relógio local (diferença de poucos
+  segundos).
 
-### 12.4 Riscos e limpeza
+Esperado num PASS:
+- **A1–A8:** as mesmas 3 contas, nenhuma nova, **nenhuma sessão de Auth ativa**. O `signOut` local revoga a sessão;
+  a linha pode continuar na tabela e não é contada como ativa.
+- **R1–R8:** 1 sala `it-02c4b-*` (aberta); 1 owner e 1 member; 1 convite de sala criado e usado; o convite de
+  criador usado pelo dono e nenhum utilizável sobrando; todas as sessões de sala revogadas; 1 `signal_log` e
+  1 `pair_counters`.
+- **M1–M3:** `hello` e `bye` na janela; nada fora de `oryn:s:<uuid>`; nenhum evento fora de `hello`/`bye`; nenhum
+  payload fora de `{id, session_id, label}`.
+- **S1–S5:** RLS e políticas, fingerprints, migrações e `cli_login_*` iguais ao baseline.
 
-- **Contas preexistentes:** são credenciais de longa duração. Depois da campanha, **trocar as senhas** ou apagar
-  as contas (painel; escrita autorizada). Apagar as contas remove, pelo cascade da 0100, a sala, os membros,
-  as sessões, o `signal_log` e o `pair_counters`; o `creator_invite` usado sai à parte (§10, passo 9).
-- **D1:** as políticas tratam `authenticated` igual com ou sem `is_anonymous`; está testado localmente e é a
-  premissa deste caminho. O fluxo anônimo com CAPTCHA (#5) continua dependendo da janela do §10.
-- **Reexecução: não é automática.** Sem orçamento de cadastro em jogo, a C2 password pode ser repetida, mas:
-  - cada execução consome um **convite de criador novo** (autorização) e deixa outra sala `it-02c4b-*` **aberta**,
-    porque não há RPC de fechar sala (F5 da 0200);
-  - o convite `admin_issue_creator_invite(10, 1)` concede **1 sala aberta**. Com a mesma conta de dono, a 2ª
-    execução **falha** no `beforeAll` (`create_room` → `limit-reached`).
+Mais o `07` e os advisors.
 
-  Para repetir, escolher uma (decisão do arquiteto):
-  - (a) emitir o novo convite com o limite acumulado (`admin_issue_creator_invite(10, <n.º de execuções>)`; a
-    concessão usa o maior valor, até 5);
-  - (b) apagar a sala anterior (escrita autorizada);
-  - (c) recriar a conta do dono.
+**Pacote de evidências.** Compartilhar **somente** os arquivos listados pelo executor (`c2pw.resumo.txt`,
+`horario.txt`, `contagens.txt`) e as saídas do `12`/`13`, copiados um a um. Nunca compactar ou copiar a pasta
+inteira. Nunca incluir `c2pw.BRUTO-NAO-COMPARTILHAR.txt` (se ainda existir), `LEIA-ME.txt` nem `convite.impressao`.
+Para conferir a lista de uma pasta:
+```powershell
+pwsh -NoProfile -Command ". integration/scripts/oryn-c2.lib.ps1; Get-C2ShareableEvidence integration/evidence/c2pw-<AAAAMMDD-HHMM>"
+```
+
+### 12.4 Riscos, reexecução e limpeza (G4; decisão do arquiteto, 02C.7P-A)
+
+- **Contas preservadas durante a campanha.** As 3 contas são reutilizadas em todas as execuções da C2 password.
+  São credenciais de longa duração: no fim da campanha, **trocar as senhas** ou apagar as contas (painel; escrita
+  autorizada).
+- **Exposição de segredo (M2).** Se `contagens.txt` mostrar `segredo_digitado`, `chave_digitada`, `secret`, `pat` ou
+  `jwt` > 0, ou se um segredo aparecer em qualquer saída, console ou captura:
+  - o bruto já foi apagado, mas **apagar um arquivo não garante eliminação forense** (cópias de backup, índice de
+    busca, área de transferência, histórico do terminal). Tratar o segredo como **exposto**;
+  - **senha:** trocar a da conta afetada no painel (escrita autorizada), na hora; depois, recuperação de sessões
+    (abaixo) e `12` com A7 PASS;
+  - **convite de criador:** já é de uso único e vence em 10 min; conferir pelo `12` (D3) que nenhum continua
+    utilizável. Revogar um utilizável exige autorização (`revoked_at`);
+  - **chave publicável:** é pública por desenho; registrar. **Chave secreta, PAT ou senha do banco:** não deveriam
+    existir no ambiente (o executor aborta); se aparecerem, rotacionar no painel e abrir investigação.
+- **Recuperação de sessões (M3).** Situações:
+  - interrupção antes do `afterAll` (Ctrl+C, janela fechada, processo morto): nem `leave_room` nem `signOut`
+    rodaram;
+  - falha do `signOut` (o harness ignora o erro de propósito, para não mascarar o resultado);
+  - sessões de Auth ainda válidas, ou sessões de sala não encerradas.
+
+  Sinais na leitura: `13` com A7 (sessão de Auth ativa) ou R6 (sessão de sala não revogada) em FAIL; `12` com A7
+  ou D4 em FAIL e a linha `INFO sessões de Auth ativas por conta` mostrando **qual** conta (id curto).
+  O executor **não** revoga nada automaticamente. Recuperação **só com autorização administrativa SEPARADA**, pelo
+  operador no SQL editor (como `postgres`), conferida por leitura:
+  1. sessões de Auth das contas acusadas (a remoção da sessão remove os refresh tokens dela):
+     ```sql
+     delete from auth.sessions
+      where user_id in (select id from auth.users where left(id::text, 8) in ('<id curto>'));
+     ```
+     O access token (JWT) já emitido continua válido até expirar (1 h no padrão do projeto): esperar o prazo antes
+     da próxima execução, ou trocar a senha se houver suspeita de exposição;
+  2. sessões de sala: vencem sozinhas em 90 s sem batimento (o D4 do `12` volta a PASS), mas continuam sem
+     `revoked_at`. A limpeza da sala (abaixo) as apaga em cascata;
+  3. rodar o `12`: A7 e D4 PASS e `INFO sessões de Auth ativas por conta = (nenhuma)`.
+- **Uma execução por autorização.** Nada é repetido automaticamente: nem pelo harness (`retry: 0`), nem pelo
+  executor, nem pelo operador. FALHOU ou INCONCLUSIVO pede análise e **nova autorização**.
+- **Não aumentar limites para permitir reexecução.** É **proibido**:
+  - emitir convite com limite acumulado (`admin_issue_creator_invite(10, n > 1)`);
+  - recriar a conta do dono;
+  - mexer em concessões para contornar o `limit-reached`.
+
+  O convite da C2 é sempre `(10, 1)`.
+- **Por que a 2ª execução exige limpeza.** Cada execução deixa uma sala `it-02c4b-*` **aberta**: não há RPC de fechar
+  sala (F5 da 0200), e a concessão do dono é de 1 sala aberta. O `12` acusa isso no item D2, antes de qualquer rede.
+- **Limpeza: só com autorização SEPARADA**, depois da leitura de depois e da análise. Escrita do operador no SQL
+  editor (como `postgres`), nesta ordem, conferida por leitura:
+  1. apagar a sala da execução (cascade: membros, convites de sala, sessões, `signal_log`, `pair_counters`);
+  2. apagar o(s) `creator_invites` usado(s) na janela;
+  3. rodar o `12`: D2–D4 de volta a PASS.
+
+  As linhas de `realtime.messages` (`hello`/`bye`) não são apagadas: saem com a rotação das partições.
+- **D1:** as políticas tratam `authenticated` igual com ou sem `is_anonymous`. Isso está testado localmente
+  (`tests/sql-anon-roles.test.ts`) e é a premissa deste caminho; a C2 password é a confirmação de ponta a ponta.
+  O fluxo anônimo com CAPTCHA (#5) continua dependendo da janela do §10 (C1 suspensa).
+- **G7 — testes de autorização com JWT hoje restritos à C1** (#3 Data API com JWT, #4 `not-member`, #4
+  `set_signal_state`): funcionariam com usuário `password` (o código não lê `is_anonymous`), mas **não** foram
+  incorporados à C2. Fazer isso muda o escopo e a contagem de aprovados, e exige revisão explícita.
+- **Riscos residuais aceitos (02C.7P-B/C):**
+  - **B2:** classificação conservadora: falha antes da anotação sai FAIL, não INCONCLUSIVO (ver §12.3).
+  - **B8:** o bloqueio de reuso do convite (`convite.impressao`) é **local**: vale só nesta máquina, some se a pasta
+    for apagada, e duas execuções simultâneas poderiam passar pela checagem. A garantia real é a do banco (uso
+    único atômico no `redeem_creator_invite`); um reuso só faz o `beforeAll` falhar (INCONCLUSIVO).
+  - **B9:** o `email#` das leituras (8 hex do md5 do e-mail em minúsculas) é um pseudônimo fraco: quem conhece os
+    endereços candidatos pode confirmá-los. Serve só para comparar leituras; não tratar como anonimização.
+  - **B11:** os autotestes `.ps1` (C0 e C2) não rodam no `pnpm test` nem no CI. São pré-requisito manual (§12.3,
+    passo 6).
