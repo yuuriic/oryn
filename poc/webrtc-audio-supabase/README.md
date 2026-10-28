@@ -62,6 +62,7 @@ Requisitos: Node 24+ e pnpm 12+. Não há serviço a instalar: o PGlite e o Post
 | `supabase/migrations/…0100_oryn_schema.sql` | Schema privado `oryn`: salas, membros, convites, sessões, contadores e registro de sinais **sem payload**. RLS ligado, nenhuma política, nenhum privilégio |
 | `supabase/migrations/…0200_oryn_functions.sql` | RPCs `SECURITY DEFINER` (`search_path = ''`) e `EXECUTE` explícito |
 | `supabase/migrations/…0300_oryn_realtime.sql` | Políticas de `realtime.messages`: receber só no próprio tópico; **nenhum envio de cliente** em `oryn:*` |
+| `supabase/migrations/…0400_oryn_room_management.sql` | MVP 01: `list_my_rooms` e `close_room` (aditiva; **não aplicada no remoto**) |
 | `supabase/functions/_shared/` | Contrato da sinalização e núcleo da Edge Function (puros e testados) |
 | `supabase/functions/_shared/edge-config.ts`, `supabase-http.ts`, `signal-http.ts` | Credenciais, chamadas HTTP com headers separados por operação e camada HTTP/CORS (puros e testados) |
 | `supabase/functions/signal/index.ts` | Só a ligação Deno dos módulos de `_shared`. **Não executado**; fora do typecheck |
@@ -70,7 +71,7 @@ Requisitos: Node 24+ e pnpm 12+. Não há serviço a instalar: o PGlite e o Post
 | `tests/pg/` | Concorrência e compatibilidade em PostgreSQL 17 real embutido (`pnpm test:pg`; roda no CI) |
 | `integration/` | Runbook, matriz de evidências e scripts SQL do 02C.1B |
 | `src/` | Cliente: contratos de domínio, recepção (duplicatas e ordem) e envio com retentativas |
-| `src/web/` | Cliente web de voz 1:1: página (`main.ts`), `SupabaseSignaling`, backend supabase-js, configuração e os módulos WebRTC copiados da POC-02B (`call.ts`, `ice.ts`, `stats.ts`…) |
+| `src/web/` | Cliente web de voz 1:1: página (`main.ts`), lobby de salas (`rooms.ts`, `rooms-view.ts`), `SupabaseSignaling`, backend supabase-js, configuração e os módulos WebRTC copiados da POC-02B (`call.ts`, `ice.ts`, `stats.ts`…) |
 | `index.html`, `vite.config.ts`, `.env.example` | Página, build e modelo de configuração local do cliente web |
 | `tests/` | Testes; `helpers/` com o shim, o banco PGlite, os cenários e os fakes do cliente web (`web-fakes.ts`) |
 
@@ -132,6 +133,26 @@ um túnel HTTPS temporário:
 - **TURN:** não existe; sem ele, redes restritivas podem não conectar.
 - **Grupo:** o cliente é só 1:1.
 
+## MVP 01 — gerenciamento de salas pela interface
+
+**Estado: implementado e testado localmente; a migração 0400 NÃO foi aplicada no remoto.** Implantação: checklist
+de deploy, Etapa 4 ⛔. Operação, validação manual e riscos: runbook §14.
+
+- **`list_my_rooms()`:** as salas em que a conta é membro ativo, abertas e encerradas (abertas primeiro, até 50),
+  com nome, papel, contagem de membros, capacidade e estado. Dos outros membros, só a contagem.
+- **`close_room(p_room_id)`:** só o dono; idempotente; preserva o histórico (`closed_at`). Revoga as sessões e os
+  convites pendentes e avisa quem está na chamada com o `bye` já existente (sem evento novo).
+- **Lobby** (depois do login):
+  - lista, com estados de carregamento, vazio e erro; encerradas num bloco recolhido, sem ações;
+  - criação com nome (até 40 caracteres) e nome de exibição (até 32), sempre com **2 lugares**;
+  - "Entrar na chamada" usa o fluxo 1:1 existente; uma chamada por vez;
+  - "Encerrar sala" só para o dono, com confirmação; irreversível no MVP 01;
+  - o campo de UUID ficou em "Diagnóstico".
+- **Encerramento visto por quem está na chamada:** `bye` → roster `not-member` → desconexão `4403`, e o motivo
+  ("sala encerrada", "não participa mais" ou "sessão expirou") vem de uma consulta ao `list_my_rooms`. Se o `bye`
+  se perder, o batimento encerra em até 30 s.
+- **Fora do escopo:** convites pela interface, remover membro, grupo, TURN.
+
 ## Modelo de segurança
 
 - **Identidade:** Supabase Auth anônimo (D1). Uma conta anônima **sozinha não alcança nada**: toda RPC exige
@@ -165,6 +186,15 @@ um túnel HTTPS temporário:
 - **Remetente:** sempre derivado de `auth.uid()` e da sessão no banco. O pedido **não tem** campo de remetente;
   chaves extras são recusadas. A Edge Function ainda confere se o usuário do JWT é o mesmo que o banco usou.
 - **Destinatário:** sessão viva da **mesma sala**.
+- **Encerramento (MVP 01, `close_room`):**
+  - só o dono; sala alheia ou inexistente recebe a mesma resposta (`unauthorized`);
+  - travas em ordem fixa (sala → membros → sessões) e convites **sem espera** (`SKIP LOCKED`), sem ciclo com
+    `join_room`, `create_room_invite`, `redeem_room_invite` ou `revoke_room_invite` (provado em PostgreSQL 17
+    real, com controles que reproduzem os ciclos das versões rejeitadas);
+  - depois do encerramento, toda RPC de uso da sala recusa; um convite só é utilizável se estiver pendente **e** a
+    sala estiver aberta.
+- **Nomes no cliente:** sempre renderizados como texto (`textContent`), nunca como HTML; comprimento contado em
+  pontos de código, como no banco.
 - **Realtime:**
   - receber: só o dono da sessão ativa;
   - enviar: **nenhum** cliente envia em `oryn:*` (sem `insert` permissivo, mais uma política restritiva que nega);

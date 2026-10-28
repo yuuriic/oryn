@@ -328,6 +328,7 @@ export class SupabaseSignaling implements SignalingLike {
     if (this.isClosed() || !this.sessionId) return;
     const res = await this.o.backend.rpc<unknown[]>('get_roster', { p_room_id: this.o.roomId });
     if (this.isClosed()) return;
+    if (this.memberGone(res.error)) return;
     const roster = (res.data ?? []).map(parseRosterEntry).filter((e): e is RosterEntry => e !== null);
     if (res.error) this.o.log(`Roster indisponível (${shortCode(res.error)}).`);
     const others = roster.filter((e) => !e.is_self && e.session_id !== this.sessionId);
@@ -496,7 +497,7 @@ export class SupabaseSignaling implements SignalingLike {
     // Par que caiu sem bye (aba fechada, rede): some do roster em até 90 s.
     if (this.peer !== null) {
       const roster = await this.o.backend.rpc<unknown[]>('get_roster', { p_room_id: this.o.roomId });
-      if (this.isClosed() || roster.error) return;
+      if (this.isClosed() || this.memberGone(roster.error) || roster.error) return;
       const live = (roster.data ?? []).map(parseRosterEntry).some((e) => e?.session_id === this.peer);
       if (!live) this.dropPeer('sessão vencida');
     }
@@ -515,6 +516,18 @@ export class SupabaseSignaling implements SignalingLike {
     if (this.isClosed()) return;
     if (status === 'CLOSED') return this.fatal(DISCONNECT.channel);
     this.o.log(`Canal privado: ${status}; o cliente Realtime tenta reconectar.`);
+  }
+
+  /**
+   * MVP 01: `not-member` do get_roster depois de uma entrada aceita é terminal. A pertença só deixa de valer
+   * com a sala encerrada (close_room) ou o membro removido, e nada desfaz isso. Só o código EXATO conta:
+   * JWT vencido vira `unauthorized` ou mensagem do PostgREST, e falha de rede vira outra mensagem. Encerra com
+   * 4403, como a sessão inválida no batimento.
+   */
+  private memberGone(error: string | null): boolean {
+    if (shortCode(error) !== 'not-member') return false;
+    this.fatal(DISCONNECT.session);
+    return true;
   }
 
   private fatal(code: number): void {

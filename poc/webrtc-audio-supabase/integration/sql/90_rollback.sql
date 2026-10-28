@@ -1,9 +1,14 @@
--- POC-02C.1B — REVERSÃO das migrações 0100–0300. DESTRUTIVO: apaga o schema da Oryn e seus dados.
+-- POC-02C.1B — REVERSÃO das migrações 0100–0400. DESTRUTIVO: apaga o schema da Oryn e seus dados.
 -- Rodar SOMENTE com autorização explícita do arquiteto, no ambiente onde as migrações falharam ou precisam
 -- ser refeitas. Tudo numa transação: ou volta inteiro, ou nada muda. Não toca em auth.users.
--- Ordem inversa das migrações: 0300 (políticas do Realtime) → 0200 (funções) → 0100 (schema).
+-- Ordem inversa das migrações: 0400 (RPCs de salas) → 0300 (políticas do Realtime) → 0200 (funções) →
+-- 0100 (schema). Para desfazer SÓ a 0400, preservando dados, use o 91_rollback_0400.sql.
 
 begin;
+
+-- 0400 (MVP 01): RPCs de gerenciamento de salas.
+drop function if exists public.close_room(uuid);
+drop function if exists public.list_my_rooms();
 
 -- 0300: políticas da Oryn em realtime.messages (o RLS da tabela continua ligado, como o Supabase entrega).
 drop policy if exists oryn_topics_no_client_write on realtime.messages;
@@ -35,7 +40,7 @@ do $$
 begin
   if pg_catalog.to_regclass('supabase_migrations.schema_migrations') is not null then
     delete from supabase_migrations.schema_migrations
-     where version in ('20261023000100', '20261023000200', '20261023000300');
+     where version in ('20261023000100', '20261023000200', '20261023000300', '20261028000400');
   end if;
 end $$;
 

@@ -22,3 +22,9 @@ dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; }
 dt { color: var(--muted); }
 dd { margin: 0; overflow-wrap: anywhere; }
 .log { font-family: ui-monospace, monospace; font-size: 0.8em; max-height: 240px; overflow-y: auto; color: var(--muted); padding-left: 2em; }
+.muted { color: var(--muted); }
+.rooms { list-style: none; padding: 0; margin: 8px 0; }
+.rooms li { padding: 8px 0; border-top: 1px solid var(--bg); overflow-wrap: anywhere; }
+.rooms .buttons { margin-top: 4px; }
+button.danger { background: var(--error); }
+details summary { cursor: pointer; color: var(--muted); margin: 8px 0; }

@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { TestDb, migrationFiles } from './helpers/db.ts';
+import { scenario } from './helpers/fixtures.ts';
 
 const sql = (name: string) => readFileSync(fileURLToPath(new URL(`../integration/sql/${name}`, import.meta.url)), 'utf8');
 
@@ -110,7 +111,7 @@ describe('verificação entre migrações (05_step_checks.sql)', () => {
 });
 
 describe('reversão (90_rollback.sql) depois de cada etapa', () => {
-  it.each([1, 2, 3])('depois de aplicar %i migração(ões): volta ao estado vazio e a reaplicação é limpa', async (n) => {
+  it.each([1, 2, 3, 4])('depois de aplicar %i migração(ões): volta ao estado vazio e a reaplicação é limpa', async (n) => {
     const db = await TestDb.createBare();
     try {
       const files = migrationFiles();
@@ -180,7 +181,7 @@ describe('06_cli_side_effects.sql e 07_initial_state.sql (02C.3A.1)', () => {
     }
   });
 
-  it.each([1, 2, 3])('07: impressão digital do escopo da Oryn muda com %i etapa(s) e VOLTA ao valor inicial depois da reversão', async (n) => {
+  it.each([1, 2, 3, 4])('07: impressão digital do escopo da Oryn muda com %i etapa(s) e VOLTA ao valor inicial depois da reversão', async (n) => {
     const db = await TestDb.createBare();
     try {
       const before = await state(db);
@@ -198,6 +199,125 @@ describe('06_cli_side_effects.sql e 07_initial_state.sql (02C.3A.1)', () => {
     } finally {
       await db.close();
     }
+  });
+});
+
+describe('MVP 01: 08_scope_entries.sql e 91_rollback_0400.sql', () => {
+  const state = async (db: TestDb) => {
+    const res = await db.pg.exec(sql('07_initial_state.sql'));
+    return (res.find((r) => r.fields.some((f) => f.name === 'estado'))!.rows[0] as { estado: Record<string, unknown> }).estado;
+  };
+  const entries = async (db: TestDb) => {
+    const res = await db.pg.exec(sql('08_scope_entries.sql'));
+    const rows = res.find((r) => r.fields.some((f) => f.name === 'entrada'))!.rows as { n: number | null; entrada: string }[];
+    return { list: rows.filter((r) => r.n !== null).map((r) => r.entrada), total: rows.find((r) => r.n === null)!.entrada };
+  };
+  const history = async (db: TestDb) => (await db.admin<{ v: string }>('select version as v from supabase_migrations.schema_migrations order by 1')).map((r) => r.v);
+  /** Banco só com 0100–0300 e o histórico da CLI correspondente (o estado remoto de antes da Etapa 4). */
+  const beforeStep4 = async () => {
+    const db = await TestDb.createBare();
+    const files = migrationFiles();
+    expect(files.map(([f]) => f.split('_')[0])).toEqual(['20261023000100', '20261023000200', '20261023000300', '20261028000400']);
+    for (const [, m] of files.slice(0, 3)) await db.migrate(m);
+    // Histórico com o mesmo dono das migrações (no projeto, o `postgres` cria e roda o 91).
+    await db.migrate(`create schema supabase_migrations; create table supabase_migrations.schema_migrations (version text primary key);
+                      insert into supabase_migrations.schema_migrations values ('20261023000100'), ('20261023000200'), ('20261023000300')`);
+    return { db, step4: async () => {
+      await db.migrate(files[3]![1]);
+      await db.admin(`insert into supabase_migrations.schema_migrations values ('20261028000400')`);
+    } };
+  };
+
+  it('08: a 0400 acrescenta EXATAMENTE 2 entradas (as RPCs novas) e não muda nenhuma das anteriores; o total é o do 07', async () => {
+    const { db, step4 } = await beforeStep4();
+    try {
+      const e3 = await entries(db);
+      const s3 = await state(db);
+      expect(e3.total).toBe(`TOTAL ${s3['oryn_scope_objetos']} / md5 ${s3['oryn_scope_fingerprint']}`);
+      await step4();
+      const e4 = await entries(db);
+      const s4 = await state(db);
+      expect(e3.list.filter((x) => !e4.list.includes(x))).toEqual([]);
+      const added = e4.list.filter((x) => !e3.list.includes(x));
+      expect(added).toHaveLength(2);
+      expect(added[0]).toMatch(/^fn:close_room\(uuid\):[0-9a-f]{32}$/);
+      expect(added[1]).toMatch(/^fn:list_my_rooms\(\):[0-9a-f]{32}$/);
+      expect(Number(s4['oryn_scope_objetos'])).toBe(Number(s3['oryn_scope_objetos']) + 2);
+      expect(e4.total).toBe(`TOTAL ${s4['oryn_scope_objetos']} / md5 ${s4['oryn_scope_fingerprint']}`);
+      expect(s4['platform_fingerprint']).toBe(s3['platform_fingerprint']);
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('91: volta o 07 e o 08 exatamente ao estado de antes da Etapa 4, preserva os dados e é idempotente', async () => {
+    const { db, step4 } = await beforeStep4();
+    try {
+      const e3 = await entries(db);
+      const s3 = await state(db);
+      await step4();
+      const s = await scenario(db);
+      await db.rpc(s.owner, 'public.close_room', { p_room_id: s.room });
+      await db.migrate(sql('91_rollback_0400.sql'));
+      expect((await entries(db)).list).toEqual(e3.list);
+      const s91 = await state(db);
+      for (const k of ['oryn_scope_objetos', 'oryn_scope_fingerprint', 'platform_fingerprint']) expect(s91[k], k).toEqual(s3[k]);
+      expect(await history(db)).toEqual(['20261023000100', '20261023000200', '20261023000300']);
+      // Dados preservados: a sala continua encerrada e as sessões, revogadas.
+      const kept = await db.admin<{ closed: boolean; live: number }>(`
+        select (select closed_at is not null from oryn.rooms where id = $1) as closed,
+               (select count(*)::int from oryn.room_sessions where room_id = $1 and revoked_at is null) as live`, [s.room]);
+      expect(kept[0]).toEqual({ closed: true, live: 0 });
+      // O 05 volta a ver o passo 4 como pendente, sem FAIL.
+      await db.pg.exec('set role migration_owner');
+      const steps = (await db.pg.exec(sql('05_step_checks.sql'))).find((r) => r.fields.some((f) => f.name === 'status'))!.rows as { step: number; status: string }[];
+      await db.pg.exec('reset role');
+      expect(steps.filter((r) => r.status === 'FAIL')).toEqual([]);
+      expect(steps.filter((r) => r.step === 4).every((r) => r.status === 'PENDING')).toBe(true);
+      // Idempotente.
+      await db.migrate(sql('91_rollback_0400.sql'));
+      expect((await entries(db)).list).toEqual(e3.list);
+      // E a 0400 reaplica limpa depois da reversão.
+      await step4();
+      expect((await db.rpc(s.owner, 'public.list_my_rooms'))[0]).toMatchObject({ room_id: s.room, is_open: false });
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('91 sem a 0400 aplicada: sem efeito', async () => {
+    const { db } = await beforeStep4();
+    try {
+      const e3 = await entries(db);
+      await db.migrate(sql('91_rollback_0400.sql'));
+      expect((await entries(db)).list).toEqual(e3.list);
+      expect(await history(db)).toEqual(['20261023000100', '20261023000200', '20261023000300']);
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('91 falha fechada: com uma função estranha em public, nada é revertido', async () => {
+    const { db, step4 } = await beforeStep4();
+    try {
+      await step4();
+      await db.migrate('create function public.estranha() returns int language sql as $$ select 1 $$');
+      // O erro deixa a transação explícita do script abortada (no SQL editor, ela é desfeita): rollback aqui.
+      await db.pg.exec('set role migration_owner');
+      await expect(db.pg.exec(sql('91_rollback_0400.sql'))).rejects.toThrow(/oryn-91: public não ficou com as 12 RPCs/);
+      await db.pg.exec('rollback; reset role');
+      expect((await db.admin<{ ok: boolean }>(`select to_regprocedure('public.close_room(uuid)') is not null as ok`))[0]!.ok).toBe(true);
+      expect(await history(db)).toContain('20261028000400');
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('91 só apaga as 2 funções e a linha do histórico: nenhum comando que remova schema, tabela ou dados', () => {
+    const text = sql('91_rollback_0400.sql').replace(/--.*$/gm, '');
+    expect(text.match(/\bdrop\s+\w+/gi)).toEqual(['drop function', 'drop function']);
+    expect(text).not.toMatch(/\b(truncate|alter|cascade)\b/i);
+    expect(text.match(/\bdelete\s+from\s+[\w.]+/gi)).toEqual(['delete from supabase_migrations.schema_migrations']);
   });
 });
 

@@ -400,3 +400,74 @@ describe('encerramento', () => {
     expect(a.messages).toEqual([]);
   });
 });
+
+describe('MVP 01: sala encerrada (close_room) e not-member no roster', () => {
+  it('encerramento com os dois na sala: bye → peer-left → roster not-member → 4403 nos dois lados, sem esperar o batimento', async () => {
+    const a = await joined(USERS.owner);
+    const b = await joined(USERS.member);
+    const epoch = pairEpoch(a.s.session!, b.s.session!);
+    server.closeRoom();
+    await settle();
+    for (const c of [a, b]) {
+      expect(ofType(c, 'peer-left')).toEqual([{ type: 'peer-left', epoch }]);
+      expect(c.disconnects).toEqual([DISCONNECT.session]);
+    }
+    // Nenhum batimento foi necessário; a saída (leave_room) da sessão já revogada não dá erro.
+    expect(rpcs(USERS.owner, 'touch_session')).toHaveLength(0);
+    expect(a.logs.some((l) => /Saída da sala não confirmada/.test(l))).toBe(false);
+  });
+
+  it('bye perdido: o batimento encontra a sessão revogada (session-invalid) e encerra com 4403 em até 30 s', async () => {
+    const a = await joined(USERS.owner);
+    await joined(USERS.member);
+    server.silent = true;
+    server.closeRoom();
+    await settle();
+    expect(a.disconnects).toEqual([]);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(a.disconnects).toEqual([DISCONNECT.session]);
+  });
+
+  it('roster do batimento com not-member (batimento ainda aceito) → 4403', async () => {
+    const a = await joined(USERS.owner);
+    await joined(USERS.member);
+    server.rpcFaults.set('get_roster', 'not-member');
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(a.disconnects).toEqual([DISCONNECT.session]);
+  });
+
+  it('roster inicial com not-member (sala encerrada logo depois da entrada) → 4403, sem `session`', async () => {
+    server.rpcFaults.set('get_roster', 'not-member');
+    const a = await joined(USERS.owner);
+    expect(a.disconnects).toEqual([DISCONNECT.session]);
+    expect(ofType(a, 'session')).toEqual([]);
+  });
+
+  it('só o código EXATO: outras falhas do roster (JWT, rede, texto parecido) não encerram', async () => {
+    for (const fault of ['JWT expired', 'erro de rede', 'not-member-x', 'unauthorized']) {
+      server = new FakeSupabase();
+      const a = await joined(USERS.owner);
+      await joined(USERS.member);
+      server.rpcFaults.set('get_roster', fault);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(a.disconnects, fault).toEqual([]);
+      expect(a.s.currentPeer, fault).not.toBeNull();
+      a.s.close();
+    }
+  });
+
+  it('regressão de peer-left: o par só sai da chamada (leave) → peer-left, sem desconexão, e segue esperando', async () => {
+    const a = await joined(USERS.owner);
+    const b = await joined(USERS.member);
+    b.s.close();
+    await b.s.closed;
+    await settle();
+    expect(ofType(a, 'peer-left')).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(a.disconnects).toEqual([]);
+    // Volta a entrar: vira par de novo (o primeiro peer-joined foi o da entrada inicial).
+    await joined(USERS.member);
+    expect(ofType(a, 'peer-joined')).toHaveLength(2);
+    expect(a.disconnects).toEqual([]);
+  });
+});

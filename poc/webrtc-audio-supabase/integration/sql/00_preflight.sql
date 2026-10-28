@@ -26,7 +26,7 @@ select p.oid::regprocedure as existing
  where n.nspname = 'public'
    and p.proname in ('redeem_creator_invite', 'create_room', 'create_room_invite', 'revoke_room_invite',
                      'redeem_room_invite', 'join_room', 'touch_session', 'leave_room', 'get_roster',
-                     'authorize_signal', 'set_signal_state', 'ack_signals');
+                     'authorize_signal', 'set_signal_state', 'ack_signals', 'list_my_rooms', 'close_room');
 
 -- P4. Dependências do Supabase usadas pelas migrações. Esperado: todas true.
 select pg_catalog.to_regprocedure('auth.uid()') is not null                                   as has_auth_uid,

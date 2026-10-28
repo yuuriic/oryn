@@ -26,6 +26,8 @@ const USER_RPCS = [
   'get_roster(uuid)',
   'authorize_signal(uuid,uuid,uuid,text,integer,integer)',
   'ack_signals(uuid,uuid[])',
+  'list_my_rooms()',
+  'close_room(uuid)',
 ];
 const DOMAIN_TABLES = ['creator_grants', 'creator_invites', 'rooms', 'room_members', 'room_invites', 'room_sessions', 'pair_counters', 'signal_log'];
 

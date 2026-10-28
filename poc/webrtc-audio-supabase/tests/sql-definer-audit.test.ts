@@ -22,6 +22,8 @@ const USER_RPCS: Record<string, string> = {
   get_roster: 'public.get_roster(uuid)',
   authorize_signal: 'public.authorize_signal(uuid,uuid,uuid,text,integer,integer)',
   ack_signals: 'public.ack_signals(uuid,uuid[])',
+  list_my_rooms: 'public.list_my_rooms()',
+  close_room: 'public.close_room(uuid)',
 };
 const SERVICE_RPCS: Record<string, string> = { set_signal_state: 'public.set_signal_state(uuid,text)' };
 
@@ -78,6 +80,12 @@ function matrix(s: Scenario, stranger: { uid: string }, inviteToken: string): Ca
     { label: 'usuário: transição de publicação (só service_role)', actor: s.owner, fn: 'set_signal_state', args: { p_msg_id: rnd(), p_state: 'published' }, error: /permission denied/ },
     { label: 'anon: transição de publicação', actor: 'anon', fn: 'set_signal_state', args: { p_msg_id: rnd(), p_state: 'published' }, error: /permission denied/ },
     { label: 'anon: entra na sala', actor: 'anon', fn: 'join_room', args: { p_room_id: s.room }, error: /permission denied/ },
+    { label: 'estranho: lista salas (nenhuma, nada muda)', actor: stranger, fn: 'list_my_rooms', args: {}, error: null },
+    { label: 'anon: lista salas', actor: 'anon', fn: 'list_my_rooms', args: {}, error: /permission denied/ },
+    { label: 'estranho: encerra sala alheia', actor: stranger, fn: 'close_room', args: { p_room_id: s.room }, error: /unauthorized/ },
+    { label: 'membro (não dono): encerra a sala', actor: s.member, fn: 'close_room', args: { p_room_id: s.room }, error: /unauthorized/ },
+    { label: 'dono: encerra sala arbitrária', actor: s.owner, fn: 'close_room', args: { p_room_id: rnd() }, error: /unauthorized/ },
+    { label: 'anon: encerra sala', actor: 'anon', fn: 'close_room', args: { p_room_id: s.room }, error: /permission denied/ },
   ];
 }
 
@@ -112,7 +120,7 @@ describe('catálogo: funções expostas e privilégio EXECUTE', () => {
   });
   afterAll(() => db.close());
 
-  it('public contém EXATAMENTE as 12 RPCs do contrato, todas SECURITY DEFINER com search_path vazio', async () => {
+  it('public contém EXATAMENTE as 14 RPCs do contrato, todas SECURITY DEFINER com search_path vazio', async () => {
     const rows = await db.admin<{ sig: string; definer: boolean; cfg: string[] | null }>(
       `select p.oid::regprocedure::text as sig, p.prosecdef as definer, p.proconfig as cfg
          from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' order by 1`,

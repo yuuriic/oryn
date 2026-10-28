@@ -119,7 +119,7 @@ Desde o 02C.3B.1, essas duas mudanças esperadas saem do `platform_fingerprint` 
 | `realtime_messages.particoes` | 0 | ≥ 0 | ≥ 0 | ≥ 0 | nunca, sozinho (serviço Realtime). Já `dono`, `rls` e `politicas` seguem os critérios da etapa |
 | `realtime_messages.politicas` | 0 | 0 | 0 nas Etapas 1–2; 4 na Etapa 3 | 0 | qualquer outro valor |
 
-Testado em `tests/postflight-local.test.ts`: a DDL de histórico da CLI e uma partição nova não mudam o `platform_fingerprint`, e outra relação qualquer muda. Testes anteriores também provam que o `oryn_scope_fingerprint` volta ao valor inicial depois da reversão, nas 3 etapas.
+Testado em `tests/postflight-local.test.ts`: a DDL de histórico da CLI e uma partição nova não mudam o `platform_fingerprint`, e outra relação qualquer muda. Testes anteriores também provam que o `oryn_scope_fingerprint` volta ao valor inicial depois da reversão, nas 3 etapas. Para a Etapa 4 (MVP 01), os mesmos testes cobrem as 4 etapas com o `90`, e há testes próprios para o `08` (exatamente +2 entradas) e para o `91` (volta exata ao registro de antes, dados preservados, idempotência e falha fechada).
 
 ## 2. Etapas
 
@@ -193,7 +193,78 @@ Cada etapa é **independente**:
 | **Interrompe** | erro (inclusive `oryn-0300: …`); dono ou RLS de `realtime.messages` diferente; número de políticas ≠ 4 |
 | Reversão ⛔ | `90_rollback.sql` (também apaga as 4 políticas; RLS e dono ficam como o Supabase entregou) |
 
-## 3. Pós-voo final (depois da Etapa 3)
+### Etapa 4 — `20261028000400_oryn_room_management.sql` ⛔ (MVP 01)
+
+**Estado: preparada, nada executado.** Autorização própria do arquiteto, separada de qualquer outra etapa.
+
+**O que faz** (aditiva; não altera tabela, política nem função existente, `join_room` incluída):
+- cria `public.list_my_rooms()`: as salas em que o chamador é membro ativo, abertas e encerradas, com `room_id`,
+  `name`, `role`, `is_open`, `closed_at`, `member_count`, `max_members` e `created_at`. Abertas primeiro, depois
+  as mais recentes; no máximo 50. Dos outros membros, só a contagem;
+- cria `public.close_room(p_room_id uuid) → timestamptz`, só para o dono (sala alheia ou inexistente:
+  `unauthorized`). Idempotente: sala já encerrada devolve o `closed_at` original sem mudar nada. Preserva o
+  histórico (preenche `closed_at`, não apaga nada). Na mesma transação:
+  1. trava a sala e depois todas as linhas de membro (ordem de `user_id`);
+  2. publica o `bye` já existente, de cada sessão viva para as demais;
+  3. revoga todas as sessões (`room-closed`);
+  4. revoga os convites pendentes livres, **sem esperar** pelos que estão travados (`SKIP LOCKED`). Um convite
+     pulado está com um resgate ou uma revogação em curso: a revogação o revoga; o resgate reconfere a sala sob
+     trava e recusa (`invite-invalid`);
+  5. preenche `closed_at`;
+- `EXECUTE` só para `authenticated`. Termina com uma **autoverificação**: se as 2 funções não forem
+  `SECURITY DEFINER` com `search_path=""`, ou se `anon`/`service_role` tiverem `EXECUTE`, ou se `authenticated` não
+  tiver, a migração levanta `oryn-0400: …`.
+
+**Pré-condições (todas):**
+- [ ] Autorização ⛔ da Etapa 4.
+- [ ] A 0400 commitada no `HEAD` aprovado; `supabase/` sem mudança não commitada (o script recusa).
+- [ ] Local: `pnpm test` todo verde (inclusive os testes do `push-step-script`, que só passam com a árvore
+      limpa), `pnpm test:pg` verde, `pnpm typecheck` e `pnpm build`.
+- [ ] 🔎 `12_c2_preflight.sql`: S1–S5 PASS (S2 `58 / 1a5a563d…`, S4 com as 3 versões). Qualquer outro valor =
+      deriva do ambiente: **parar antes do dry-run**.
+- [ ] 🔎 `06_cli_side_effects.sql`: `cli_login_roles = {}`; `history` = as 3 versões.
+- [ ] 🔎 `07_initial_state.sql` e 🔎 **`08_scope_entries.sql`** salvos em `integration/evidence/` como o registro
+      de **antes**. O total do `08` tem de ser `TOTAL 58 / md5 1a5a563de28e1e1cf2a670e5731af5a7`.
+
+| | |
+|---|---|
+| Comando | `oryn-push-step.ps1 -Step 4` (dry-run: **só** `20261028000400`) → 🔎 `06`, `07` e `08` **iguais** ao registro de antes → ⛔ `-Apply` |
+| 🔎 Verificação específica | `05`: passos 1–4 todo PASS (o passo 4 confere 14 funções, `SECURITY DEFINER`, `search_path=""` e `EXECUTE` só para `authenticated`, sem `PUBLIC`); `06`: `history` = 4 versões; `01_postflight.sql`: **zero FAIL** (14 RPCs; todas as verificações de RLS e permissões continuam valendo); advisors sem ERROR; `07`: `platform_fingerprint` **igual**; `12`: S1 igual (`true / 4`) |
+| 🔎 Diferença do `08` | as 58 entradas de antes continuam **todas iguais**, e há **exatamente 2** novas: `fn:close_room(uuid):…` e `fn:list_my_rooms():…` |
+| 🔎 Data API | uma chamada de `list_my_rooms` pela REST, com o JWT de uma conta de teste (cliente web ou harness), responde a lista, não `PGRST202` (cache de esquema do PostgREST recarregado: **NOT VERIFIED** até esta leitura) |
+| **Aprova** | todas as linhas acima |
+| **Interrompe** | erro (inclusive `oryn-0400: …`); qualquer FAIL no `05` ou no `01`; diferença do `08` diferente de exatamente +2; `platform_fingerprint` mudou; histórico ≠ 4 versões; S1 mudou; advisor ERROR; e os critérios comuns acima |
+| Reversão ⛔ | `91_rollback_0400.sql` (abaixo). **Não** usar o `90_rollback.sql`: ele apaga o schema inteiro, com os dados |
+
+**Baselines S2/S4: medir, não presumir.** O md5 do S2 inclui a ACL das funções, que no projeto tem o `postgres`
+como dono (nos testes é o `migration_owner`): não dá para calcular localmente.
+1. Só depois de **todas** as verificações acima aprovarem, registrar os valores **lidos** no projeto: a linha
+   `TOTAL <n> / md5 <md5>` do `08` (esperado `n = 60`; o md5 é o que aparecer) e o S4
+   (`20261023000100,20261023000200,20261023000300,20261028000400`).
+2. Atualizar S2 e S4 no `11_c0w_postflight.sql`, no `12_c2_preflight.sql` e no `13_c2_postflight.sql`, num
+   **commit próprio** que cite o arquivo de evidência com a saída do `08`.
+3. **Entre a aplicação e esse commit**, S2 e S4 do `11`/`12`/`13` dão FAIL **esperado**: nenhuma C2, C0 ou teste
+   remoto roda nesse intervalo.
+
+**Recuperação: `91_rollback_0400.sql` ⛔** (SQL editor, como `postgres`, com autorização própria):
+- apaga só as 2 funções e a linha `20261028000400` do histórico; idempotente (num banco sem a 0400, não faz nada);
+- **falha fechada:** se `public` não ficar com exatamente as 12 RPCs da 0200, levanta `oryn-91: …` e nada é
+  revertido;
+- **sucesso:** o `07` e o `08` voltam **exatamente** ao registro de antes (58 entradas, `1a5a563d…`), o `06`
+  mostra as 3 versões e o `05` mostra o passo 4 como `PENDING`, sem FAIL;
+- **não desfaz dados:** salas já encerradas continuam com `closed_at` (o D2 do `12` passa a contar só as abertas),
+  sessões revogadas continuam revogadas e convites revogados continuam revogados. Sem a 0400, não há como
+  encerrar nem listar salas pela interface; o cliente mostra erro de carga no lobby.
+
+**Aplicação parcial.** Que a CLI aplica cada arquivo numa transação é **NOT VERIFIED** (runbook §5). Se for, um
+`oryn-0400: …` desfaz tudo. Se não for, as funções podem ficar criadas com permissões erradas: o passo 4 do `05`
+acusa (FAIL), e a recuperação é o `91`, que funciona com qualquer combinação das 2 funções.
+
+**Depois da Etapa 4 (cada item ⛔ com autorização própria):** encerrar a sala preservada da C2
+(`93468ee8-c2da-49ce-a9aa-fcd3c3bc205d`) pelo `close_room` para liberar a concessão do OWNER (1 sala aberta); o
+D2 do `12` volta a PASS sem apagar histórico. Validação manual no runbook §14.
+
+## 3. Pós-voo final (depois da Etapa 3; de novo depois da Etapa 4)
 
 - 🔎 `integration/sql/01_postflight.sql`: **zero FAIL**.
 - Resolver cada `NOT VERIFIED`:

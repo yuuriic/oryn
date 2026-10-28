@@ -46,11 +46,13 @@ describe('matriz de privilégios efetivos', () => {
     expect(matrix).toEqual({
       'ack_signals(uuid,uuid[])': userRpc,
       'authorize_signal(uuid,uuid,uuid,text,integer,integer)': userRpc,
+      'close_room(uuid)': userRpc,
       'create_room(text,text,integer)': userRpc,
       'create_room_invite(uuid,integer)': userRpc,
       'get_roster(uuid)': userRpc,
       'join_room(uuid)': userRpc,
       'leave_room(uuid)': userRpc,
+      'list_my_rooms()': userRpc,
       'redeem_creator_invite(text)': userRpc,
       'redeem_room_invite(text,text)': userRpc,
       'revoke_room_invite(uuid)': userRpc,

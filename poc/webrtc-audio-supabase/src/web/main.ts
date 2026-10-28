@@ -1,5 +1,7 @@
 // Página da integração 02C: login (e-mail e senha em conta EXISTENTE; sem anônimo, sem cadastro), sala,
 // chamada de voz 1:1 com o PeerCall da 02B e sinalização pelo Supabase (SupabaseSignaling).
+// MVP 01: lobby com as salas da conta (listar, criar com 2 lugares, entrar e encerrar), em rooms.ts e
+// rooms-view.ts; o campo de UUID ficou em "Diagnóstico".
 //
 // Sigilo: a senha só passa do campo para o supabase-js e o campo é limpo em seguida; a sessão de login fica
 // SÓ em memória (persistSession: false: nada em localStorage); o registro em tela nunca mostra token, SDP,
@@ -9,9 +11,11 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { isUuid } from '../../supabase/functions/_shared/signal-contract.ts';
 import { PeerCall, type CallPhase, type CallStats, type PeerStates } from './call.ts';
 import { parseWebConfig, type WebConfig } from './config.ts';
+import { DISCONNECT_KIND_MESSAGES, LobbyController, classifyDisconnect } from './rooms.ts';
+import { renderLobby } from './rooms-view.ts';
 import { describePair, formatCodec, formatMetric } from './stats.ts';
 import { createSupabaseBackend } from './supabase-backend.ts';
-import { DISCONNECT_MESSAGES, SupabaseSignaling } from './supabase-signaling.ts';
+import { DISCONNECT, DISCONNECT_MESSAGES, SupabaseSignaling } from './supabase-signaling.ts';
 
 const el = <T extends HTMLElement>(id: string): T => {
   const node = document.getElementById(id);
@@ -29,6 +33,14 @@ const ui = {
   account: el<HTMLElement>('account'),
   userLabel: el<HTMLElement>('user-label'),
   logoutBtn: el<HTMLButtonElement>('logout-btn'),
+  rooms: el<HTMLDivElement>('rooms'),
+  roomsError: el<HTMLParagraphElement>('rooms-error'),
+  refreshBtn: el<HTMLButtonElement>('rooms-refresh-btn'),
+  createForm: el<HTMLFormElement>('create-form'),
+  createName: el<HTMLInputElement>('create-name'),
+  createDisplay: el<HTMLInputElement>('create-display'),
+  createBtn: el<HTMLButtonElement>('create-btn'),
+  callRoom: el<HTMLElement>('call-room'),
   room: el<HTMLInputElement>('room'),
   joinBtn: el<HTMLButtonElement>('join-btn'),
   muteBtn: el<HTMLButtonElement>('mute-btn'),
@@ -57,6 +69,10 @@ let selfUserId: string | null = null;
 let call: PeerCall | null = null;
 let signaling: SupabaseSignaling | null = null;
 let remoteAudio: HTMLAudioElement | null = null;
+/** Sala da chamada atual (ou da última, até ela terminar) e se a chamada está em curso. */
+let callRoomId: string | null = null;
+let callActive = false;
+let lobby: LobbyController;
 
 function setField(name: string, value: string): void {
   const node = document.querySelector<HTMLElement>(`[data-field="${name}"]`);
@@ -110,6 +126,7 @@ ui.listenBtn.addEventListener('click', () => {
 function renderPhase(phase: CallPhase, error?: string): void {
   setField('phase', PHASES[phase]);
   const active = phase !== 'idle' && phase !== 'ended' && phase !== 'failed';
+  callActive = active;
   ui.joinBtn.disabled = active;
   ui.room.disabled = active;
   ui.muteBtn.disabled = !active;
@@ -118,12 +135,30 @@ function renderPhase(phase: CallPhase, error?: string): void {
     ui.muteBtn.textContent = 'Mutar';
     setField('role', '—');
   }
-  if (phase === 'failed' && error) {
+  // O dono encerrou a sala desta chamada por aqui: o aviso do servidor pode chegar antes da resposta do
+  // close_room, e a queda que ele causa não é um erro para quem encerrou.
+  const closingHere = lobby?.state.busy?.kind === 'close' && lobby.state.busy.roomId === callRoomId;
+  if (phase === 'failed' && error && !closingHere) {
     const code = /código (\d{4})/.exec(error)?.[1];
     const detail = code ? DISCONNECT_MESSAGES[Number(code)] : undefined;
-    showError(detail ? `${error} — ${detail}.` : error);
+    const shown = detail ? `${error} — ${detail}.` : error;
+    showError(shown);
+    if (Number(code) === DISCONNECT.session && callRoomId) void explainDisconnect(callRoomId, shown);
   }
-  if (phase === 'ended' || phase === 'failed') signaling = null;
+  if (phase === 'ended' || phase === 'failed') {
+    signaling = null;
+    if (lobby.state.status !== 'idle') void lobby.refresh(); // contagens e estado das salas mudaram
+  }
+  renderRooms();
+}
+
+/** 4403: pergunta à lista de salas o motivo. Sem classificação definitiva se a consulta falhar. */
+async function explainDisconnect(roomId: string, shown: string): Promise<void> {
+  const user = selfUserId;
+  const res = await createSupabaseBackend(client).rpc<unknown[]>('list_my_rooms', {}).catch(() => ({ data: null, error: 'erro' }));
+  // Outra chamada já começou, ou houve logout/login no meio: a resposta é de outro momento.
+  if (callActive || callRoomId !== roomId || selfUserId !== user) return;
+  showError(`${shown} ${DISCONNECT_KIND_MESSAGES[classifyDisconnect(roomId, res)]}`);
 }
 
 function renderPeer(states: PeerStates | null): void {
@@ -144,12 +179,16 @@ function renderStats(s: CallStats | null): void {
 
 // ---------- chamada ----------
 
-function startCall(): void {
+function startCall(roomInput: string): void {
+  if (callActive) return; // uma chamada por vez
   showError(null);
-  const roomId = ui.room.value.trim().toLowerCase();
+  const roomId = roomInput.trim().toLowerCase();
   if (!isUuid(roomId)) return showError('ID da sala inválido: informe o UUID da sala.');
   if (!selfUserId) return showError('Faça login antes de entrar na chamada.');
   const userId = selfUserId;
+  callRoomId = roomId;
+  ui.room.value = roomId;
+  ui.callRoom.textContent = lobby.state.rooms.find((r) => r.room_id === roomId)?.name ?? roomId;
   const backend = createSupabaseBackend(client);
   ui.status.hidden = false;
   ui.log.replaceChildren();
@@ -182,6 +221,8 @@ function startCall(): void {
     },
   );
   call = current;
+  callActive = true; // antes da primeira fase: um segundo clique não abre outra chamada
+  renderRooms();
   void current.start({ kind: 'room' });
 }
 
@@ -192,7 +233,7 @@ async function endCall(): Promise<void> {
   await s?.closed.catch(() => undefined);
 }
 
-ui.joinBtn.addEventListener('click', startCall);
+ui.joinBtn.addEventListener('click', () => startCall(ui.room.value));
 ui.muteBtn.addEventListener('click', () => {
   if (!call) return;
   call.setMuted(!call.muted);
@@ -202,6 +243,36 @@ ui.muteBtn.addEventListener('click', () => {
 ui.leaveBtn.addEventListener('click', () => void endCall());
 // Fechar a aba: tenta sair da sala; se não der tempo, a sessão vence sozinha em até 90 s.
 window.addEventListener('pagehide', () => call?.end());
+
+// ---------- lobby (MVP 01) ----------
+
+function renderRooms(): void {
+  if (!lobby) return;
+  const s = lobby.state;
+  const busy = s.busy !== null;
+  ui.rooms.replaceChildren(
+    renderLobby(document, s, {
+      callActive,
+      activeRoomId: callActive ? callRoomId : null,
+      onJoin: (roomId) => startCall(roomId),
+      onClose: (roomId) => void lobby.close(roomId),
+    }),
+  );
+  ui.roomsError.textContent = s.actionError ?? '';
+  ui.roomsError.hidden = s.actionError === null;
+  ui.refreshBtn.disabled = busy || s.status === 'loading';
+  ui.createBtn.disabled = busy;
+  ui.createName.disabled = busy;
+  ui.createDisplay.disabled = busy;
+}
+
+ui.refreshBtn.addEventListener('click', () => void lobby.refresh());
+ui.createForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  void lobby.create(ui.createName.value, ui.createDisplay.value).then((id) => {
+    if (id) ui.createName.value = '';
+  });
+});
 
 // ---------- login ----------
 
@@ -213,6 +284,7 @@ function showLoggedIn(email: string | undefined): void {
 
 function showLoggedOut(): void {
   selfUserId = null;
+  lobby.reset();
   ui.account.hidden = true;
   ui.login.hidden = false;
   ui.loginBtn.disabled = false;
@@ -232,6 +304,7 @@ ui.loginForm.addEventListener('submit', (event) => {
     // Canais privados exigem o JWT do usuário no Realtime antes da inscrição.
     await client.realtime.setAuth(data.session.access_token);
     showLoggedIn(data.user.email);
+    void lobby.refresh();
   });
 });
 
@@ -250,6 +323,16 @@ try {
   // persistSession false: o login vive só nesta aba; autoRefreshToken renova o JWT (o supabase-js repassa
   // o token novo ao Realtime). Nenhuma chave além da publicável.
   client = createClient(cfg.supabaseUrl, cfg.publishableKey, { auth: { persistSession: false, autoRefreshToken: true, detectSessionInUrl: false } });
+  const backend = createSupabaseBackend(client);
+  lobby = new LobbyController({
+    rpc: (fn, args) => backend.rpc(fn, args),
+    confirm: (message) => window.confirm(message),
+    onChange: () => renderRooms(),
+    // O dono encerrou a sala da própria chamada: sai dela aqui, sem esperar o aviso do servidor.
+    onClosed: async (roomId) => {
+      if (callActive && callRoomId === roomId) await endCall();
+    },
+  });
   client.auth.onAuthStateChange((event) => {
     if (event === 'TOKEN_REFRESHED') log('Token de acesso renovado.');
     if (event === 'SIGNED_OUT' && selfUserId !== null) {

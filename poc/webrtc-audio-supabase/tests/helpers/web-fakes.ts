@@ -197,6 +197,8 @@ export class FakeSupabase {
   refuseChannels = false;
   /** Não entrega mais nada aos canais (eventos "perdidos"). */
   silent = false;
+  /** Sala encerrada (close_room, MVP 01). */
+  closed = false;
   private counter = 0;
   private readonly clock: () => number;
 
@@ -261,7 +263,7 @@ export class FakeSupabase {
     switch (fn) {
       case 'join_room': {
         const room = String(a['p_room_id']);
-        if (room !== ROOM || !this.members.has(user)) throw new Error('not-member');
+        if (room !== ROOM || this.closed || !this.members.has(user)) throw new Error('not-member');
         if (this.live(room).filter((s) => s.user === user).length >= 2) throw new Error('limit-reached');
         const id = this.nextSessionIds.shift() ?? this.uuid();
         this.sessions.set(id, { id, user, room, revoked: false, lastSeen: this.clock(), createdAt: this.clock() + this.counter / 1000 });
@@ -270,7 +272,7 @@ export class FakeSupabase {
       }
       case 'get_roster': {
         const room = String(a['p_room_id']);
-        if (!this.members.has(user)) throw new Error('not-member');
+        if (this.closed || !this.members.has(user)) throw new Error('not-member');
         return this.live(room).map((s) => ({ session_id: s.id, display_name: this.members.get(s.user)!, is_self: s.user === user, joined_at: new Date(s.createdAt).toISOString() }));
       }
       case 'touch_session': {
@@ -281,7 +283,8 @@ export class FakeSupabase {
       }
       case 'leave_room': {
         const s = this.sessions.get(String(a['p_session_id']));
-        if (!s || s.user !== user || s.revoked) throw new Error('session-invalid');
+        if (!s || s.user !== user) throw new Error('session-invalid');
+        if (s.revoked) return null; // como a 0200: sessão já encerrada (ou revogada pelo close_room) só retorna
         s.revoked = true;
         this.control(s.room, s.id, 'bye', { session_id: s.id });
         return null;
@@ -339,6 +342,16 @@ export class FakeSupabase {
     const logged: Logged = { msg_id: this.uuid(), seq, room: from.room, epoch: r.pair_epoch, bytes, kind: r.kind, to: r.to_session_id, state: 'accepted', createdAt: this.clock() };
     this.log.set(key, logged);
     return { msg_id: logged.msg_id, seq, from_user: user, room_id: from.room, state: 'accepted', duplicate: false, accepted_at: new Date(logged.createdAt).toISOString() };
+  }
+
+  /**
+   * close_room (0400): `bye` de cada sessão viva para as demais, ANTES de revogar; depois todas revogadas e a
+   * sala fechada (roster e entrada respondem not-member; batimento, session-invalid).
+   */
+  closeRoom(): void {
+    for (const s of this.live(ROOM)) this.control(ROOM, s.id, 'bye', { session_id: s.id });
+    for (const s of this.sessions.values()) if (s.room === ROOM) s.revoked = true;
+    this.closed = true;
   }
 
   /** Simula aba fechada sem saída: a sessão para de bater e vence. */
