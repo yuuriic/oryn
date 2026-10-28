@@ -1219,10 +1219,14 @@ seguinte recebe `session-invalid` e encerra com `4403` em até 30 s.
 ### 14.1 Implantação ⛔
 
 Seguir **integralmente** a Etapa 4 do `DEPLOY-CHECKLIST-02C.md`:
-- antes: `12` (S1–S5 PASS), `06`, e `07` + `08` salvos como registro de antes;
+- antes: CI `POC-02C CI` verde no `HEAD` aprovado (o push só de `mvp01/room-management` não dispara o CI; o meio
+  é decisão ⛔), `12` (S1–S5 PASS), `06`, e `07` + `08` salvos como registro de antes;
 - dry-run só da 0400, com `06`/`07`/`08` iguais;
-- aplicação ⛔; depois, `05` (passos 1–4), `06` (4 versões), `01` (zero FAIL), advisors, `07` (plataforma igual),
-  diferença do `08` = exatamente +2 e uma chamada REST de `list_my_rooms`;
+- aplicação ⛔ (só pelo `oryn-push-step.ps1`; `apply_migration` e SQL editor proibidos); depois, `05` (passos
+  1–4), `06` (4 versões), `01` na versão atual (zero FAIL; ela só roda com a 0400 aplicada), advisors (sem ERROR;
+  WARN `0029` passa de 11 para 13), `07` (plataforma igual), diferença do `08` = exatamente +2 e uma chamada REST de
+  `list_my_rooms`;
+- se houver reversão (`91` ⛔): controles do estado sem a 0400, incluindo o `01` da versão `074de82`;
 - só então, medir S2 (linha `TOTAL` do `08`) e S4 e atualizar `11`, `12` e `13` num commit próprio.
 
 Os fingerprints novos **não** estão neste documento de propósito: só existem depois de lidos no projeto.
