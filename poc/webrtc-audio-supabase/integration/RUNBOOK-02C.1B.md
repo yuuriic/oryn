@@ -964,3 +964,146 @@ pwsh -NoProfile -Command ". integration/scripts/oryn-c2.lib.ps1; Get-C2Shareable
     endereços candidatos pode confirmá-los. Serve só para comparar leituras; não tratar como anonimização.
   - **B11:** os autotestes `.ps1` (C0 e C2) não rodam no `pnpm test` nem no CI. São pré-requisito manual (§12.3,
     passo 6).
+
+## 13. Chamada de voz 1:1 pelo cliente web (integração Supabase + WebRTC; ⛔ cada passo marcado exige autorização própria)
+
+Cliente em `src/web/` (README, "Cliente web de voz 1:1"). Tudo o que segue é **remoto** e ainda **não foi
+feito**. Nada aqui altera RLS, migrações, permissões, Auth ou salas.
+
+**Pré-requisitos locais (sem rede):** `pnpm typecheck`, `pnpm test`, `pnpm test:pg` e `pnpm build` verdes.
+
+> **Registro do deploy autorizado (passos 1–3), CLI 2.122.0, projeto `oryn` (`praufvcaggcxbhcmfqgw`):**
+> - antes: nenhuma Edge Function publicada e nenhum secret próprio;
+> - `config.toml`: só `[functions.signal] enabled = true`; `verify_jwt = true` preservado;
+> - `supabase secrets set ORYN_ALLOWED_ORIGINS=http://127.0.0.1:5173 --project-ref …`: único secret próprio;
+> - `supabase functions deploy signal --project-ref … --use-api`, sem `--prune` e sem `--no-verify-jwt`:
+>   `signal` `ACTIVE`, versão 1, `verify_jwt: true`. É a única função do projeto.
+>
+> | Teste (sem credencial) | Resultado |
+> |---|---|
+> | `POST` sem `Authorization` | **401** do gateway (`UNAUTHORIZED_NO_AUTH_HEADER`); a função não é alcançada |
+> | `POST` com `Bearer aaa.bbb.ccc` | **401** do gateway (`UNAUTHORIZED_INVALID_JWT_FORMAT`) |
+> | `GET` sem `Authorization` | **401** do gateway |
+> | `OPTIONS` com `Origin: http://127.0.0.1:5173` | **204** vindo **da função**, com `Access-Control-Allow-Origin` = a origem, `allow-methods: POST`, `allow-headers: authorization, apikey, content-type, x-client-info` e `Vary: origin` |
+> | `OPTIONS` de outra origem | **403**, sem `Access-Control-Allow-Origin` |
+>
+> Conclusões:
+> - O gateway **deixa o preflight passar** com `verify_jwt = true`. O risco do §6 (CORS barrado) não se confirmou,
+>   e `verify_jwt` fica `true`.
+> - A resposta do `OPTIONS` veio do código da função, então ela iniciou e carregou a configuração (`SUPABASE_*`
+>   injetadas e `ORYN_ALLOWED_ORIGINS`).
+> - Ainda **NOT VERIFIED**: um `POST` com JWT real de usuário (`authorize_signal`, `set_signal_state` e o
+>   Broadcast REST). Isso só se prova na chamada real (passo 5).
+
+> **Registro do teste real Windows ↔ iPhone (2026-10-28; resultados informados pelo operador):**
+>
+> - **Ambiente temporário:**
+>   - build de produção servido por `vite preview` (127.0.0.1:4173), publicado por um Cloudflare Quick Tunnel
+>     gratuito (`cloudflared` 2026.9.1 portátil, SHA-256 conferido, sem instalação no sistema);
+>   - origem HTTPS do túnel acrescentada ao `ORYN_ALLOWED_ORIGINS` com autorização própria.
+>   - Contas: OWNER no Windows (Chrome/Edge), MEMBER no iPhone (Safari). Sala: a da C2.
+>
+> | # | Verificação | Resultado |
+> |---|---|---|
+> | 1 | HTTPS acessível no Safari do iPhone | PASS |
+> | 2 | OWNER e MEMBER autenticados na mesma sala | PASS |
+> | 3 | WebRTC conectado nos dois dispositivos | PASS |
+> | 4 | Áudio bidirecional | PASS |
+> | 5 | Mute independente | PASS |
+> | 6 | Saída do MEMBER detectada pelo OWNER | PASS |
+>
+> Com isso o `POST` autenticado da função `signal` (autorização, estados e Broadcast REST) passou a ser
+> **comprovado na prática**: offer, answer e candidatos chegaram aos dois lados.
+>
+> - **Encerramento:**
+>   - `ORYN_ALLOWED_ORIGINS` restaurado para `http://127.0.0.1:5173` (digest conferido);
+>   - preflight da origem do túnel **403**; da origem local **204**;
+>   - `verify_jwt: true`;
+>   - túnel e preview encerrados (o endereço do túnel responde 530);
+>   - binário do `cloudflared` apagado.
+> - **Leitura de depois (`12`, só leitura):**
+>   - **D5 PASS** (`0 / 0 / 0 / 0`), com 26 sinais em `signal_log` e 44 mensagens `hello`/`bye` em
+>     `realtime.messages`. Nenhum SDP ou candidato persistiu: o Broadcast REST não grava (N5/#10 comprovado).
+>   - D1, D3, D4, S1–S5 e A1–A6 PASS.
+> - **Desvios:**
+>   - **D2 FAIL:** esperado; é a sala aberta da C2.
+>   - **A7 FAIL:** 3 sessões de Auth ativas em 2 contas, provavelmente abas fechadas sem "Sair da conta" ou de
+>     testes anteriores. A recuperação é a do §12.4 e exige autorização separada. Até lá, essas sessões
+>     bloqueiam a próxima C2, que exige A7 PASS.
+> - **`07`:** `oryn_scope` 58 objetos / `1a5a563de28e1e1cf2a670e5731af5a7`; `platform`
+>   `4ce6437364c259fec6b5ea9646ac1359`. Iguais ao baseline.
+> - O `13_c2_postflight.sql` não se aplica (é da C2) e manteve os placeholders.
+> - Limite conhecido que continua valendo: sem TURN, redes restritivas (NAT simétrico, CGNAT) não foram testadas.
+
+> **Registro da recuperação do A7 (2026-10-28; com autorização própria, §12.4):**
+>
+> - **Revogação:**
+>   - 3 sessões de Auth pertencentes às 2 contas de teste (OWNER e MEMBER);
+>   - feita por UUID completo e igualdade exata, nunca por padrão ou prefixo;
+>   - numa transação protegida;
+>   - antes dela, a aba do iPhone foi fechada e o servidor local encerrado. A aba local continuava aberta, mas
+>     sem servidor não cria sessão nova.
+> - **Não alterados:** sala, convites, usuários, Auth (configuração), RLS, secrets, migrações e Edge Functions.
+> - **Verificação de depois (só leitura, 17:48 UTC):**
+>   - 0 sessões de Auth;
+>   - 0 refresh tokens ativos;
+>   - 0 sessões de sala vivas;
+>   - 3 contas.
+> - **`12`:**
+>   - **A7 PASS**;
+>   - **D5 PASS** preservado;
+>   - **D2 FAIL esperado:** a sala `93468ee8-c2da-49ce-a9aa-fcd3c3bc205d` continua aberta, preservada, com 2
+>     membros. Continua FAIL enquanto a sala estiver aberta. Fechá-la é outra decisão (§12.4).
+> - Nenhuma credencial ou token foi registrado.
+
+1. ⛔ **Publicar a Edge Function `signal`** (CLI, com o PAT só no terminal do operador, nunca no repositório). O
+   `config.toml` está com `[functions.signal] enabled = false`; o comportamento do `functions deploy` com essa
+   trava é NOT VERIFIED. A troca para `true` é feita no próprio passo autorizado. A integração GitHub não lê esta
+   pasta (Working directory `.`, §1): um push não publica nada. `verify_jwt` continua `true`.
+2. ⛔ **Secret `ORYN_ALLOWED_ORIGINS=http://127.0.0.1:5173`** (origem do `pnpm dev`; o `edge-config.ts` aceita
+   `http://localhost` e `http://127.0.0.1` só para desenvolvimento). Nenhum outro secret: `SUPABASE_*` é
+   injetado pela plataforma.
+3. **Conferência da função (sem JWT):** um `POST` sem `Authorization` deve voltar 401 (gateway ou função). Um
+   `OPTIONS` com `Origin: http://127.0.0.1:5173` deve voltar 204 com `access-control-allow-origin`.
+   - **Se o `OPTIONS` for barrado pelo gateway** (`verify_jwt = true`; NOT VERIFIED, §6): a página mostra
+     "Sem resposta da função signal (rede, CORS ou função não publicada)". **Não** desligar `verify_jwt` por
+     conta própria. Registrar:
+     - o status do `OPTIONS`;
+     - se o `POST` com JWT chega à função (logs da função: `outcome`);
+     - o erro do navegador (aba Rede).
+
+     Então levar ao arquiteto. A alternativa conhecida é `verify_jwt = false`: a função continua validando o
+     usuário em `/auth/v1/user`. Ela só entra com decisão explícita.
+4. **Sala:** a sala `it-02c4b-*` da C2, aberta, com OWNER e MEMBER. **Sem** convite, criação ou limpeza. O
+   acesso é confirmado pela própria página:
+   - `join_room` aceito = membro ativo;
+   - `not-member` = a sala não serve; **parar**.
+5. **Chamada real, nesta ordem, uma etapa por vez:**
+   - **mesma máquina:** OWNER e MEMBER em dois perfis de navegador;
+   - **duas máquinas na mesma rede;**
+   - **redes diferentes, só com STUN.** Pode falhar com NAT simétrico ou CGNAT: sem TURN, isso é limitação
+     conhecida, não defeito.
+
+   Critério de cada etapa:
+   - áudio nos dois sentidos;
+   - mute independente, sem renegociar;
+   - "Sair da chamada" leva o outro lado a "aguardando";
+   - o caminho registrado (par ICE selecionado: direto ou relay) anotado.
+6. **Leitura de depois (só leitura):** `integration/sql/12_c2_preflight.sql` e `07_initial_state.sql`.
+   - **D5 tem de ser PASS:** nenhum evento `signal` em `realtime.messages`. É a prova de que o Broadcast REST da
+     função não persiste SDP nem candidatos (N5/#10).
+   - **Desvios esperados:** D2 (sala aberta, a da C2) e, logo depois da chamada, sessões de sala até vencerem
+     (D4, 90 s).
+   - **Fora do esperado:** A7 (sessão de Auth ativa) depois de "Sair da conta" ou de fechar as abas. O login vive
+     só na aba, mas o refresh token continua válido no servidor até expirar ou até o `signOut`. Seguir a
+     recuperação de sessões do §12.4.
+   - O `13_c2_postflight.sql` é da C2 e **não** se aplica aqui (fica com os placeholders).
+
+**Riscos e limites desta etapa:**
+- Sem TURN: entre redes restritivas a mídia pode não conectar.
+- Sem renegociação: uma lacuna na sinalização é só registrada. Uma offer perdida leva ao timeout de 20 s; sair e
+  entrar de novo cria um par novo.
+- Fechar a aba tenta `leave_room`, mas pode não dar tempo: a sessão vence em até 90 s e o outro lado detecta a
+  saída pelo roster, no batimento seguinte.
+- JWT: o supabase-js renova o token e o repassa ao Realtime (`TOKEN_REFRESHED`). Se a renovação falhar
+  (`SIGNED_OUT`), a chamada é encerrada e a página pede novo login.

@@ -165,13 +165,14 @@ settings:
 importers:
 
   .:
+    dependencies:
+      '@supabase/supabase-js':
+        specifier: 2.118.0
+        version: 2.118.0
     devDependencies:
       '@electric-sql/pglite':
         specifier: 0.5.11
         version: 0.5.11
-      '@supabase/supabase-js':
-        specifier: 2.118.0
-        version: 2.118.0
       '@types/node':
         specifier: 24.19.2
         version: 24.19.2
@@ -187,6 +188,9 @@ importers:
       typescript:
         specifier: 7.0.2
         version: 7.0.2
+      vite:
+        specifier: 8.3.5
+        version: 8.3.5(@types/node@24.19.2)
       vitest:
         specifier: 5.0.5
         version: 5.0.5(@types/node@24.19.2)(vite@8.3.5(@types/node@24.19.2))

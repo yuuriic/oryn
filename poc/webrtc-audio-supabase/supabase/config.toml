@@ -63,10 +63,10 @@ enable_signup = false
 # secret = "env(SUPABASE_AUTH_CAPTCHA_SECRET)"
 
 [functions.signal]
-# TRAVA contra publicação não intencional: false enquanto o 02C.1B não autorizar o deploy. A CLI usa
-# `enabled` para pular a função no deploy e no serve. Se a integração GitHub respeita esta chave é
-# NOT VERIFIED; a trava efetiva continua sendo a configuração do painel.
-enabled = false
+# Deploy AUTORIZADO pelo arquiteto (integração de voz 1:1): habilitada para `supabase functions deploy signal
+# --project-ref … --use-api`. Antes ficava false como trava. A integração GitHub não lê esta pasta (Working
+# directory `.`, runbook §1); a publicação é só pela CLI, com autorização.
+enabled = true
 # Chamada só com o JWT do usuário (supabase.functions.invoke). Mesmo valor que a CLI gera para
 # `functions new --auth user`. A função valida o usuário de novo no código (/auth/v1/user).
 verify_jwt = true

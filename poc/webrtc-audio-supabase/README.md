@@ -47,6 +47,8 @@ pnpm typecheck
 pnpm test        # unitários + autorização SQL (PGlite); itens do Supabase real aparecem como "todo"
 pnpm test:pg     # concorrência e compatibilidade em PostgreSQL 17 real embutido (local, ~20 s)
 pnpm test:remote # Supabase REAL: tudo pulado sem ORYN_REMOTE=1 (ver integration/RUNBOOK-02C.1B.md, §9)
+pnpm build       # typecheck + bundle do cliente web de voz (dist/, ignorado pelo Git)
+pnpm dev         # cliente web em http://127.0.0.1:5173 (exige .env.local; ver "Cliente web de voz 1:1")
 ```
 
 Requisitos: Node 24+ e pnpm 12+. Não há serviço a instalar: o PGlite e o PostgreSQL 17 embutido
@@ -63,12 +65,63 @@ Requisitos: Node 24+ e pnpm 12+. Não há serviço a instalar: o PGlite e o Post
 | `supabase/functions/_shared/` | Contrato da sinalização e núcleo da Edge Function (puros e testados) |
 | `supabase/functions/_shared/edge-config.ts`, `supabase-http.ts`, `signal-http.ts` | Credenciais, chamadas HTTP com headers separados por operação e camada HTTP/CORS (puros e testados) |
 | `supabase/functions/signal/index.ts` | Só a ligação Deno dos módulos de `_shared`. **Não executado**; fora do typecheck |
-| `supabase/config.toml` | CLI 2.122.0: Data API só `public`, sem seed, JWT de 600 s, função `signal` travada (`enabled = false`) |
+| `supabase/config.toml` | CLI 2.122.0: Data API só `public`, sem seed, JWT de 600 s, função `signal` habilitada e publicada (`enabled = true`, `verify_jwt = true`) |
 | `tests/remote/` | Harness do Supabase real (`pnpm test:remote`), desligado por padrão |
 | `tests/pg/` | Concorrência e compatibilidade em PostgreSQL 17 real embutido (`pnpm test:pg`; roda no CI) |
 | `integration/` | Runbook, matriz de evidências e scripts SQL do 02C.1B |
 | `src/` | Cliente: contratos de domínio, recepção (duplicatas e ordem) e envio com retentativas |
-| `tests/` | Testes; `helpers/` com o shim, o banco PGlite e os cenários |
+| `src/web/` | Cliente web de voz 1:1: página (`main.ts`), `SupabaseSignaling`, backend supabase-js, configuração e os módulos WebRTC copiados da POC-02B (`call.ts`, `ice.ts`, `stats.ts`…) |
+| `index.html`, `vite.config.ts`, `.env.example` | Página, build e modelo de configuração local do cliente web |
+| `tests/` | Testes; `helpers/` com o shim, o banco PGlite, os cenários e os fakes do cliente web (`web-fakes.ts`) |
+
+## Cliente web de voz 1:1 (integração Supabase + WebRTC)
+
+Chamada de voz entre OWNER e MEMBER, nas contas de e-mail e senha já existentes (as da C2), na sala da C2.
+
+- **Login:** `signInWithPassword`. A sessão de login fica só em memória (nada em `localStorage`). Sem anônimo,
+  sem cadastro.
+- **Sala:** `join_room` → canal privado `oryn:s:{sessão}` → `get_roster`. `hello`/`bye` (publicados pelo banco)
+  mostram quem entra e sai. Batimento `touch_session` a cada 30 s; `leave_room` ao sair.
+- **Sinalização:** offer, answer e candidatos ICE, um a um, só pela Edge Function `signal`. Nenhum Broadcast do
+  cliente. Regras de envio e recepção:
+  - fila serial, com limite de 30 envios em 10 s (o banco recusa a partir de 40);
+  - retentativas do `sendSignal` com o mesmo `client_msg_id`;
+  - recepção pelo `SignalReceiver` (duplicatas, ordem por `seq`) e confirmação por `ack_signals`.
+- **Iniciador e `pair_epoch`:** determinísticos, calculados só dos dois `session_id`:
+  - cria a offer a sessão de menor id;
+  - o epoch é um hash simétrico do par.
+
+  Os dois lados chegam ao mesmo valor sem contador local.
+- **Áudio:** `PeerCall` da POC-02B, com Opus, mute por `track.enabled` e métricas. Três mudanças pontuais, marcadas
+  `02C` em `src/web/call.ts`.
+- **ICE:** só STUN (padrão `stun:stun.l.google.com:19302`); sem TURN.
+- **1:1:** uma terceira conta é ignorada enquanto houver par; outra aba da própria conta nunca vira par.
+- **Segurança da configuração:** o frontend recebe só a chave publicável. A página se recusa a iniciar se qualquer
+  `VITE_*` parecer chave secreta, PAT ou `service_role`.
+
+Iniciar (cada participante na própria máquina, em `localhost`, que é contexto seguro para o microfone):
+
+```powershell
+cd "C:\Dev\Projeto - Oryn\poc\webrtc-audio-supabase"
+pnpm install --frozen-lockfile
+Copy-Item .env.example .env.local   # preencher URL do projeto, chave publicável e (opcional) o UUID da sala
+pnpm dev                            # http://127.0.0.1:5173
+```
+
+A Edge Function `signal` está publicada (`verify_jwt = true`) e o secret `ORYN_ALLOWED_ORIGINS` aceita só
+`http://127.0.0.1:5173`. Qualquer outra origem exige autorização própria (runbook §13).
+
+**Validado (2026-10-28, runbook §13):** chamada real 1:1 entre Windows (Chrome/Edge) e iPhone (Safari), por
+um túnel HTTPS temporário, com **6/6 PASS**:
+- HTTPS no Safari;
+- as duas contas na mesma sala;
+- WebRTC conectado;
+- áudio nos dois sentidos;
+- mute independente;
+- saída detectada pelo outro lado.
+
+**Não validado:** conectividade entre redes restritivas (WAN com NAT simétrico ou CGNAT), TURN e chamadas em
+grupo. O cliente é só 1:1 e só STUN.
 
 ## Modelo de segurança
 
@@ -113,7 +166,10 @@ Requisitos: Node 24+ e pnpm 12+. Não há serviço a instalar: o PGlite e o Post
   - eventos de **controle** (`hello`/`bye`: UUID e rótulo) saem por `realtime.send`, que **fica gravado de 72 h
     a 4 dias** (documentação oficial);
   - **SDP e candidatos ICE nunca** passam por `realtime.send` nem por tabelas: vão pela Edge Function `signal`
-    (Broadcast REST, opção S2). A não persistência do REST é **NOT VERIFIED** e é o portão do 02C.1B.
+    (Broadcast REST, opção S2). A não persistência do REST está **comprovada pelo D5 PASS** (runbook §13). Na
+    leitura do `12_c2_preflight.sql` feita depois da chamada real, havia 26 sinais em `signal_log` e nenhum
+    evento `signal` em `realtime.messages`; só as 44 mensagens `hello`/`bye`. O escopo é essa chamada nesse
+    projeto: só a ausência de SDP/ICE em `realtime.messages`, não os logs internos da plataforma.
 
 ## Estados da sinalização e entrega
 

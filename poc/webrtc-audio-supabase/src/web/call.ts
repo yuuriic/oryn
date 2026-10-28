@@ -1,0 +1,722 @@
+// Chamada de áudio bidirecional entre dois dispositivos reais, com sinalização via WebSocket.
+//
+// Regras de negociação:
+// - Cada cliente tem UMA RTCPeerConnection por par formado (epoch). O host sempre cria a offer.
+// - Operações SDP são serializadas em fila; sinais de epoch antigo ou fora de ordem são descartados.
+// - Candidatos ICE que chegam antes da descrição remota ficam em fila (limitada).
+// - ICE (02B.4): após a ADMISSÃO, o cliente pede ao servidor a configuração do modo escolhido
+//   (auto/direct/relay/relay-tls). O par só é criado com uma configuração válida; relay e relay-tls
+//   falham fechados sem TURN/TURNS. Credenciais TURN ficam só em memória e nunca vão ao log.
+// - O caminho de mídia (direto ou relay) é informado pelo par ICE SELECIONADO, nunca pela configuração.
+// - Nenhum SDP, candidato completo ou credencial ICE é registrado no log.
+//
+// Copiado de poc/webrtc-audio-wan/src/call.ts (POC-02B, 6daeb99) para a integração 02C. POCs isoladas: sem
+// import cruzado. Comportamento preservado; só três mudanças, todas para a sinalização por Supabase
+// (supabase-signaling.ts), marcadas com "02C":
+// 1. `SignalingHandlers` vem de ./protocol.ts (não há cliente WebSocket nesta POC);
+// 2. StartMode `room`: a entrada na sala é feita pelo próprio adaptador em connect(), sem mensagem extra;
+// 3. `peer-joined` pode trazer o papel do par (iniciador determinístico, conhecido só quando o par aparece).
+
+import { preferOpus } from './codecs.ts';
+import { describeMediaError } from './errors.ts';
+import { ERROR_MESSAGES, type ClientMessage, type ErrorCode, type Role, type ServerMessage, type SignalPayload, type SignalingHandlers } from './protocol.ts';
+import { buildRtcConfiguration, type IceMode } from './ice.ts';
+import { describeCandidate } from './redact.ts';
+import {
+  bitrateKbps,
+  describePair,
+  inboundAudio,
+  mediaPath,
+  outboundAudio,
+  packetLossPercent,
+  remoteInboundAudio,
+  selectedPair,
+  toEntries,
+  type CodecInfo,
+  type MediaPath,
+  type PairInfo,
+} from './stats.ts';
+
+export type CallPhase =
+  | 'idle'
+  | 'requesting-mic'
+  | 'connecting-signaling'
+  | 'waiting-peer'
+  | 'negotiating'
+  | 'connected'
+  | 'ended'
+  | 'failed';
+
+/**
+ * - create: operador cria a sessão (chave do operador);
+ * - rejoin: operador volta à própria sessão;
+ * - join: convidado entra com convite de uso único.
+ */
+export type StartMode =
+  | { kind: 'create'; operatorKey: string }
+  | { kind: 'rejoin'; sessionId: string; operatorKey: string }
+  | { kind: 'join'; invite: string }
+  /** 02C: sala do Supabase; o adaptador entra nela em connect() (join_room). */
+  | { kind: 'room' };
+
+export interface PeerStates {
+  connection: RTCPeerConnectionState;
+  ice: RTCIceConnectionState;
+  gathering: RTCIceGatheringState;
+  signaling: RTCSignalingState;
+}
+
+export interface CallStats {
+  codec: CodecInfo | null;
+  sendKbps: number | null;
+  recvKbps: number | null;
+  packetsSent: number | null;
+  packetsReceived: number | null;
+  /** Perda do que recebemos (inbound-rtp). */
+  packetsLost: number | null;
+  lossPct: number | null;
+  jitterMs: number | null;
+  /** Perda do que enviamos, segundo o RTCP do outro lado (remote-inbound-rtp). */
+  remoteLossPct: number | null;
+  rttMs: number | null;
+  rttSource: 'rtcp' | 'ice' | null;
+  pair: PairInfo | null;
+  /** Caminho comprovado pelo par selecionado (null = ainda sem par selecionado). */
+  path: MediaPath | null;
+}
+
+/** O que a interface mostra sobre a configuração ICE (sem hosts nem credenciais). */
+export interface IceInfo {
+  mode: IceMode;
+  /** "STUN 1 · TURN 4 (tcp, tls, udp)". */
+  summary: string;
+  turnConfigured: boolean;
+  expiresAt: number | null;
+}
+
+export interface SignalingLike {
+  connect(): Promise<void>;
+  send(message: ClientMessage): boolean;
+  close(): void;
+}
+
+export interface CallDeps {
+  getUserMedia(constraints: MediaStreamConstraints): Promise<MediaStream>;
+  createPeerConnection(config: RTCConfiguration): RTCPeerConnection;
+  createSignaling(handlers: SignalingHandlers): SignalingLike;
+  /** RTCRtpReceiver.getCapabilities('audio')?.codecs — ausente em ambientes sem WebRTC. */
+  audioCodecs?: () => RTCRtpCodec[] | null | undefined;
+  statsIntervalMs?: number;
+  negotiationTimeoutMs?: number;
+  /** Modo ICE desta página (padrão: auto). */
+  iceMode?: IceMode;
+  /** Prazo para o servidor responder ao pedido de configuração ICE (padrão 10 s). */
+  iceConfigTimeoutMs?: number;
+  now?: () => number;
+}
+
+export interface CallCallbacks {
+  onPhase(phase: CallPhase, error?: string): void;
+  onSession(info: { sessionId: string; role: Role; epoch: number }): void;
+  /** Somente operador: convite emitido pelo servidor (o token nunca vai para o log). */
+  onInvite(invite: { token: string; expiresAt: number; publicOrigin: string | null }): void;
+  onPeerStates(states: PeerStates | null): void;
+  onLocalStream(stream: MediaStream | null): void;
+  onRemoteStream(stream: MediaStream | null): void;
+  onStats(stats: CallStats | null): void;
+  onLog(message: string): void;
+  onIce?(info: IceInfo | null): void;
+}
+
+export const AUDIO_CONSTRAINTS: MediaTrackConstraints = {
+  echoCancellation: true,
+  noiseSuppression: true,
+  autoGainControl: true,
+  channelCount: 1,
+};
+
+const MAX_PENDING_CANDIDATES = 64;
+/** Credenciais TURN que vencem antes disso são renovadas antes de um novo par. */
+const ICE_RENEW_MARGIN_MS = 5 * 60_000;
+/** Erros do servidor que encerram a tentativa (antes de existir sessão ativa). */
+const FATAL_ERRORS: readonly ErrorCode[] = [
+  'not-found',
+  'session-full',
+  'server-busy',
+  'already-in-session',
+  'rate-limited',
+  'unauthorized',
+  'invite-invalid',
+  'locked',
+];
+
+export class PeerCall {
+  private phaseValue: CallPhase = 'idle';
+  private disposed = false;
+  private mutedValue = false;
+
+  private localStream: MediaStream | null = null;
+  private signaling: SignalingLike | null = null;
+  private pc: RTCPeerConnection | null = null;
+  private pending: RTCIceCandidateInit[] = [];
+  /**
+   * Fila de operações SDP do par ATUAL. Cada par (geração) tem a sua: operações de um par
+   * desfeito podem ficar pendentes para sempre após pc.close() (comportamento observado no
+   * Chrome) e não podem bloquear a negociação do par seguinte.
+   */
+  private queue: Promise<void> = Promise.resolve();
+  /** Incrementada sempre que o par atual é desfeito; invalida operações e erros antigos. */
+  private generation = 0;
+
+  private sessionId: string | null = null;
+  private role: Role | null = null;
+  private epoch = -1;
+
+  private statsTimer: ReturnType<typeof setInterval> | null = null;
+  private negotiationTimer: ReturnType<typeof setTimeout> | null = null;
+  private prevOut: { bytes: number; ts: number } | null = null;
+  private prevIn: { bytes: number; ts: number } | null = null;
+  private lastPairText: string | null = null;
+
+  /** Configuração ICE vigente (só em memória). */
+  private ice: { config: RTCConfiguration; info: IceInfo } | null = null;
+  /** Par aguardando configuração ICE. */
+  private pendingEpoch: number | null = null;
+  private iceRequested = false;
+  private iceTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private readonly deps: CallDeps;
+  private readonly cb: CallCallbacks;
+
+  constructor(deps: CallDeps, callbacks: CallCallbacks) {
+    this.deps = deps;
+    this.cb = callbacks;
+  }
+
+  get phase(): CallPhase {
+    return this.phaseValue;
+  }
+  get muted(): boolean {
+    return this.mutedValue;
+  }
+  get currentRole(): Role | null {
+    return this.role;
+  }
+  get currentEpoch(): number {
+    return this.epoch;
+  }
+  get iceMode(): IceMode {
+    return this.deps.iceMode ?? 'auto';
+  }
+  private now(): number {
+    return (this.deps.now ?? Date.now)();
+  }
+
+  /** Deve ser chamado a partir de um gesto do usuário. */
+  async start(mode: StartMode): Promise<void> {
+    if (this.phaseValue !== 'idle') throw new Error('Chamada já iniciada.');
+
+    // 1. Microfone primeiro: a permissão é pedida no gesto do usuário.
+    this.setPhase('requesting-mic');
+    let stream: MediaStream;
+    try {
+      stream = await this.deps.getUserMedia({ audio: AUDIO_CONSTRAINTS, video: false });
+    } catch (error) {
+      return this.fail(describeMediaError(error).message);
+    }
+    if (this.disposed) {
+      stream.getTracks().forEach((t) => t.stop());
+      return;
+    }
+    const track = stream.getAudioTracks()[0];
+    if (!track) {
+      stream.getTracks().forEach((t) => t.stop());
+      return this.fail('Nenhuma faixa de áudio foi obtida do microfone.');
+    }
+    this.localStream = stream;
+    track.addEventListener('ended', this.onTrackEnded);
+    this.cb.onLocalStream(stream);
+    this.cb.onLog(`Microfone capturado: "${track.label || 'sem rótulo'}".`);
+
+    // 2. Sinalização.
+    this.setPhase('connecting-signaling');
+    const signaling = this.deps.createSignaling({
+      onMessage: (m) => this.onServerMessage(m),
+      onDisconnected: (code) => this.fail(`Conexão com a sinalização perdida (código ${code}).`),
+      onInvalid: () => this.cb.onLog('Mensagem inválida do servidor descartada.'),
+    });
+    this.signaling = signaling;
+    try {
+      await signaling.connect();
+    } catch (error) {
+      return this.fail(error instanceof Error ? error.message : 'Falha ao conectar à sinalização.');
+    }
+    if (this.disposed) return;
+    this.cb.onLog('Sinalização conectada.');
+    if (mode.kind === 'room') return; // 02C: a entrada já aconteceu em connect()
+    signaling.send(
+      mode.kind === 'create'
+        ? { type: 'create', operatorKey: mode.operatorKey }
+        : mode.kind === 'rejoin'
+          ? { type: 'rejoin', sessionId: mode.sessionId, operatorKey: mode.operatorKey }
+          : { type: 'join', invite: mode.invite },
+    );
+  }
+
+  /** Operador na sessão: pede um novo convite (revoga o anterior). */
+  requestInvite(): void {
+    if (this.disposed || this.role !== 'host') return;
+    this.signaling?.send({ type: 'invite' });
+  }
+
+  setMuted(muted: boolean): void {
+    this.mutedValue = muted;
+    // track.enabled = false envia silêncio sem renegociar e sem derrubar a conexão.
+    this.localStream?.getAudioTracks().forEach((t) => (t.enabled = !muted));
+    this.cb.onLog(muted ? 'Microfone mutado.' : 'Microfone reativado.');
+  }
+
+  /** Encerra a chamada, sai da sessão e libera todos os recursos. Idempotente. */
+  end(): void {
+    if (this.disposed) return;
+    this.signaling?.send({ type: 'leave' });
+    this.release();
+    this.setPhase('ended');
+    this.cb.onLog('Chamada encerrada; recursos liberados.');
+  }
+
+  // ---------- mensagens do servidor ----------
+
+  private onServerMessage(message: ServerMessage): void {
+    if (this.disposed) return;
+    switch (message.type) {
+      case 'session':
+        this.sessionId = message.sessionId;
+        this.role = message.role;
+        this.epoch = message.epoch;
+        this.cb.onSession({ sessionId: message.sessionId, role: message.role, epoch: message.epoch });
+        this.cb.onLog(`Na sessão como ${message.role === 'host' ? 'anfitrião' : 'convidado'}.`);
+        // Admitido: pede a configuração ICE do modo escolhido (credenciais TURN só existem a partir daqui).
+        this.requestIce();
+        if (message.peerPresent) this.beginPair(message.epoch);
+        else this.setPhase('waiting-peer');
+        return;
+      case 'peer-joined':
+        if (message.role) this.role = message.role; // 02C: papel decidido quando o par aparece
+        this.cb.onLog('Outro participante entrou.');
+        this.beginPair(message.epoch);
+        return;
+      case 'peer-left':
+        if (message.epoch !== this.epoch) return;
+        this.cb.onLog('O outro participante saiu; aguardando novo participante.');
+        this.teardownPeer();
+        this.setPhase('waiting-peer');
+        return;
+      case 'signal':
+        this.enqueue(() => this.onSignal(message.epoch, message.payload));
+        return;
+      case 'invite':
+        this.cb.onInvite({ token: message.token, expiresAt: message.expiresAt, publicOrigin: message.publicOrigin });
+        this.cb.onLog('Convite de uso único emitido.');
+        return;
+      case 'ice-config':
+        this.onIceConfig(message);
+        return;
+      case 'session-closed':
+        this.fail(message.reason === 'expired' ? 'A sessão expirou por inatividade.' : 'O servidor foi encerrado.');
+        return;
+      case 'error':
+        if (message.code === 'turn-unavailable' || message.code === 'ice-limit') return this.onIceError(message.code);
+        if (FATAL_ERRORS.includes(message.code) && (this.sessionId === null || message.code === 'rate-limited')) {
+          this.fail(ERROR_MESSAGES[message.code]);
+        } else {
+          this.cb.onLog(`Servidor: ${ERROR_MESSAGES[message.code]}`);
+        }
+        return;
+    }
+  }
+
+  // ---------- configuração ICE ----------
+
+  private iceUsable(): boolean {
+    if (this.ice === null) return false;
+    const expiresAt = this.ice.info.expiresAt;
+    return expiresAt === null || expiresAt - this.now() > ICE_RENEW_MARGIN_MS;
+  }
+
+  private requestIce(): void {
+    if (this.iceRequested || this.disposed) return;
+    this.iceRequested = true;
+    this.signaling?.send({ type: 'ice-request', mode: this.iceMode });
+    this.cb.onLog(`Configuração ICE solicitada (modo ${this.iceMode}).`);
+    this.iceTimer = setTimeout(() => {
+      if (this.iceRequested) this.fail('O servidor não respondeu ao pedido de configuração ICE.');
+    }, this.deps.iceConfigTimeoutMs ?? 10_000);
+  }
+
+  private clearIceTimer(): void {
+    if (this.iceTimer !== null) clearTimeout(this.iceTimer);
+    this.iceTimer = null;
+    this.iceRequested = false;
+  }
+
+  private onIceConfig(message: Extract<ServerMessage, { type: 'ice-config' }>): void {
+    if (!this.iceRequested || message.mode !== this.iceMode) {
+      this.cb.onLog('Configuração ICE não solicitada descartada.');
+      return;
+    }
+    this.clearIceTimer();
+    const built = buildRtcConfiguration(this.iceMode, message.iceServers);
+    // Falha fechada: relay/relay-tls sem TURN adequado não criam conexão alguma.
+    if (!built.ok) return this.fail(built.reason);
+    const info: IceInfo = { mode: this.iceMode, summary: built.summary, turnConfigured: built.turnConfigured, expiresAt: message.expiresAt };
+    this.ice = { config: built.config, info };
+    this.cb.onIce?.(info);
+    const until = message.expiresAt ? `, validade até ${new Date(message.expiresAt).toLocaleTimeString('pt-BR', { hour12: false })}` : '';
+    this.cb.onLog(`Configuração ICE recebida (modo ${this.iceMode}: ${built.summary}${until}).`);
+    this.resumePendingPair();
+  }
+
+  private resumePendingPair(): void {
+    if (this.pendingEpoch === null) return;
+    const epoch = this.pendingEpoch;
+    this.pendingEpoch = null;
+    this.beginPair(epoch);
+  }
+
+  private onIceError(code: 'turn-unavailable' | 'ice-limit'): void {
+    if (!this.iceRequested) return;
+    this.clearIceTimer();
+    if (code === 'turn-unavailable' && this.iceMode === 'auto' && this.ice === null) {
+      // auto continua sem TURN, de forma VISÍVEL (sem relay não há garantia de rota entre redes).
+      const info: IceInfo = { mode: 'auto', summary: 'TURN indisponível — sem STUN/TURN', turnConfigured: false, expiresAt: null };
+      this.ice = { config: { iceServers: [], iceTransportPolicy: 'all' }, info };
+      this.cb.onIce?.(info);
+      this.cb.onLog('Aviso: TURN indisponível; modo auto prossegue sem STUN/TURN (sem garantia de rota entre redes).');
+      this.resumePendingPair();
+      return;
+    }
+    this.fail(ERROR_MESSAGES[code]);
+  }
+
+  // ---------- par WebRTC ----------
+
+  private beginPair(epoch: number): void {
+    this.teardownPeer();
+    this.epoch = epoch;
+    const stream = this.localStream;
+    const track = stream?.getAudioTracks()[0];
+    if (!stream || !track) return this.fail('Microfone indisponível.');
+    // Sem configuração ICE válida (ou com credenciais TURN perto de vencer): espera a configuração.
+    if (!this.iceUsable()) {
+      this.pendingEpoch = epoch;
+      this.setPhase('negotiating');
+      this.requestIce();
+      return;
+    }
+
+    const pc = this.deps.createPeerConnection({ ...this.ice!.config });
+    this.pc = pc;
+    this.wirePeer(pc);
+    pc.addTrack(track, stream);
+    this.applyCodecPreferences(pc);
+
+    this.setPhase('negotiating');
+    this.negotiationTimer = setTimeout(() => {
+      if (this.pc === pc && this.phaseValue === 'negotiating') {
+        this.fail('Tempo de negociação esgotado: a conexão WebRTC não foi estabelecida.');
+      }
+    }, this.deps.negotiationTimeoutMs ?? 20_000);
+    this.statsTimer = setInterval(() => void this.collectStats(pc, epoch), this.deps.statsIntervalMs ?? 1000);
+
+    if (this.role === 'host') this.enqueue(() => this.makeOffer(pc));
+  }
+
+  private wirePeer(pc: RTCPeerConnection): void {
+    const emit = () =>
+      this.pc === pc &&
+      this.cb.onPeerStates({
+        connection: pc.connectionState,
+        ice: pc.iceConnectionState,
+        gathering: pc.iceGatheringState,
+        signaling: pc.signalingState,
+      });
+    pc.onicecandidate = (event) => {
+      if (this.pc !== pc) return;
+      this.cb.onLog(`Candidato local: ${describeCandidate(event.candidate)}.`);
+      const c = event.candidate;
+      this.sendSignal({
+        kind: 'candidate',
+        candidate: c
+          ? { candidate: c.candidate, sdpMid: c.sdpMid, sdpMLineIndex: c.sdpMLineIndex, usernameFragment: c.usernameFragment }
+          : null,
+      });
+    };
+    pc.ontrack = (event) => {
+      if (this.pc !== pc) return;
+      this.cb.onLog('Áudio remoto recebido.');
+      this.cb.onRemoteStream(event.streams[0] ?? new MediaStream([event.track]));
+    };
+    pc.onconnectionstatechange = () => {
+      emit();
+      if (this.pc !== pc) return;
+      const state = pc.connectionState;
+      this.cb.onLog(`connectionState = ${state}`);
+      if (state === 'connected') {
+        this.clearNegotiationTimer();
+        this.setPhase('connected');
+      } else if (state === 'failed') {
+        this.fail(
+          this.iceMode === 'relay' || this.iceMode === 'relay-tls'
+            ? `A conexão WebRTC falhou no modo ${this.iceMode} (servidor TURN inalcançável ou credenciais recusadas; sem fallback).`
+            : 'A conexão WebRTC falhou (nenhum par ICE funcionou).',
+        );
+      }
+    };
+    pc.oniceconnectionstatechange = () => {
+      emit();
+      if (this.pc === pc) this.cb.onLog(`iceConnectionState = ${pc.iceConnectionState}`);
+    };
+    pc.onicegatheringstatechange = emit;
+    pc.onsignalingstatechange = emit;
+    emit();
+  }
+
+  private applyCodecPreferences(pc: RTCPeerConnection): void {
+    const codecs = this.deps.audioCodecs?.();
+    if (!codecs || codecs.length === 0) return;
+    for (const transceiver of pc.getTransceivers()) {
+      try {
+        transceiver.setCodecPreferences?.(preferOpus(codecs));
+      } catch {
+        this.cb.onLog('setCodecPreferences indisponível; usando a ordem padrão do navegador.');
+      }
+    }
+  }
+
+  private async makeOffer(pc: RTCPeerConnection): Promise<void> {
+    const epoch = this.epoch;
+    const offer = await pc.createOffer();
+    if (this.stale(pc, epoch)) return;
+    await pc.setLocalDescription(offer);
+    if (this.stale(pc, epoch)) return;
+    this.sendSignal({ kind: 'offer', sdp: pc.localDescription?.sdp ?? '' });
+    this.cb.onLog('Offer enviada.');
+  }
+
+  private async onSignal(epoch: number, payload: SignalPayload): Promise<void> {
+    const pc = this.pc;
+    if (this.disposed) return;
+    if (epoch !== this.epoch || !pc) {
+      this.cb.onLog(`Sinal "${payload.kind}" de negociação anterior descartado.`);
+      return;
+    }
+    switch (payload.kind) {
+      case 'offer': {
+        if (this.role !== 'guest' || pc.signalingState !== 'stable' || pc.remoteDescription) {
+          this.cb.onLog('Offer fora de ordem descartada.');
+          return;
+        }
+        await pc.setRemoteDescription({ type: 'offer', sdp: payload.sdp });
+        if (this.stale(pc, epoch)) return;
+        this.applyCodecPreferences(pc);
+        await this.flushCandidates(pc, epoch);
+        const answer = await pc.createAnswer();
+        if (this.stale(pc, epoch)) return;
+        await pc.setLocalDescription(answer);
+        if (this.stale(pc, epoch)) return;
+        this.sendSignal({ kind: 'answer', sdp: pc.localDescription?.sdp ?? '' });
+        this.cb.onLog('Offer recebida; answer enviada.');
+        return;
+      }
+      case 'answer': {
+        if (this.role !== 'host' || pc.signalingState !== 'have-local-offer') {
+          this.cb.onLog('Answer fora de ordem descartada.');
+          return;
+        }
+        await pc.setRemoteDescription({ type: 'answer', sdp: payload.sdp });
+        if (this.stale(pc, epoch)) return;
+        await this.flushCandidates(pc, epoch);
+        this.cb.onLog('Answer recebida.');
+        return;
+      }
+      case 'candidate': {
+        if (payload.candidate === null) return; // fim da coleta remota
+        const init: RTCIceCandidateInit = {
+          candidate: payload.candidate.candidate,
+          sdpMid: payload.candidate.sdpMid,
+          sdpMLineIndex: payload.candidate.sdpMLineIndex,
+          ...(payload.candidate.usernameFragment ? { usernameFragment: payload.candidate.usernameFragment } : {}),
+        };
+        if (!pc.remoteDescription) {
+          if (this.pending.length >= MAX_PENDING_CANDIDATES) {
+            this.cb.onLog('Fila de candidatos cheia; candidato descartado.');
+            return;
+          }
+          this.pending.push(init);
+          return;
+        }
+        await this.addCandidate(pc, init);
+        return;
+      }
+    }
+  }
+
+  private async flushCandidates(pc: RTCPeerConnection, epoch: number): Promise<void> {
+    const queued = this.pending.splice(0);
+    for (const c of queued) {
+      if (this.stale(pc, epoch)) return;
+      await this.addCandidate(pc, c);
+    }
+  }
+
+  private async addCandidate(pc: RTCPeerConnection, init: RTCIceCandidateInit): Promise<void> {
+    try {
+      await pc.addIceCandidate(init);
+    } catch (error) {
+      this.cb.onLog(`addIceCandidate falhou (${error instanceof Error ? error.name : 'erro'}).`);
+    }
+  }
+
+  /**
+   * Serializa operações SDP do par atual; um erro em uma operação não bloqueia as seguintes.
+   * Operações e erros de uma geração anterior (par já desfeito) são descartados.
+   */
+  private enqueue(op: () => Promise<void>): void {
+    const generation = this.generation;
+    this.queue = this.queue
+      .then(() => (this.disposed || generation !== this.generation ? undefined : op()))
+      .catch((error: unknown) => {
+        if (this.disposed || generation !== this.generation) return;
+        const name = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+        this.fail(`Falha na negociação WebRTC — ${name}`);
+      });
+  }
+
+  private sendSignal(payload: SignalPayload): void {
+    this.signaling?.send({ type: 'signal', epoch: this.epoch, payload });
+  }
+
+  /** true quando a sessão foi encerrada ou o par (conexão ou epoch) mudou durante uma operação assíncrona. */
+  private stale(pc: RTCPeerConnection, epoch: number): boolean {
+    return this.disposed || this.pc !== pc || this.epoch !== epoch;
+  }
+
+  // ---------- métricas ----------
+
+  private async collectStats(pc: RTCPeerConnection, epoch: number): Promise<void> {
+    if (this.stale(pc, epoch)) return;
+    let entries;
+    try {
+      entries = toEntries(await pc.getStats());
+    } catch {
+      return;
+    }
+    if (this.stale(pc, epoch)) return;
+    const out = outboundAudio(entries);
+    const inn = inboundAudio(entries);
+    const remote = remoteInboundAudio(entries);
+    const pair = selectedPair(entries);
+
+    const sendKbps = out && this.prevOut ? bitrateKbps(this.prevOut.bytes, this.prevOut.ts, out.bytesSent, out.timestamp) : null;
+    const recvKbps = inn && this.prevIn ? bitrateKbps(this.prevIn.bytes, this.prevIn.ts, inn.bytesReceived, inn.timestamp) : null;
+    this.prevOut = out ? { bytes: out.bytesSent, ts: out.timestamp } : null;
+    this.prevIn = inn ? { bytes: inn.bytesReceived, ts: inn.timestamp } : null;
+
+    const rtcpRtt = remote?.roundTripTimeMs ?? null;
+    // Mudança do par selecionado vai ao log (sem endereços): é a evidência do caminho de mídia.
+    const pairText = pair && pair.state === 'succeeded' ? describePair(pair) : null;
+    if (pairText !== null && pairText !== this.lastPairText) {
+      this.cb.onLog(`Par ICE selecionado: ${pairText} → caminho ${mediaPath(pair) ?? 'indeterminado'}.`);
+      this.lastPairText = pairText;
+    }
+    this.cb.onStats({
+      codec: out?.codec ?? inn?.codec ?? null,
+      sendKbps,
+      recvKbps,
+      packetsSent: out?.packetsSent ?? null,
+      packetsReceived: inn?.packetsReceived ?? null,
+      packetsLost: inn?.packetsLost ?? null,
+      lossPct: inn ? packetLossPercent(inn.packetsLost, inn.packetsReceived) : null,
+      jitterMs: inn?.jitterMs ?? null,
+      remoteLossPct: remote?.fractionLostPct ?? null,
+      rttMs: rtcpRtt ?? pair?.rttMs ?? null,
+      rttSource: rtcpRtt !== null ? 'rtcp' : pair?.rttMs != null ? 'ice' : null,
+      pair,
+      path: mediaPath(pair),
+    });
+  }
+
+  // ---------- encerramento ----------
+
+  private readonly onTrackEnded = (): void => {
+    this.fail('O microfone foi desconectado ou encerrado pelo sistema.');
+  };
+
+  private fail(message: string): void {
+    if (this.disposed) return;
+    this.cb.onLog(`Erro: ${message}`);
+    this.signaling?.send({ type: 'leave' });
+    this.release();
+    this.setPhase('failed', message);
+  }
+
+  private clearNegotiationTimer(): void {
+    if (this.negotiationTimer !== null) clearTimeout(this.negotiationTimer);
+    this.negotiationTimer = null;
+  }
+
+  /** Fecha a RTCPeerConnection atual e para seus timers; mantém microfone e sinalização. */
+  private teardownPeer(): void {
+    // Nova geração com fila própria: operações pendentes do par anterior não bloqueiam o próximo.
+    this.generation += 1;
+    this.queue = Promise.resolve();
+    if (this.statsTimer !== null) clearInterval(this.statsTimer);
+    this.statsTimer = null;
+    this.clearNegotiationTimer();
+    const pc = this.pc;
+    this.pc = null;
+    this.pending = [];
+    this.prevIn = this.prevOut = null;
+    this.lastPairText = null;
+    if (pc) {
+      pc.onicecandidate = null;
+      pc.ontrack = null;
+      pc.onconnectionstatechange = null;
+      pc.oniceconnectionstatechange = null;
+      pc.onicegatheringstatechange = null;
+      pc.onsignalingstatechange = null;
+      pc.close();
+      this.cb.onRemoteStream(null);
+      this.cb.onPeerStates(null);
+      this.cb.onStats(null);
+    }
+  }
+
+  private release(): void {
+    this.disposed = true;
+    this.teardownPeer();
+    // Credenciais TURN descartadas da memória; o servidor as revoga quando a conexão termina.
+    this.clearIceTimer();
+    this.pendingEpoch = null;
+    if (this.ice) {
+      this.ice = null;
+      this.cb.onIce?.(null);
+    }
+    this.signaling?.close();
+    this.signaling = null;
+    if (this.localStream) {
+      for (const t of this.localStream.getTracks()) {
+        t.removeEventListener('ended', this.onTrackEnded);
+        t.stop();
+      }
+      this.localStream = null;
+      this.cb.onLocalStream(null);
+    }
+  }
+
+  private setPhase(phase: CallPhase, error?: string): void {
+    this.phaseValue = phase;
+    this.cb.onPhase(phase, error);
+  }
+}
