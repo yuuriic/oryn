@@ -111,17 +111,26 @@ pnpm dev                            # http://127.0.0.1:5173
 A Edge Function `signal` está publicada (`verify_jwt = true`) e o secret `ORYN_ALLOWED_ORIGINS` aceita só
 `http://127.0.0.1:5173`. Qualquer outra origem exige autorização própria (runbook §13).
 
-**Validado (2026-10-28, runbook §13):** chamada real 1:1 entre Windows (Chrome/Edge) e iPhone (Safari), por
-um túnel HTTPS temporário, com **6/6 PASS**:
-- HTTPS no Safari;
-- as duas contas na mesma sala;
-- WebRTC conectado;
-- áudio nos dois sentidos;
-- mute independente;
-- saída detectada pelo outro lado.
+**Validado (2026-10-28, runbook §13)**, chamadas reais 1:1 entre Windows (Chrome/Edge) e iPhone (Safari), por
+um túnel HTTPS temporário:
 
-**Não validado:** conectividade entre redes restritivas (WAN com NAT simétrico ou CGNAT), TURN e chamadas em
-grupo. O cliente é só 1:1 e só STUN.
+- **Mesma rede, 6/6 PASS:**
+  - HTTPS no Safari;
+  - as duas contas na mesma sala;
+  - WebRTC conectado;
+  - áudio nos dois sentidos;
+  - mute independente;
+  - saída detectada pelo outro lado.
+- **WAN (Windows no Wi-Fi ↔ iPhone só em 5G), PASS:**
+  - ICE conectado, com caminho direto `srflx ↔ srflx` em UDP, sem TURN;
+  - Opus a 48 kHz, RTT de cerca de 23 ms e perda de cerca de 0,1%;
+  - áudio nos dois sentidos confirmado pelo operador.
+
+**Não validado:**
+- **NAT e operadoras:** o WAN cobre um único cenário (uma rede Wi-Fi e uma operadora móvel). NAT restritivo
+  (simétrico, CGNAT) e redes corporativas não foram testados.
+- **TURN:** não existe; sem ele, redes restritivas podem não conectar.
+- **Grupo:** o cliente é só 1:1.
 
 ## Modelo de segurança
 

@@ -1056,6 +1056,84 @@ feito**. Nada aqui altera RLS, migrações, permissões, Auth ou salas.
 >     membros. Continua FAIL enquanto a sala estiver aberta. Fechá-la é outra decisão (§12.4).
 > - Nenhuma credencial ou token foi registrado.
 
+> **Registro do teste WAN só com STUN (2026-10-28; resultados de mídia informados pelo operador):**
+>
+> - **Objetivo:** obter evidência do comportamento do STUN entre redes diferentes antes de qualquer decisão
+>   sobre TURN.
+> - **Topologia:**
+>   - OWNER no Windows (Wi-Fi doméstico) e MEMBER no iPhone (Safari), **só com dados móveis 5G**;
+>   - os dois na sala `93468ee8-c2da-49ce-a9aa-fcd3c3bc205d`;
+>   - página servida pelo build de produção (`vite preview` em 127.0.0.1:4173), por um Cloudflare Quick Tunnel
+>     temporário (`cloudflared` 2026.9.1 portátil, SHA-256 conferido).
+>   - O túnel serve só o `dist/`: `.env.local`, `package.json`, `src/` e `supabase/` devolvem o fallback
+>     `index.html` (hash igual).
+> - **Primeira tentativa (18:14 UTC): FAIL por CORS, não por ICE.**
+>   - **Sintoma:** "network-error após 5 tentativas" no envio de offer e candidatos, e "sem resposta da função
+>     signal".
+>   - **Causa raiz:** o `ORYN_ALLOWED_ORIGINS` foi regravado às 18:10:41 com o valor só local (digest igual
+>     ao de `http://127.0.0.1:5173`), sem a origem do túnel.
+>   - **Logs da função:** 25 `OPTIONS` com 403 e nenhum `POST`; 0 linhas novas em `signal_log`.
+>   - **O que funcionou:** login, `join_room`, `get_roster`, `touch_session` e `leave_room` com 200/204.
+>   - **ICE:** não foi exercitado; os candidatos foram coletados, mas nunca entregues.
+>   - **Correção:** o `secrets set` autorizado com as duas origens. Nenhum código mudou.
+> - **Segunda tentativa (sinais entre 18:21:48 e 18:21:59 UTC; 12 em `signal_log`): PASS.**
+>
+>   | Verificação | Resultado |
+>   |---|---|
+>   | ICE | `connected`, coleta completa |
+>   | Par selecionado | `srflx ↔ srflx`, UDP, direto (sem TURN) |
+>   | Codec | Opus, 48 kHz |
+>   | RTT | cerca de 23 ms |
+>   | Perda de pacotes | cerca de 0,1% |
+>   | Áudio Windows ↔ iPhone | bidirecional, confirmado pelo operador |
+>   | Mute independente e detecção de saída | não informados neste teste (PASS no teste em mesma rede) |
+>
+> - **Encerramento:**
+>   - `ORYN_ALLOWED_ORIGINS` restaurado às 18:23:03 (digest `04f38fc0…7dfd`, só `http://127.0.0.1:5173`);
+>   - preflight: túnel **403**, origem local **204**, não autorizada **403**;
+>   - `POST` sem JWT: **401**;
+>   - função `signal` ACTIVE, `verify_jwt: true`, código igual (`ezbr_sha256` `cc4e3596…`); a versão sobe a cada
+>     `secrets set`;
+>   - túnel encerrado (530), preview encerrado (porta 4173 livre) e binário apagado.
+> - **Leitura de depois (só leitura):**
+>   - sala aberta e preservada, com 2 membros, e 3 contas;
+>   - 0 sessões de sala vivas;
+>   - nenhuma mensagem fora de `hello`/`bye` em `realtime.messages` (D5 mantido).
+>   - **Pendência (A7):** 5 sessões de Auth e 5 refresh tokens ativos em 2 contas (logins sem "Sair da conta").
+>     A revogação segue o §12.4 e exige autorização própria.
+> - **Limites:**
+>   - é um único cenário WAN (uma rede Wi-Fi e uma operadora móvel) e não prova compatibilidade geral com NATs
+>     e firewalls;
+>   - NAT simétrico, CGNAT, redes corporativas e TURN não foram testados;
+>   - o cliente é só 1:1.
+
+> **Registro da recuperação do A7 pós-WAN (2026-10-28; com autorização própria, §12.4):**
+>
+> - **Conferência de antes (só leitura):**
+>   - 5 sessões de Auth e 5 refresh tokens ativos: OWNER `95fe7962` (2) e MEMBER `fcbc881b` (3), nenhuma de
+>     outra conta;
+>   - nenhum refresh token sem sessão ou de outro usuário;
+>   - `refresh_tokens.session_id` e `mfa_amr_claims.session_id` com `ON DELETE CASCADE` para `auth.sessions`.
+> - **Revogação:**
+>   - executada **manualmente pelo operador** no SQL editor, porque a escrita pelo MCP foi recusada;
+>   - por UUID completo e igualdade exata das 5 sessões, numa transação protegida (aborta se o estado divergir,
+>     se não apagar exatamente 5 ou se sobrar refresh token ativo).
+> - **Não alterados:** sala, convites, usuários, Auth (configuração), RLS, secrets, migrações e Edge Functions.
+> - **Verificação de depois (só leitura, 18:48 UTC):**
+>   - 0 sessões de Auth;
+>   - 0 refresh tokens (ativos ou não);
+>   - 0 sessões de sala vivas;
+>   - 3 contas.
+> - **`12` (18:49 UTC):**
+>   - **A7 PASS** e `INFO sessões de Auth ativas por conta = (nenhuma)`;
+>   - **D5 PASS** (`0 / 0 / 0 / 0`);
+>   - A1–A6, D1, D3, D4 e S1–S5 PASS (S2 `58 / 1a5a563d…`, S3 `4ce64373…`, iguais ao baseline);
+>   - **D2 FAIL esperado:** a sala `93468ee8-c2da-49ce-a9aa-fcd3c3bc205d` continua aberta, preservada, com 2
+>     membros;
+>   - INFO: salas 1 (1 aberta), membros 2, convites de sala 1, convites de criador 1 (1 usado), concessões 1;
+>     sessões de sala 21 (0 não revogadas), `signal_log` 38, `pair_counters` 7, `realtime.messages` em `oryn:*` 50.
+> - Nenhuma credencial ou token foi registrado.
+
 1. ⛔ **Publicar a Edge Function `signal`** (CLI, com o PAT só no terminal do operador, nunca no repositório). O
    `config.toml` está com `[functions.signal] enabled = false`; o comportamento do `functions deploy` com essa
    trava é NOT VERIFIED. A troca para `true` é feita no próprio passo autorizado. A integração GitHub não lê esta
