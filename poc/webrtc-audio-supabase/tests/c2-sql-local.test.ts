@@ -29,7 +29,7 @@ const AUTH_STUBS = `
   create table auth.refresh_tokens (id bigserial primary key, session_id uuid, revoked boolean not null default false);
   create schema supabase_migrations;
   create table supabase_migrations.schema_migrations (version text primary key);
-  insert into supabase_migrations.schema_migrations values ('20261023000100'), ('20261023000200'), ('20261023000300');`;
+  insert into supabase_migrations.schema_migrations values ('20261023000100'), ('20261023000200'), ('20261023000300'), ('20261028000400');`;
 
 const EMAILS = { owner: 'dono+oryn@teste.example', member: 'membro+oryn@teste.example', stranger: 'estranho+oryn@teste.example' };
 type Accounts = Record<keyof typeof EMAILS, { uid: string }>;

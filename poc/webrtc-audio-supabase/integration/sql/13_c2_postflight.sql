@@ -188,19 +188,19 @@ checks(item, expected, actual, ok) as (
          (select c.relrowsecurity from pg_catalog.pg_class c where c.oid = 'realtime.messages'::regclass)
            and (select pg_catalog.count(*) from pg_catalog.pg_policies where schemaname = 'realtime' and tablename = 'messages' and policyname like 'oryn\_%') = 4
   union all
-  select 'S2 oryn_scope: objetos / md5 (baseline pós-0300)', '58 / 1a5a563de28e1e1cf2a670e5731af5a7',
+  select 'S2 oryn_scope: objetos / md5 (baseline pós-0400)', '60 / 787129706368d4c3ed93a8d5a07429af',
          (select pg_catalog.count(*)::text from oryn_scope) || ' / ' || (select pg_catalog.md5(coalesce(pg_catalog.string_agg(o, '|' order by o), '')) from oryn_scope),
-         (select pg_catalog.count(*) from oryn_scope) = 58
-           and (select pg_catalog.md5(coalesce(pg_catalog.string_agg(o, '|' order by o), '')) from oryn_scope) = '1a5a563de28e1e1cf2a670e5731af5a7'
+         (select pg_catalog.count(*) from oryn_scope) = 60
+           and (select pg_catalog.md5(coalesce(pg_catalog.string_agg(o, '|' order by o), '')) from oryn_scope) = '787129706368d4c3ed93a8d5a07429af'
   union all
   select 'S3 platform: md5 (sem partições e seus índices)', '4ce6437364c259fec6b5ea9646ac1359',
          (select pg_catalog.md5(coalesce(pg_catalog.string_agg(o, '|' order by o), '')) from platform),
          (select pg_catalog.md5(coalesce(pg_catalog.string_agg(o, '|' order by o), '')) from platform) = '4ce6437364c259fec6b5ea9646ac1359'
   union all
-  select 'S4 migrações (supabase_migrations.schema_migrations)', '20261023000100,20261023000200,20261023000300',
+  select 'S4 migrações (supabase_migrations.schema_migrations)', '20261023000100,20261023000200,20261023000300,20261028000400',
          (select coalesce(pg_catalog.string_agg(version, ',' order by version), '') from supabase_migrations.schema_migrations),
          (select coalesce(pg_catalog.string_agg(version, ',' order by version), '') from supabase_migrations.schema_migrations)
-           = '20261023000100,20261023000200,20261023000300'
+           = '20261023000100,20261023000200,20261023000300,20261028000400'
   union all
   select 'S5 papéis cli_login_*', '(nenhum)',
          coalesce((select pg_catalog.string_agg(rolname, ',' order by rolname) from pg_catalog.pg_roles where rolname like 'cli\_login\_%'), '(nenhum)'),
