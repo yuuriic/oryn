@@ -4,13 +4,13 @@ Prova de conceito **descartável** do Oryn. Objetivo final: chamada de áudio We
 Wi-Fi residencial e um iPhone (Safari) em rede móvel 4G/5G, com sinalização pública HTTPS/WSS (Cloudflare
 Tunnel) e STUN/TURN gerenciado (Cloudflare). Plano, decisões e evidências em `docs/validation/POC-02B.md`.
 
-## Estado atual: incremento 02B.5
+## Estado atual: incremento 02B.5 (escopo proposto para integração: prontidão offline)
 
 - Baseline copiado da POC-02A (`poc/webrtc-audio-lan/`, conteúdo de `f068509`), isolado no 02B.1.
 - **CA local e HTTPS local removidos** no 02B.2A.
 - **02B.2B:** admissão (chave efêmera do operador e convites de uso único), allowlist de hostnames públicos
-  fechada por padrão, `Origin` coerente com o `Host` e limites contra abuso. Detalhes em
-  `docs/validation/POC-02B.md` §8.
+  fechada por padrão, `Origin` coerente com o `Host` e limites contra abuso. A chave efêmera do operador foi
+  substituída depois pelo pareamento do 02B.2C. Detalhes em `docs/validation/POC-02B.md` §8.
 - **02B.2C:** separação administrativa. Dois listeners em loopback (sinalização 5280, administração 5281),
   pareamento do operador por **código de uso único** exibido no terminal (a chave/token nunca é impressa) e
   análise do Cloudflare Access. Detalhes em `POC-02B.md` §9.
@@ -40,15 +40,28 @@ Tunnel) e STUN/TURN gerenciado (Cloudflare). Plano, decisões e evidências em `
   - `pnpm evidence:check`: valida as evidências sem imprimir valores.
   - `pnpm diagnose`: diagnóstico local simulado, sem rede.
   - `pnpm readiness`: relatório PASS / FAIL / NOT VERIFIED. **Não autoriza a ativação.**
-- **Ainda não há** Cloudflare Tunnel nem STUN/TURN. **Nenhum serviço desta POC deve ser exposto na internet**
-  até a aprovação arquitetural dos critérios de exposição (`POC-02B.md` §9.8, §10.10 e §11.8).
+- **Nada foi ativado:** nenhum Cloudflare Tunnel, nenhum TURN real e nenhum hostname público. O código do
+  Access e do TURN existe, mas só roda localmente e falha fechado. **Nenhum serviço desta POC deve ser exposto
+  na internet** até a aprovação arquitetural dos critérios de exposição (`POC-02B.md` §9.8, §10.10, §11.8,
+  §12.11 e §13.5).
+- **Revisão independente (29/10/2026):** IR-1 (caminho malformado derrubava o processo) e IR-2 (conexão de
+  host sobrevivia à revogação do token administrativo) corrigidos neste PR, com testes de regressão
+  (`tests/malformed-path.test.ts`, `tests/admin-revocation.test.ts`). IR-3 a IR-6 aceitos temporariamente só
+  para a integração offline, com correção obrigatória antes de qualquer exposição WAN; IR-7 a IR-13 registrados
+  como melhorias, validações ou lacunas de teste. Decisão e detalhes em `POC-02B.md` §13.9 e §14.3.
+
+### Escopo proposto para integração
+
+A integração desta POC à `main` está **proposta, não concluída**, e cobre só a **prontidão offline**. Os
+critérios de aceite A1–A9 estão em `POC-02B.md` §14 e só são marcados depois de verificados. Testes WAN
+reais (R1–R8), túnel e exposição pública exigem aprovação própria.
 
 ## Uso local (operador e convidado no mesmo PC)
 
 1. `pnpm build && pnpm serve`. O terminal mostra os dois endereços e um **código de pareamento** (ex.: `K7QD-3M9X`).
    - O código é de **uso único**, expira em 5 min e é queimado após 5 tentativas erradas.
    - Para gerar outro (página recarregada, código expirado ou esgotado), digite `codigo` + Enter no terminal.
-     Isso também revoga a sessão administrativa anterior.
+     Isso também revoga a sessão administrativa anterior e encerra as conexões de operador abertas com ela.
 2. Abra o **endereço administrativo** (`http://localhost:5281`) **só neste computador** e digite o código em
    **Parear operador**. A página recebe um token administrativo que fica **só em memória**: nunca vai para URL,
    armazenamento do navegador ou log. Recarregar a página exige um novo código.

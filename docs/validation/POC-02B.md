@@ -5,8 +5,8 @@
 | Branch | `poc/webrtc-audio-wan`, criada a partir de `main` em `f068509` (PR #3 da POC-02A) |
 | Código | `poc/webrtc-audio-wan/` |
 | Relação com o ARCHITECTURE.md | P02 (§14): travessia de NAT, CGNAT, TURN e UDP bloqueado; credenciais TURN temporárias (§9.1) |
-| Incremento atual | **02B.5 — prontidão e validação de segurança para os testes WAN** (§13) |
-| Status | **02B.1, 02B.2A e 02B.2C aprovados (02B.2C em `b3e1bf2`, informado pelo usuário). 02B.3A publicado em `ed4d948` com CI verde. 02B.3B publicado em `4b765fe` + `44c82e4` com CI verde. 02B.4 publicado em `6daeb99` com CI verde. 02B.5 aguardando revisão do arquiteto.** Exposição pública **proibida** até a aprovação e o cumprimento dos critérios de §9.8, §10.10, §11.8, §12.11 e §13.5 |
+| Incremento atual | **02B.5 — prontidão e validação de segurança para os testes WAN** (§13); reposicionamento como **prontidão offline** aprovado, integração pendente (§14) |
+| Status | **29/10/2026: reposicionamento como prontidão offline aprovado pelo arquiteto; integração à `main` pendente dos critérios de §14 e de decisão própria.** Registro anterior: **02B.1, 02B.2A e 02B.2C aprovados (02B.2C em `b3e1bf2`, informado pelo usuário). 02B.3A publicado em `ed4d948` com CI verde. 02B.3B publicado em `4b765fe` + `44c82e4` com CI verde. 02B.4 publicado em `6daeb99` com CI verde. 02B.5 aguardando revisão do arquiteto.** Exposição pública **proibida** até a aprovação e o cumprimento dos critérios de §9.8, §10.10, §11.8, §12.11 e §13.5 |
 
 Legenda:
 - **[Observado]:** medido em execução pelo agente.
@@ -50,13 +50,13 @@ internet.
 |---|---|---|
 | **02B.1** | Cópia isolada da POC-02A, baseline de testes, este documento | **Concluído e aprovado** |
 | **02B.2A** | Remoção da CA local e do HTTPS local; HTTP só em loopback; CI da POC-02B | **Concluído e aprovado** (§7) |
-| **02B.2B** | Admissão (operador e convites), allowlist pública fechada por padrão, `Host`/`Origin` coerentes, limites contra abuso | **Concluído; em revisão** (§8) |
+| **02B.2B** | Admissão (operador e convites), allowlist pública fechada por padrão, `Host`/`Origin` coerentes, limites contra abuso | **Concluído; em revisão** (§8); escopo offline proposto para integração (§14) |
 | **02B.2C** | Listener administrativo separado, pareamento do operador por código de uso único, análise do Cloudflare Access | **Concluído e aprovado** (§9) |
 | **02B.3A** | Validação criptográfica do JWT do Cloudflare Access na origem (HTTP e WebSocket), JWKS com cache e falha fechada | **Concluído** (§10); `ed4d948`, CI verde |
 | **02B.3B** | Prontidão Cloudflare offline: modelos, pré-validação, fronteira de confiança, runbook e protocolo de teste real | **Concluído** (§11); `4b765fe` + `44c82e4`, CI verde |
 | 02B.3 | ~~Admissão e controle de abuso~~ **antecipado para o 02B.2B**; resta a proteção na borda (Access/WAF), a definir com o túnel | Parcial |
 | **02B.4** | Modos ICE (auto/direct/relay/relay-tls), credenciais TURN temporárias emitidas no servidor (adaptador, limites, revogação), estatísticas do par selecionado | **Concluído** (§12); `6daeb99`, CI verde |
-| **02B.5** | Prontidão WAN: matriz R1–R8, evidência sanitizada, prontidão consolidada (PASS/FAIL/NOT VERIFIED), diagnóstico local, checklist de ativação, rollback e incidentes | **Concluído; em revisão** (§13) |
+| **02B.5** | Prontidão WAN: matriz R1–R8, evidência sanitizada, prontidão consolidada (PASS/FAIL/NOT VERIFIED), diagnóstico local, checklist de ativação, rollback e incidentes | **Concluído; em revisão** (§13); escopo offline proposto para integração (§14); R1–R8 não executados |
 | 02B.5 | ~~Modos ICE e métricas de relay~~ **antecipados para o 02B.4**; resta o tratamento de `disconnected`/`failed` (A6) e o ICE restart (§6, item 5) | Parcial |
 | 02B.6 | Exposição via Cloudflare Tunnel (runbook) | Não iniciado |
 | 02B.7 | E2E opcional com TURN real em ambiente local (o CI sem segredos foi antecipado para o 02B.2A) | Não iniciado |
@@ -244,6 +244,7 @@ abrir qualquer porta, em vez de ser ignorada.
     falha.
 - **[Não executado]** O workflow **ainda não rodou no GitHub**: depende do commit e do push do usuário. A sintaxe
   foi checada só estruturalmente, porque não há `actionlint` nem parser YAML disponível localmente.
+  **[Observado, 29/10/2026, API pública do GitHub]** A CI do head do PR #4 (`b4101de`, que contém estas mudanças) terminou verde em 23/10/2026: verificações em ubuntu-24.04 e windows-2025 e E2E Chrome ↔ Edge.
 - **Observação sobre a POC-02A:** o `poc-02a-ci.yml` (preservado, sem alterações) usa filtro de caminho no PR e
   **não deve** ser marcado como check obrigatório.
 
@@ -413,6 +414,7 @@ de "Voltar à sessão"; o operador não conseguia emitir convite. Agora o botão
 **CI:** o workflow foi preservado sem alterações. Os novos testes rodam nos jobs `checks` (Ubuntu e Windows) e
 `e2e` (Windows) já existentes. **[Não executado]** a execução no GitHub com estas mudanças depende do commit e do
 push do usuário.
+**[Observado, 29/10/2026, API pública do GitHub]** A CI do head do PR #4 (`b4101de`, que contém estas mudanças) terminou verde em 23/10/2026: verificações em ubuntu-24.04 e windows-2025 e E2E Chrome ↔ Edge.
 
 ### 8.7 Riscos residuais
 
@@ -623,6 +625,7 @@ formulário de pareamento nunca era ocultado (nem após parear, nem fora do loop
 
 **CI:** workflow inalterado; os novos testes rodam nos jobs existentes. **[Não executado]** a execução no GitHub
 depende do commit e do push do usuário.
+**[Observado, 29/10/2026, API pública do GitHub]** A CI do head do PR #4 (`b4101de`, que contém estas mudanças) terminou verde em 23/10/2026: verificações em ubuntu-24.04 e windows-2025 e E2E Chrome ↔ Edge.
 
 ### 9.7 Riscos residuais
 
@@ -636,6 +639,12 @@ depende do commit e do push do usuário.
 | Sessão administrativa de 12 h sem botão de logout | Baixa | Fechar a aba descarta o token; `codigo` + Enter ou reiniciar o servidor revoga |
 | Riscos do §8.7 não tratados aqui: convite por URL, DoS pelo hostname público, ausência de limite por cliente | Média, ao expor | Proteção na borda (§9.5) segue como critério de exposição |
 | Túnel apontado para 5281 | Alta, se ocorrer | 421 para `Host` público; com reescrita para `localhost`, ainda exige o código. **Critério de exposição** |
+
+**[Revisão independente, 29/10/2026]** A afirmação "`codigo` + Enter revoga o token do atacante" estava
+incompleta: a revogação impedia novos `create`/`rejoin`, mas uma conexão de host já estabelecida continuava
+ativa e podia emitir convites (IR-2, §13.9). **Corrigido neste PR:** revogar, substituir ou expirar o token
+administrativo agora encerra (1008) as conexões de host autorizadas por ele, e `invite` reconfere a
+autorização (`tests/admin-revocation.test.ts`).
 
 O risco "chave do operador no terminal" do §8.7 foi **eliminado**: o token nunca é impresso. O risco "túnel
 reescrevendo `Host` para `localhost`" foi **reduzido**: a reescrita não concede privilégio administrativo e só
@@ -922,6 +931,7 @@ Respostas de recusa não trazem conteúdo da página e não indicam o motivo ao 
 
 **CI:** workflow inalterado; os novos testes rodam nos jobs existentes. **[Não executado]** a execução no GitHub
 depende do commit e do push do usuário.
+**[Observado, 29/10/2026, API pública do GitHub]** A CI do head do PR #4 (`b4101de`, que contém estas mudanças) terminou verde em 23/10/2026: verificações em ubuntu-24.04 e windows-2025 e E2E Chrome ↔ Edge.
 
 ## 11. Incremento 02B.3B — prontidão da infraestrutura Cloudflare (offline)
 
@@ -1099,6 +1109,7 @@ imediatamente.
 
 **CI:** workflow inalterado; os novos testes rodam nos jobs existentes. **[Não executado]** a execução no GitHub
 depende do commit e do push do usuário.
+**[Observado, 29/10/2026, API pública do GitHub]** A CI do head do PR #4 (`b4101de`, que contém estas mudanças) terminou verde em 23/10/2026: verificações em ubuntu-24.04 e windows-2025 e E2E Chrome ↔ Edge.
 
 ## 12. Incremento 02B.4 — integração STUN/TURN
 
@@ -1136,6 +1147,10 @@ Cloudflare, sem túnel, sem teste WAN e sem porta exposta.
 | T8 | Adaptador Cloudflare implementado **pela documentação oficial**, sem exercício contra a API real (§12.5) | O requisito proíbe configurar serviços reais |
 | T9 | O caminho de mídia é declarado **somente** a partir do par ICE **selecionado** (`succeeded`). "TURN configurado" aparece como configuração, com o aviso "não implica uso" | Não inferir relay pela configuração |
 | T10 | Estatísticas por **listas fechadas**: tipos de candidato, transportes, `relayProtocol` e estado do par. Nada de endereço, porta, URL ou fundação | Sanitização por construção |
+
+**[Revisão independente, 29/10/2026]** No desligamento pela CLI, as revogações são disparadas sem espera e
+podem não completar antes do encerramento do processo (IR-3, §13.9). T6 vale para saída e desconexão; para o
+desligamento, até a correção, a credencial expira pelo TTL.
 
 ### 12.2 Modos ICE
 
@@ -1304,6 +1319,7 @@ convite **novo** do operador.
 
 **CI:** workflow inalterado; os novos testes e o E2E ampliado rodam nos jobs existentes. **[Não executado]** a
 execução no GitHub depende do commit e do push do usuário.
+**[Observado, 29/10/2026, API pública do GitHub]** A CI do head do PR #4 (`b4101de`, que contém estas mudanças) terminou verde em 23/10/2026: verificações em ubuntu-24.04 e windows-2025 e E2E Chrome ↔ Edge.
 
 ### 12.8 Limitações da validação local
 
@@ -1558,6 +1574,32 @@ A restrição é aplicada **no PC**. No iPhone em 4G não há controle de rede e
 | R7 altera o firewall do PC | Média, se esquecido | Regras com prefixo `Oryn-R7-`, remoção obrigatória e verificada |
 | `relay-tls` interpretado como prova de bloqueio de UDP | — | Explicitamente proibido no critério de R7 |
 
+**Achados da revisão de 29/10/2026 sobre `b4101de`.** M-1 e B-1 a B-3 vêm da revisão inicial; IR-1 a IR-13
+vêm da revisão independente (revisor sem acesso à revisão inicial), que reencontrou M-1, B-1 e B-2 como IR-6,
+parte de IR-4 e IR-5. A coluna Situação de IR-3 a IR-13, M-1 e B-1 a B-3 registra a **decisão arquitetural de
+29/10/2026**; só IR-3 a IR-6, os equivalentes M-1, B-1 e B-2, e B-3 são riscos aceitos temporariamente, e
+apenas para a integração offline.
+
+| Risco | Severidade | Situação |
+|---|---|---|
+| **IR-1** Caminho de requisição malformado (`//`, `/\\`, `//[` …) lançava exceção não tratada em `new URL(...)` e **derrubava o processo**, nos dois listeners, em HTTP e no upgrade. **[Observado, 29/10/2026]** reproduzido em cópia descartável (`ERR_INVALID_URL`, processo encerrado) | Média | **Corrigido neste PR:** `requestPath()` aceita só origin-form simples e recusa o resto com 400; os handlers HTTP e de upgrade não deixam exceção síncrona escapar. Host, Origin e Access inalterados. Teste: `tests/malformed-path.test.ts` (falha contra `b4101de`, passa com a correção) |
+| **IR-2** Revogar o token administrativo não encerrava a conexão de host já estabelecida, que continuava emitindo convites | Baixa | **Corrigido neste PR:** geração da sessão administrativa; revogação, novo pareamento ou expiração encerram (1008) os hosts autorizados por ela e `invite` reconfere a autorização. Teste: `tests/admin-revocation.test.ts` (os casos de servidor falham contra `b4101de`) |
+| **IR-3** Revogações TURN disparadas sem espera no desligamento; podem não completar antes do `process.exit` (T6, §12) | Baixa (só com TURN real) | **Aceito temporariamente, só para a integração offline.** Correção obrigatória antes de qualquer exposição WAN: `releaseAll()` aguardado com timeout curto |
+| **IR-4** Corrida na emissão TURN: conexão que sai e é readmitida durante a chamada ao provedor recebe credencial registrada num estado órfão, sem revogação; a cota por conexão reinicia (inclui B-1) | Baixa (só com TURN real) | **Aceito temporariamente, só para a integração offline.** Correção obrigatória antes de qualquer exposição WAN: comparar a identidade do estado; teto global por janela |
+| **IR-5** = B-2 | Baixa | **Aceito temporariamente, só para a integração offline.** Correção obrigatória antes de qualquer exposição WAN (ver B-2) |
+| **IR-6** = M-1 (Baixa para o revisor independente; Média na revisão inicial) | Baixa/Média (só com exposição) | **Aceito temporariamente, só para a integração offline.** Correção obrigatória antes de qualquer exposição WAN (ver M-1) |
+| **IR-7** Mensagem completa de erro de `setRemoteDescription`/`createAnswer` exibida (`src/call.ts`); pode citar trechos do SDP | Info | Melhoria de sanitização WebRTC, registrada para correção futura (exibir só `error.name`). Não é vulnerabilidade aceita |
+| **IR-8** Convite no fragmento pode transitar por redirecionamentos de login do Access (inferido) | Info (só exposição) | Risco potencial: exige validação antes da exposição |
+| **IR-9** Expiração do JWT do Access verificada só no heartbeat; token vencido há até `clockToleranceSec` ainda abre o WebSocket | Info (só exposição) | Revisão da janela de expiração e autorização do JWT antes da exposição |
+| **IR-10** `jwksRefreshCooldownMs` aceita 0 e `jwksMaxStaleMs` vai até 24 h | Info | Melhoria de hardening JWT/JWKS (mínimos de configuração) |
+| **IR-11** `iat` futuro sem limite (sem `maxTokenAge`) | Info | Melhoria de hardening JWT/JWKS |
+| **IR-12** O teste de path traversal usa `fetch`, que normaliza o caminho no cliente: o servidor nunca recebe as formas testadas | Info (teste) | Lacuna de teste: requer teste de integração com requisição crua ao servidor |
+| **IR-13** `yaml` em devDependencies, mas usado em tempo de execução pelas ferramentas de pré-validação | Info | Melhoria de classificação de dependência |
+| **M-1** Pool de conexões único (`maxConnections`) para os dois listeners: com exposição, clientes externos que passaram pelo Access podem ocupar as vagas e impedir o operador | Média (só com exposição) | **Aceito temporariamente, só para a integração offline (§14).** Correção obrigatória antes de qualquer exposição WAN: limite separado ou vagas reservadas para o listener administrativo |
+| **B-1** `IceBroker.release()` apaga o estado ao sair da sessão; `rejoin` do operador recomeça a cota de credenciais TURN | Baixa | **Aceito temporariamente, só para a integração offline**; exige token administrativo. Correção obrigatória antes de qualquer exposição WAN (com IR-4) |
+| **B-2** No HTTP, a validação do Access não limita verificações pendentes (só o upgrade tem `maxPendingAccessChecks`) | Baixa | **Aceito temporariamente, só para a integração offline**; atenuado pela borda do Access. Correção obrigatória antes de qualquer exposição WAN: limite também no HTTP |
+| **B-3** Adaptador `CloudflareTurnProvider` (emissão e revogação) não exercitado contra a API real; revogação que falha depende do TTL (padrão 2 h, mínimo 10 min) | Baixa | **Aceito temporariamente, só para a integração offline**; R5 e R6 comprovam no ambiente real antes de qualquer exposição WAN |
+
 ### 13.10 Execuções repetidas e mutações
 
 **Mutações (todas detectadas; código restaurado após cada uma):**
@@ -1582,6 +1624,7 @@ A restrição é aplicada **no PC**. No iPhone em 4G não há controle de rede e
 
 **CI:** workflow inalterado; os novos testes e o E2E ampliado rodam nos jobs existentes. **[Não executado]** a
 execução no GitHub depende do commit e do push do usuário.
+**[Observado, 29/10/2026, API pública do GitHub]** A CI do head do PR #4 (`b4101de`, que contém estas mudanças) terminou verde em 23/10/2026: verificações em ubuntu-24.04 e windows-2025 e E2E Chrome ↔ Edge.
 
 ### 13.11 Critérios para a próxima etapa (02B.6)
 
@@ -1590,3 +1633,57 @@ execução no GitHub depende do commit e do push do usuário.
 3. Execução da matriz R1–R8 na ordem: R1 → R2 (se R2 falhar, parar e decidir §10.3) → R8 (a, b) → R3 → R4 → R5 →
    R6 → R7 (com autorização) → R8 (c, d, e).
 4. Registro de cada cenário com as evidências validadas e status segundo os critérios de §13.1.
+
+## 14. Escopo proposto para integração: prontidão offline
+
+**29/10/2026 — decisão do arquiteto:** reposicionar a POC-02B como prontidão offline. A integração à `main`
+**não está concluída**: depende dos critérios abaixo e de decisão própria. Nada é ativado: nenhum Cloudflare
+Tunnel, nenhum TURN real, nenhum hostname público. 02B.6–02B.8 (túnel, TURN real e testes R1–R8) ficam fora
+do escopo e exigem aprovação própria. A exposição pública continua **proibida** até o cumprimento e a
+aprovação de §9.8, §10.10, §11.8, §12.11 e §13.5.
+
+### 14.1 Critérios de aceite (A1–A9)
+
+O status de cada critério só passa a "aprovado" depois da verificação no **head final** do PR, com data,
+fonte e referência. Verificações feitas antes disso ficam registradas como evidência, não como aprovação.
+
+| # | Critério | Como verificar | Situação (29/10/2026) |
+|---|---|---|---|
+| A1 | CI verde no head final do PR (verificações ubuntu-24.04 e windows-2025; E2E Chrome ↔ Edge) | Checks do PR #4 no head final | Pendente: CI verde só em `b4101de`; o head vai mudar |
+| A2 | `pnpm audit` sem vulnerabilidades no head final | Job da CI (Linux) no head final | Pendente: limpo em `b4101de` (local e CI) |
+| A3 | Nenhum segredo versionado: tokens, `<UUID>.json` e `cert.pem` do túnel, `.env` real | `.gitignore` + busca no diff do PR | Pendente de reconfirmação no head publicado (sem achados em `b4101de` e nas alterações deste PR) |
+| A4 | Padrões fechados (`ORYN_ACCESS_MODE=off`, `ORYN_TURN_PROVIDER=off`, nenhum hostname público); listeners só em loopback literal, conferido depois do bind | `server/index.ts`, `server/server.ts`; testes `server-host`, `public-access` | Pendente de reconfirmação no head final |
+| A5 | Hostname público sem Access é recusado na partida; configuração ambígua de Access ou TURN impede a partida | Testes `public-access`, `cli-access` | Pendente de reconfirmação no head final |
+| A6 | README, este documento e a descrição do PR coerentes com o escopo offline | Revisão | Pendente: documentos atualizados neste PR; descrição do PR não publicada |
+| A7 | R1–R8 registrados como **não executados**; relay e relay-tls **não** declarados comprovados | §13.1, §13.9 e README | Pendente de reconfirmação no head final |
+| A8 | Revisão independente concluída e achados tratados (corrigidos, aceitos ou adiados com registro) | Relatório da revisão; §13.9 | A revisão independente foi concluída. IR-1 e IR-2 foram corrigidos neste PR e possuem testes de regressão. Os achados IR-3 a IR-13 receberam decisão arquitetural em 29/10/2026, conforme §13.9 e §14.3. O aceite final de A8 permanece condicionado à verificação do HEAD publicado e à resolução de eventuais threads. |
+| A9 | Exposição pública e testes reais com aprovação própria registrada antes de qualquer ativação | §13.5, §13.11 e esta seção | Pendente de confirmação na revisão final |
+
+### 14.2 Processo do projeto × ruleset da `main`
+
+- **Processo do projeto:** revisão independente (A8), critérios A1–A9 e decisão arquitetural de integração.
+- **Ruleset "Protect main"** (exigências da plataforma, lidas em 29/10/2026 pela API pública): merge só por
+  squash; histórico linear; commits assinados; threads de revisão resolvidas; **0 aprovações exigidas**. O
+  ruleset não exige a revisão independente: ela é exigência do processo.
+
+### 14.3 Riscos e achados: decisão arquitetural de 29/10/2026
+
+- **Corrigidos neste PR:** IR-1 e IR-2, com testes de regressão. Não são riscos aceitos.
+- **Aceitos temporariamente, só para a integração offline, com correção obrigatória antes de qualquer
+  exposição WAN:** IR-3 a IR-6 e os equivalentes da revisão inicial (M-1, B-1 e B-2), mais B-3.
+- **Não são vulnerabilidades aceitas; ficam registrados para tratamento:**
+  - IR-7: melhoria de sanitização WebRTC, registrada para correção futura;
+  - IR-8: risco potencial que exige validação antes da exposição;
+  - IR-9: revisão da janela de expiração e autorização do JWT antes da exposição;
+  - IR-10 e IR-11: melhorias de hardening JWT/JWKS;
+  - IR-12: lacuna de teste de path traversal; requer teste de integração real;
+  - IR-13: melhoria de classificação de dependência.
+
+Detalhes e evidências em §13.9. A exposição pública continua **proibida** (§14).
+
+### 14.4 Plano de integração (não executado)
+
+Squash na `main`. Os commits assinados originais ficam no branch e no PR #4. Sequência: PR #4 → POC-02C →
+PR #5. Antes de qualquer atualização dos branches seguintes: igualdade das árvores, ausência de alterações
+incompatíveis na `main`, simulação do diff, autorização explícita e verificação posterior da assinatura e do
+diff.
