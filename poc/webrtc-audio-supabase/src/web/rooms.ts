@@ -59,9 +59,65 @@ export type DisconnectKind = 'closed' | 'not-member' | 'expired' | 'unknown';
 export const DISCONNECT_KIND_MESSAGES: Record<DisconnectKind, string> = {
   closed: 'A sala foi encerrada pelo dono.',
   'not-member': 'Esta conta não participa mais desta sala.',
-  expired: 'A sessão na sala expirou ou deixou de valer. Entre de novo.',
+  expired: 'Sua sessão na sala expirou. Entre de novo.',
   unknown: 'Não foi possível confirmar o motivo agora.',
 };
+
+/** Código de desconexão "a sessão na sala deixou de valer" (DISCONNECT.session em supabase-signaling.ts). */
+export const SESSION_GONE_CODE = 4403;
+
+export type NoticeTone = 'info' | 'error';
+export interface Notice {
+  tone: NoticeTone;
+  text: string;
+}
+
+/** Aviso enquanto a classificação de um 4403 está pendente. */
+export const DISCONNECT_CHECKING: Notice = { tone: 'info', text: 'Verificando o motivo…' };
+
+/**
+ * Texto técnico de uma falha da chamada: a mensagem do PeerCall mais o detalhe do código de desconexão, sem
+ * pontuação dupla ("…(código 4403): a sessão na sala deixou de valer.").
+ */
+export function formatCallError(error: string, detail?: string): string {
+  return detail ? `${error.replace(/\.\s*$/, '')}: ${detail}.` : error;
+}
+
+/**
+ * Como apresentar uma desconexão. Só o 4403 com motivo CONFIRMADO de encerramento ou expiração vira
+ * informação, sem o código; o resto continua como erro com o texto técnico (4401, 4408, 4500 e o 4403 sem
+ * motivo confirmado, exatamente como antes). O código técnico continua no registro da chamada.
+ */
+export function describeDisconnect(code: number, kind: DisconnectKind, technical: string): Notice {
+  if (code !== SESSION_GONE_CODE) return { tone: 'error', text: technical };
+  if (kind === 'closed' || kind === 'expired') return { tone: 'info', text: DISCONNECT_KIND_MESSAGES[kind] };
+  if (kind === 'not-member') return { tone: 'error', text: DISCONNECT_KIND_MESSAGES[kind] };
+  return { tone: 'error', text: `${technical} ${DISCONNECT_KIND_MESSAGES.unknown}` };
+}
+
+/**
+ * A queda da chamada é o efeito do encerramento que ESTA aba pediu (o aviso do servidor pode chegar antes da
+ * resposta do close_room): não é erro para quem encerrou.
+ */
+export function isClosingOwnCall(busy: LobbyAction | null, callRoomId: string | null): boolean {
+  return callRoomId !== null && busy?.kind === 'close' && busy.roomId === callRoomId;
+}
+
+/**
+ * Explica um 4403 pela lista de salas. `isCurrent` é consultado DEPOIS da resposta: se outra chamada começou,
+ * houve logout ou outra desconexão foi explicada no meio, o resultado é descartado e nada é mostrado.
+ */
+export async function explainDisconnect(
+  roomId: string,
+  technical: string,
+  deps: { listRooms(): Promise<RpcResult<unknown[]>>; isCurrent(): boolean; show(notice: Notice): void },
+): Promise<Notice | null> {
+  const res = await deps.listRooms().catch(() => ({ data: null, error: 'erro' }));
+  if (!deps.isCurrent()) return null;
+  const notice = describeDisconnect(SESSION_GONE_CODE, classifyDisconnect(roomId, res), technical);
+  deps.show(notice);
+  return notice;
+}
 
 /**
  * Motivo de uma desconexão 4403, pela lista de salas DEPOIS dela. Sem classificação definitiva se a consulta

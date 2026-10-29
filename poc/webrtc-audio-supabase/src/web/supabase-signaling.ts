@@ -156,6 +156,12 @@ export interface SupabaseSignalingOptions {
   heartbeatMs?: number;
   tickMs?: number;
   ackMs?: number;
+  /** Espera depois da entrega antes de confirmar (a Edge Function grava `published` DEPOIS do Broadcast). */
+  ackDelayMs?: number;
+  /** Espera antes da 1ª repetição de um lote não confirmado por inteiro; dobra a cada tentativa. */
+  ackRetryMs?: number;
+  /** Tentativas por lote de confirmação (a 1ª incluída); depois, desiste dos ids que faltaram. */
+  ackMaxAttempts?: number;
   rateMax?: number;
   rateWindowMs?: number;
   maxQueue?: number;
@@ -167,7 +173,16 @@ interface Outgoing {
   peer: string;
 }
 
-type State = 'new' | 'connecting' | 'open' | 'closed';
+/** Lote de confirmação: `ids` fixos; `confirmed` = soma do que o banco contou para estes ids. */
+interface AckBatch {
+  readonly ids: readonly string[];
+  confirmed: number;
+  attempts: number;
+  due: number;
+  inFlight: boolean;
+}
+
+type State ='new' | 'connecting' | 'open' | 'closed';
 
 export class SupabaseSignaling implements SignalingLike {
   private state: State = 'new';
@@ -203,8 +218,17 @@ export class SupabaseSignaling implements SignalingLike {
   private readonly o: Required<Omit<SupabaseSignalingOptions, 'sendOptions'>> & { sendOptions: SendOptions };
   /** Resolvida quando close() terminou (leave_room e remoção do canal). */
   closed: Promise<void> = Promise.resolve();
-  /** Contadores para diagnóstico e testes (sem dados sensíveis). */
-  readonly counters = { sent: 0, sendFailed: 0, delivered: 0, duplicates: 0, ignored: 0, acked: 0, dropped: 0 };
+  /** Ids entregues que ainda esperam `ackDelayMs` para entrar num lote: msg_id → quando. */
+  private readonly ackWaiting = new Map<string, number>();
+  /**
+   * Lotes de confirmação ativos. Os ids de um lote são fixos do 1º envio ao fim, e cada id está em no máximo um
+   * lote (`ackBatched`); `confirmed` acumula o que o banco contou NESTE lote. Um lote só sai daqui quando a soma
+   * chega ao tamanho, quando as tentativas acabam ou no close().
+   */
+  private readonly ackBatches: AckBatch[] = [];
+  private readonly ackBatched = new Set<string>();
+  /** Contadores para diagnóstico e testes (sem dados sensíveis). `acked` = confirmações que o BANCO contou. */
+  readonly counters = { sent: 0, sendFailed: 0, delivered: 0, duplicates: 0, ignored: 0, acked: 0, ackRetries: 0, ackGivenUp: 0, dropped: 0 };
 
   constructor(options: SupabaseSignalingOptions) {
     this.o = {
@@ -214,6 +238,9 @@ export class SupabaseSignaling implements SignalingLike {
       heartbeatMs: 30_000,
       tickMs: 500,
       ackMs: 1_000,
+      ackDelayMs: 1_500,
+      ackRetryMs: 2_000,
+      ackMaxAttempts: 3,
       rateMax: 30,
       rateWindowMs: 10_000,
       maxQueue: 64,
@@ -309,6 +336,10 @@ export class SupabaseSignaling implements SignalingLike {
     this.waits.clear();
     this.counters.dropped += this.queue.length;
     this.queue = [];
+    // a sessão terminou: nada mais a confirmar
+    this.ackWaiting.clear();
+    this.ackBatches.length = 0;
+    this.ackBatched.clear();
     const channel = this.channel;
     this.channel = null;
     this.closed = (async () => {
@@ -503,13 +534,74 @@ export class SupabaseSignaling implements SignalingLike {
     }
   }
 
+  /**
+   * Confirma sinais entregues (ack_signals). Contrato (0200): devolve QUANTAS linhas passaram de `published` para
+   * `acknowledged`, sem dizer quais; um ack que chega enquanto o sinal ainda está em `publishing` (a Edge Function
+   * grava `published` depois do Broadcast) não conta e não dá erro; repetir é idempotente. Como o banco só conta
+   * transições `published` → `acknowledged` desta sessão, somar as contagens de um MESMO conjunto de ids diz
+   * quantos dele já foram confirmados. Por isso:
+   * - cada id espera `ackDelayMs` depois da entrega e então entra num lote novo, que nunca muda de membros;
+   *   ids novos não se misturam a um lote em repetição;
+   * - o lote acumula o que o banco contou; quando a soma chega ao tamanho, está completo e sai, sem repetir;
+   * - soma menor (inclusive zero) ou falha: o mesmo lote volta, com espera crescente (`ackRetryMs`, dobrando), até
+   *   `ackMaxAttempts` tentativas; depois, desiste só dos que faltaram (a entrega já aconteceu: o ack é registro);
+   * - `session-invalid`: a sessão acabou, desiste na hora; nada é enviado depois do close().
+   */
   private async flushAcks(): Promise<void> {
     if (this.isClosed() || !this.sessionId || !this.receiver) return;
-    const ids = this.receiver.takeAcks();
-    if (ids.length === 0) return;
-    const res = await this.o.backend.rpc<number>('ack_signals', { p_session_id: this.sessionId, p_msg_ids: ids });
-    if (res.error) this.o.log(`Confirmação de sinais falhou (${shortCode(res.error)}).`);
-    else this.counters.acked += ids.length;
+    const now = this.o.now();
+    for (const id of this.receiver.takeAcks()) {
+      if (!this.ackWaiting.has(id) && !this.ackBatched.has(id)) this.ackWaiting.set(id, now + this.o.ackDelayMs);
+    }
+    const ids: string[] = [];
+    for (const [id, due] of this.ackWaiting) {
+      if (ids.length >= 64) break;
+      if (due <= now) ids.push(id);
+    }
+    if (ids.length > 0) {
+      for (const id of ids) {
+        this.ackWaiting.delete(id);
+        this.ackBatched.add(id);
+      }
+      this.ackBatches.push({ ids, confirmed: 0, attempts: 0, due: now, inFlight: false });
+    }
+    const due = this.ackBatches.filter((b) => !b.inFlight && b.due <= now);
+    await Promise.all(due.map((b) => this.sendAckBatch(b)));
+  }
+
+  private async sendAckBatch(batch: AckBatch): Promise<void> {
+    batch.inFlight = true;
+    const res: RpcResult<number> = await this.o.backend
+      .rpc<number>('ack_signals', { p_session_id: this.sessionId, p_msg_ids: batch.ids })
+      .catch(() => ({ data: null, error: 'erro' }));
+    if (this.isClosed()) return; // close() já descartou as pendências
+    batch.inFlight = false;
+    const counted = !res.error && typeof res.data === 'number' ? res.data : 0;
+    this.counters.acked += counted;
+    batch.confirmed += counted;
+    const missing = Math.max(0, batch.ids.length - batch.confirmed);
+    if (missing === 0) return this.dropAckBatch(batch);
+    if (shortCode(res.error) === 'session-invalid') {
+      this.dropAckBatch(batch);
+      this.counters.ackGivenUp += missing;
+      return this.o.log('Confirmação de sinais recusada (session-invalid); descartada.');
+    }
+    batch.attempts += 1;
+    if (batch.attempts >= this.o.ackMaxAttempts) {
+      this.dropAckBatch(batch);
+      this.counters.ackGivenUp += missing;
+      if (res.error) this.o.log(`Confirmação de sinais falhou (${shortCode(res.error)}).`);
+      return this.o.log(`${missing} confirmação(ões) de sinal sem retorno completo depois de ${this.o.ackMaxAttempts} tentativas.`);
+    }
+    if (res.error) this.o.log(`Confirmação de sinais falhou (${shortCode(res.error)}); será repetida.`);
+    batch.due = this.o.now() + this.o.ackRetryMs * 2 ** (batch.attempts - 1);
+    this.counters.ackRetries += batch.ids.length; // o lote volta inteiro: o banco não diz quais faltaram
+  }
+
+  private dropAckBatch(batch: AckBatch): void {
+    const i = this.ackBatches.indexOf(batch);
+    if (i >= 0) this.ackBatches.splice(i, 1);
+    for (const id of batch.ids) this.ackBatched.delete(id);
   }
 
   private onChannelStatus(status: 'CHANNEL_ERROR' | 'TIMED_OUT' | 'CLOSED'): void {

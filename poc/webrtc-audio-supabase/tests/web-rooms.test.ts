@@ -8,7 +8,14 @@ import { codePointLength, isDisplayName, isRoomName, parseRoomSummary, type Room
 import {
   CLOSE_FAILED,
   CREATE_FAILED,
+  DISCONNECT_CHECKING,
   DISCONNECT_KIND_MESSAGES,
+  SESSION_GONE_CODE,
+  describeDisconnect,
+  explainDisconnect,
+  formatCallError,
+  isClosingOwnCall,
+  type Notice,
   LIST_FAILED,
   LobbyController,
   ROOM_MAX_MEMBERS,
@@ -559,5 +566,86 @@ describe('L1: operação da sessão anterior não mexe na sessão nova (logout n
     expect(await closing).toBe(false);
     expect(states.length).toBe(after);
     expect(calls).toEqual(['list_my_rooms', 'close_room']);
+  });
+});
+
+describe('Frente A: apresentação das desconexões', () => {
+  const tech4403 = formatCallError('Conexão com a sinalização perdida (código 4403).', 'a sessão na sala deixou de valer');
+
+  it('formatCallError: sem pontuação dupla; sem detalhe, a mensagem fica como está', () => {
+    expect(tech4403).toBe('Conexão com a sinalização perdida (código 4403): a sessão na sala deixou de valer.');
+    expect(tech4403).not.toMatch(/\)\.\s*—/);
+    expect(formatCallError('Permissão do microfone negada.')).toBe('Permissão do microfone negada.');
+  });
+
+  it('matriz do 4403: encerrada e expirada viram informação sem código; sem participação e desconhecido são erro', () => {
+    expect(describeDisconnect(SESSION_GONE_CODE, 'closed', tech4403)).toEqual({ tone: 'info', text: 'A sala foi encerrada pelo dono.' });
+    expect(describeDisconnect(SESSION_GONE_CODE, 'expired', tech4403)).toEqual({ tone: 'info', text: 'Sua sessão na sala expirou. Entre de novo.' });
+    expect(describeDisconnect(SESSION_GONE_CODE, 'not-member', tech4403)).toEqual({ tone: 'error', text: 'Esta conta não participa mais desta sala.' });
+    const unknown = describeDisconnect(SESSION_GONE_CODE, 'unknown', tech4403);
+    expect(unknown.tone).toBe('error');
+    expect(unknown.text).toContain('código 4403');
+    expect(unknown.text).toContain('Não foi possível confirmar o motivo agora.');
+    for (const kind of ['closed', 'expired'] as const) expect(describeDisconnect(SESSION_GONE_CODE, kind, tech4403).text).not.toMatch(/4403|código/);
+  });
+
+  it('4401, 4408 e 4500: erro com o texto técnico de sempre, qualquer que seja a classificação', () => {
+    for (const [code, detail] of [
+      [4401, 'autenticação recusada pelo servidor (faça login de novo)'],
+      [4408, 'o batimento da sessão falhou repetidamente'],
+      [4500, 'o canal privado foi fechado pelo servidor'],
+    ] as const) {
+      const technical = formatCallError(`Conexão com a sinalização perdida (código ${code}).`, detail);
+      for (const kind of ['closed', 'expired', 'not-member', 'unknown'] as const) {
+        expect(describeDisconnect(code, kind, technical), `${code} ${kind}`).toEqual({ tone: 'error', text: technical });
+      }
+    }
+  });
+
+  it('supressão: só quando ESTA aba está encerrando a sala da chamada (mesma semântica de antes)', () => {
+    expect(isClosingOwnCall({ kind: 'close', roomId: id(1) }, id(1))).toBe(true);
+    expect(isClosingOwnCall({ kind: 'close', roomId: id(2) }, id(1))).toBe(false);
+    expect(isClosingOwnCall({ kind: 'create' }, id(1))).toBe(false);
+    expect(isClosingOwnCall({ kind: 'refresh' }, id(1))).toBe(false);
+    expect(isClosingOwnCall(null, id(1))).toBe(false);
+    expect(isClosingOwnCall({ kind: 'close', roomId: id(1) }, null)).toBe(false);
+  });
+
+  it('explainDisconnect: classifica pela lista e mostra; consulta com falha não dá veredito (erro técnico)', async () => {
+    const shown: Notice[] = [];
+    const run = (res: RpcResult<unknown[]> | 'throw') =>
+      explainDisconnect(id(1), tech4403, {
+        listRooms: async () => {
+          if (res === 'throw') throw new Error('rede');
+          return res;
+        },
+        isCurrent: () => true,
+        show: (n) => shown.push(n),
+      });
+    expect(await run({ data: [closedRoom(1)], error: null })).toEqual({ tone: 'info', text: 'A sala foi encerrada pelo dono.' });
+    expect(await run({ data: [room(1)], error: null })).toMatchObject({ tone: 'info' });
+    expect(await run({ data: [], error: null })).toMatchObject({ tone: 'error', text: 'Esta conta não participa mais desta sala.' });
+    expect((await run({ data: null, error: 'erro' }))!.text).toContain('código 4403');
+    expect((await run('throw'))!.text).toContain('código 4403');
+    expect(shown).toHaveLength(5);
+  });
+
+  it('resultado obsoleto: se a chamada mudou durante a consulta, nada é mostrado', async () => {
+    let current = true;
+    let release!: (r: RpcResult<unknown[]>) => void;
+    const shown: Notice[] = [];
+    const pending = explainDisconnect(id(1), tech4403, {
+      listRooms: () => new Promise((resolve) => (release = resolve)),
+      isCurrent: () => current,
+      show: (n) => shown.push(n),
+    });
+    current = false; // nova chamada, logout ou outra desconexão explicada no meio
+    release({ data: [closedRoom(1)], error: null });
+    expect(await pending).toBeNull();
+    expect(shown).toEqual([]);
+  });
+
+  it('o aviso pendente é informação, não erro', () => {
+    expect(DISCONNECT_CHECKING).toEqual({ tone: 'info', text: 'Verificando o motivo…' });
   });
 });

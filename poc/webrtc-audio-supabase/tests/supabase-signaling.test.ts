@@ -292,6 +292,9 @@ describe('envio e recepção de sinais (Edge Function `signal`, nunca Broadcast 
     a.s.send({ type: 'signal', epoch, payload: { kind: 'offer', sdp } });
     a.s.send({ type: 'signal', epoch, payload: cand(1) });
     await settle(2000);
+    // Pós-Rodada 2 (B1): o ack sai entre 1,5 e 2,5 s depois da entrega (antes ia no 1º ciclo de 1 s, a corrida).
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(rpcs(USERS.member, 'ack_signals')).toHaveLength(0);
     await vi.advanceTimersByTimeAsync(1_000);
     await settle();
     const acks = rpcs(USERS.member, 'ack_signals');
@@ -469,5 +472,250 @@ describe('MVP 01: sala encerrada (close_room) e not-member no roster', () => {
     await joined(USERS.member);
     expect(ofType(a, 'peer-joined')).toHaveLength(2);
     expect(a.disconnects).toEqual([]);
+  });
+});
+
+describe('Pós-Rodada 2 (B1): ack atrasado e repetição limitada', () => {
+  /** A (owner) envia `n` sinais a B (member); B usa as opções dadas. Devolve os msg_ids na ordem de envio. */
+  async function scenario(n: number, overB: Partial<SupabaseSignalingOptions> = {}) {
+    const a = await joined(USERS.owner);
+    const b = await joined(USERS.member, overB);
+    const epoch = pairEpoch(a.s.session!, b.s.session!);
+    for (let i = 0; i < n; i++) a.s.send({ type: 'signal', epoch, payload: i === 0 ? { kind: 'offer', sdp } : cand(i) });
+    await settle(2000);
+    return { a, b, ids: () => server.published.map((e) => e.msg_id) };
+  }
+  const acks = () => rpcs(USERS.member, 'ack_signals');
+  const states = (ids: string[]) => ids.map((id) => server.signalStates()[id]);
+
+  it('CONTROLE (política antiga: ack no 1º ciclo, sem repetir): com `published` atrasado, o sinal fica preso em published', async () => {
+    server.publishedLagMs = 1_200;
+    const { b, ids } = await scenario(1, { ackDelayMs: 0, ackMaxAttempts: 1 });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(states(ids())).toEqual(['published']); // a corrida da Rodada 2, reproduzida
+    expect(acks()).toHaveLength(1);
+    expect(b.s.counters.acked).toBe(0);
+    expect(b.s.counters.ackGivenUp).toBe(1);
+  });
+
+  it('ack antes de `published` (mesmo atraso de 1,2 s): com a correção, confirmado numa única chamada', async () => {
+    server.publishedLagMs = 1_200;
+    const { b, ids } = await scenario(1);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(states(ids())).toEqual(['acknowledged']);
+    expect(acks()).toHaveLength(1);
+    expect(b.s.counters).toMatchObject({ acked: 1, ackRetries: 0, ackGivenUp: 0 });
+  });
+
+  it('ack depois de `published` (sem atraso): uma chamada, sem repetição', async () => {
+    const { b, ids } = await scenario(2);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(states(ids())).toEqual(['acknowledged', 'acknowledged']);
+    expect(acks()).toHaveLength(1);
+    expect(acks()[0]!.args['p_msg_ids']).toEqual(ids());
+    expect(b.s.counters).toMatchObject({ acked: 2, ackRetries: 0 });
+  });
+
+  it('latência maior que a janela (6 s): zero, zero, confirmado — 3 chamadas, espera crescente', async () => {
+    server.publishedLagMs = 6_000;
+    const { b, ids } = await scenario(1);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(acks()).toHaveLength(1); // 1ª tentativa (t≈3 s): ainda publishing → 0
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(acks()).toHaveLength(2); // +2 s (t≈5 s): ainda publishing → 0
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(acks()).toHaveLength(2); // a próxima espera é de 4 s
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(acks()).toHaveLength(3); // t≈9 s: published (6 s) → 1
+    expect(states(ids())).toEqual(['acknowledged']);
+    expect(b.s.counters).toMatchObject({ acked: 1, ackRetries: 2, ackGivenUp: 0 });
+  });
+
+  it('latência acima do teto: desiste depois de 3 tentativas e não repete mais (amplificação limitada)', async () => {
+    server.publishedLagMs = 60_000;
+    const { b, ids } = await scenario(1);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(acks()).toHaveLength(3);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(acks()).toHaveLength(3);
+    expect(states(ids())).toEqual(['published']);
+    expect(b.s.counters).toMatchObject({ acked: 0, ackRetries: 2, ackGivenUp: 1 });
+    expect(b.logs.some((l) => /sem retorno completo depois de 3 tentativas/.test(l))).toBe(true);
+  });
+
+  const logEntry = (id: string) => [...server.log.values()].find((l) => l.msg_id === id)!;
+  const gaveUpLog = (c: Client) => c.logs.filter((l) => /sem retorno completo/.test(l));
+  /** Cada lote tem ids fixos: duas chamadas ou repetem o mesmo conjunto, ou não têm id em comum. */
+  function expectFixedDisjointBatches() {
+    const sets = [...new Set(acks().map((c) => JSON.stringify(c.args['p_msg_ids'])))].map((s) => JSON.parse(s) as string[]);
+    for (let i = 0; i < sets.length; i++) {
+      for (let j = i + 1; j < sets.length; j++) expect(sets[i]!.filter((id) => sets[j]!.includes(id)), 'id em dois lotes').toEqual([]);
+    }
+    return sets;
+  }
+
+  it('cenário A+B: tentativa 1 conta 1, tentativa 2 conta 1 → lote completo, sem 3ª tentativa e sem desistência', async () => {
+    const { b, ids } = await scenario(2);
+    const [first, second] = ids() as [string, string];
+    // Só o 2º sinal (B) ainda não chegou a `published` quando o 1º ack sai.
+    logEntry(second).state = 'publishing';
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(acks()).toHaveLength(1); // tentativa 1 → 1 (A)
+    expect(states([first, second])).toEqual(['acknowledged', 'publishing']);
+    expect(b.s.counters).toMatchObject({ acked: 1, ackRetries: 2, ackGivenUp: 0 });
+    logEntry(second).state = 'published';
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(acks()).toHaveLength(2); // tentativa 2 → 1 (B; A já confirmado não conta de novo); soma 2 = tamanho
+    expect(states([first, second])).toEqual(['acknowledged', 'acknowledged']);
+    for (const call of acks()) expect(call.args['p_msg_ids']).toEqual([first, second]);
+    expect(b.s.counters).toMatchObject({ acked: 2, ackRetries: 2, ackGivenUp: 0 });
+    expect(gaveUpLog(b)).toEqual([]);
+  });
+
+  it('lote parcial e depois esgotado: 1, 0, 0 → desiste só do id que faltou', async () => {
+    const { b, ids } = await scenario(2);
+    const [first, second] = ids() as [string, string];
+    logEntry(second).state = 'publishing'; // nunca chega a `published`
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(acks()).toHaveLength(3);
+    for (const call of acks()) expect(call.args['p_msg_ids']).toEqual([first, second]);
+    expect(states([first, second])).toEqual(['acknowledged', 'publishing']);
+    expect(b.s.counters).toMatchObject({ acked: 1, ackRetries: 4, ackGivenUp: 1 });
+    expect(gaveUpLog(b)).toEqual(['1 confirmação(ões) de sinal sem retorno completo depois de 3 tentativas.']);
+  });
+
+  it('resposta SQL igual a zero em toda tentativa: 3 chamadas, desiste dos dois, nada depois', async () => {
+    const ackArgs: string[][] = [];
+    const real = server.backend(USERS.member);
+    const backend = {
+      ...real,
+      rpc: <T,>(fn: string, args: Record<string, unknown>) => {
+        if (fn !== 'ack_signals') return real.rpc<T>(fn, args);
+        ackArgs.push(args['p_msg_ids'] as string[]);
+        return Promise.resolve({ data: 0 as T, error: null });
+      },
+    };
+    const a = await joined(USERS.owner);
+    const b = await joined(USERS.member, { backend });
+    const epoch = pairEpoch(a.s.session!, b.s.session!);
+    a.s.send({ type: 'signal', epoch, payload: { kind: 'offer', sdp } });
+    a.s.send({ type: 'signal', epoch, payload: cand(1) });
+    await settle(2000);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(ackArgs).toHaveLength(3);
+    for (const ids of ackArgs) expect(ids).toEqual(server.published.map((e) => e.msg_id));
+    expect(b.s.counters).toMatchObject({ acked: 0, ackRetries: 4, ackGivenUp: 2 });
+    expect(gaveUpLog(b)).toEqual(['2 confirmação(ões) de sinal sem retorno completo depois de 3 tentativas.']);
+  });
+
+  it('ids novos durante a repetição de um lote: entram num lote próprio; nenhum id em dois lotes; limite preservado', async () => {
+    const { a, b, ids } = await scenario(1);
+    const [x] = ids() as [string];
+    logEntry(x).state = 'publishing';
+    await vi.advanceTimersByTimeAsync(3_500); // lote [x]: tentativa 1 → 0, repetição agendada
+    expect(acks()).toHaveLength(1);
+    a.s.send({ type: 'signal', epoch: pairEpoch(a.s.session!, b.s.session!), payload: cand(7) });
+    await vi.advanceTimersByTimeAsync(3_500); // y chega, espera a janela e sai sozinho; [x] repete (→ 0)
+    const y = ids()[1]!;
+    expect(states([x, y])).toEqual(['publishing', 'acknowledged']);
+    logEntry(x).state = 'published';
+    await vi.advanceTimersByTimeAsync(30_000); // [x] tentativa 3 → 1
+    const sets = expectFixedDisjointBatches();
+    expect(sets).toEqual([[x], [y]]);
+    expect(acks().filter((c) => (c.args['p_msg_ids'] as string[]).includes(x))).toHaveLength(3);
+    expect(acks().filter((c) => (c.args['p_msg_ids'] as string[]).includes(y))).toHaveLength(1);
+    expect(states([x, y])).toEqual(['acknowledged', 'acknowledged']);
+    expect(b.s.counters).toMatchObject({ acked: 2, ackRetries: 2, ackGivenUp: 0 });
+    expect(gaveUpLog(b)).toEqual([]);
+  });
+
+  it('session-invalid no meio de um lote parcial: desiste só do que faltou, sem repetir', async () => {
+    const { b, ids } = await scenario(2);
+    const [first, second] = ids() as [string, string];
+    logEntry(second).state = 'publishing';
+    await vi.advanceTimersByTimeAsync(3_000); // tentativa 1 → 1
+    server.rpcFaults.set('ack_signals', 'session-invalid');
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(acks()).toHaveLength(2);
+    expect(states([first, second])).toEqual(['acknowledged', 'publishing']);
+    expect(b.s.counters).toMatchObject({ acked: 1, ackRetries: 2, ackGivenUp: 1 });
+    expect(b.logs.some((l) => /session-invalid/.test(l))).toBe(true);
+  });
+
+  it('close() na espera de uma repetição: nenhum ack depois, e nenhum timer pendente', async () => {
+    const { a, b, ids } = await scenario(2);
+    logEntry(ids()[1]!).state = 'publishing';
+    await vi.advanceTimersByTimeAsync(3_000); // parcial: repetição agendada
+    expect(acks()).toHaveLength(1);
+    b.s.close();
+    a.s.close();
+    await Promise.all([a.s.closed, b.s.closed]);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(acks()).toHaveLength(1);
+    expect(b.s.counters).toMatchObject({ acked: 1, ackGivenUp: 0 });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('falha de rede no ack: repetida; session-invalid: descartada na hora, sem repetir', async () => {
+    server.rpcFaults.set('ack_signals', 'erro de rede');
+    const first = await scenario(1);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(states(first.ids())).toEqual(['acknowledged']);
+    expect(acks()).toHaveLength(2);
+    expect(first.b.logs.some((l) => /será repetida/.test(l))).toBe(true);
+
+    server = new FakeSupabase();
+    server.rpcFaults.set('ack_signals', 'session-invalid');
+    const second = await scenario(1);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(acks()).toHaveLength(1);
+    expect(second.b.s.counters).toMatchObject({ ackRetries: 0, ackGivenUp: 1 });
+  });
+
+  it('entrega duplicada: cada msg_id é confirmado uma vez só', async () => {
+    server.duplicateDeliveries = true;
+    const { b, ids } = await scenario(3);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(acks()).toHaveLength(1);
+    expect(acks()[0]!.args['p_msg_ids']).toEqual(ids());
+    expect(b.s.counters.acked).toBe(3);
+    expect(b.s.counters.duplicates).toBeGreaterThan(0);
+  });
+
+  it('close() durante a espera: nenhum ack depois, e nenhum timer pendente', async () => {
+    const { a, b } = await scenario(2);
+    await vi.advanceTimersByTimeAsync(1_000); // antes da janela de 1,5 s
+    b.s.close();
+    a.s.close();
+    await Promise.all([a.s.closed, b.s.closed]);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(acks()).toHaveLength(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('close() durante um ack em curso: a resposta atrasada não reagenda nada', async () => {
+    let releaseAck!: (r: { data: number | null; error: string | null }) => void;
+    let ackCalls = 0;
+    const real = server.backend(USERS.member);
+    const backend = {
+      ...real,
+      rpc: <T,>(fn: string, args: Record<string, unknown>) => {
+        if (fn !== 'ack_signals') return real.rpc<T>(fn, args);
+        ackCalls += 1;
+        return new Promise((resolve) => (releaseAck = resolve as never)) as never;
+      },
+    };
+    const a = await joined(USERS.owner);
+    const b = await joined(USERS.member, { backend });
+    a.s.send({ type: 'signal', epoch: pairEpoch(a.s.session!, b.s.session!), payload: { kind: 'offer', sdp } });
+    await settle(2000);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(ackCalls).toBe(1); // em curso
+    b.s.close();
+    releaseAck({ data: 0, error: null }); // "zero" chega depois do close
+    await settle();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(ackCalls).toBe(1);
+    expect(b.s.counters).toMatchObject({ ackRetries: 0, ackGivenUp: 0 });
   });
 });

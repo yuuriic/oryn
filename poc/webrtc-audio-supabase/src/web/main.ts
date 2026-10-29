@@ -11,7 +11,7 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { isUuid } from '../../supabase/functions/_shared/signal-contract.ts';
 import { PeerCall, type CallPhase, type CallStats, type PeerStates } from './call.ts';
 import { parseWebConfig, type WebConfig } from './config.ts';
-import { DISCONNECT_KIND_MESSAGES, LobbyController, classifyDisconnect } from './rooms.ts';
+import { DISCONNECT_CHECKING, LobbyController, explainDisconnect, formatCallError, isClosingOwnCall, type Notice } from './rooms.ts';
 import { renderLobby } from './rooms-view.ts';
 import { describePair, formatCodec, formatMetric } from './stats.ts';
 import { createSupabaseBackend } from './supabase-backend.ts';
@@ -73,6 +73,8 @@ let remoteAudio: HTMLAudioElement | null = null;
 let callRoomId: string | null = null;
 let callActive = false;
 let lobby: LobbyController;
+/** Muda a cada chamada nova, logout e desconexão explicada: uma explicação de 4403 antiga não sobrescreve nada. */
+let disconnectTicket = 0;
 
 function setField(name: string, value: string): void {
   const node = document.querySelector<HTMLElement>(`[data-field="${name}"]`);
@@ -87,9 +89,16 @@ function log(message: string): void {
   ui.log.scrollTop = ui.log.scrollHeight;
 }
 
+/** Aviso da página: informação (role=status) ou erro (role=alert). Sempre como texto. */
+function showNotice(notice: Notice | null): void {
+  ui.error.textContent = notice?.text ?? '';
+  ui.error.hidden = notice === null;
+  ui.error.setAttribute('role', notice?.tone === 'info' ? 'status' : 'alert');
+  ui.error.className = notice?.tone === 'info' ? 'notice' : 'error';
+}
+
 function showError(message: string | null): void {
-  ui.error.textContent = message ?? '';
-  ui.error.hidden = message === null;
+  showNotice(message === null ? null : { tone: 'error', text: message });
 }
 
 /** Código de erro do Auth exibível: só [a-z0-9_-] curto (nunca a mensagem inteira). */
@@ -135,30 +144,29 @@ function renderPhase(phase: CallPhase, error?: string): void {
     ui.muteBtn.textContent = 'Mutar';
     setField('role', '—');
   }
-  // O dono encerrou a sala desta chamada por aqui: o aviso do servidor pode chegar antes da resposta do
-  // close_room, e a queda que ele causa não é um erro para quem encerrou.
-  const closingHere = lobby?.state.busy?.kind === 'close' && lobby.state.busy.roomId === callRoomId;
-  if (phase === 'failed' && error && !closingHere) {
-    const code = /código (\d{4})/.exec(error)?.[1];
-    const detail = code ? DISCONNECT_MESSAGES[Number(code)] : undefined;
-    const shown = detail ? `${error} — ${detail}.` : error;
-    showError(shown);
-    if (Number(code) === DISCONNECT.session && callRoomId) void explainDisconnect(callRoomId, shown);
+  // O dono encerrou a sala desta chamada por aqui: a queda que isso causa não é erro para quem encerrou.
+  if (phase === 'failed' && error && !isClosingOwnCall(lobby?.state.busy ?? null, callRoomId)) {
+    const code = Number(/código (\d{4})/.exec(error)?.[1]);
+    const technical = formatCallError(error, DISCONNECT_MESSAGES[code]);
+    if (code === DISCONNECT.session && callRoomId) {
+      // Sem veredito ainda: aviso neutro; o motivo vem da lista de salas (o código fica no registro).
+      showNotice(DISCONNECT_CHECKING);
+      const ticket = ++disconnectTicket;
+      const user = selfUserId;
+      void explainDisconnect(callRoomId, technical, {
+        listRooms: () => createSupabaseBackend(client).rpc<unknown[]>('list_my_rooms', {}),
+        isCurrent: () => ticket === disconnectTicket && !callActive && selfUserId === user,
+        show: showNotice,
+      });
+    } else {
+      showNotice({ tone: 'error', text: technical });
+    }
   }
   if (phase === 'ended' || phase === 'failed') {
     signaling = null;
     if (lobby.state.status !== 'idle') void lobby.refresh(); // contagens e estado das salas mudaram
   }
   renderRooms();
-}
-
-/** 4403: pergunta à lista de salas o motivo. Sem classificação definitiva se a consulta falhar. */
-async function explainDisconnect(roomId: string, shown: string): Promise<void> {
-  const user = selfUserId;
-  const res = await createSupabaseBackend(client).rpc<unknown[]>('list_my_rooms', {}).catch(() => ({ data: null, error: 'erro' }));
-  // Outra chamada já começou, ou houve logout/login no meio: a resposta é de outro momento.
-  if (callActive || callRoomId !== roomId || selfUserId !== user) return;
-  showError(`${shown} ${DISCONNECT_KIND_MESSAGES[classifyDisconnect(roomId, res)]}`);
 }
 
 function renderPeer(states: PeerStates | null): void {
@@ -181,6 +189,7 @@ function renderStats(s: CallStats | null): void {
 
 function startCall(roomInput: string): void {
   if (callActive) return; // uma chamada por vez
+  disconnectTicket += 1; // explicação pendente de uma chamada anterior não aparece nesta
   showError(null);
   const roomId = roomInput.trim().toLowerCase();
   if (!isUuid(roomId)) return showError('ID da sala inválido: informe o UUID da sala.');
@@ -284,6 +293,8 @@ function showLoggedIn(email: string | undefined): void {
 
 function showLoggedOut(): void {
   selfUserId = null;
+  disconnectTicket += 1;
+  if (ui.error.textContent === DISCONNECT_CHECKING.text) showNotice(null); // a explicação pendente foi descartada
   lobby.reset();
   ui.account.hidden = true;
   ui.login.hidden = false;

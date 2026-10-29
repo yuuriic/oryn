@@ -199,6 +199,12 @@ export class FakeSupabase {
   silent = false;
   /** Sala encerrada (close_room, MVP 01). */
   closed = false;
+  /** Atraso entre o Broadcast e a gravação de `published` (0 = imediato, como antes). */
+  publishedLagMs = 0;
+  /** Estado de cada sinal registrado, por msg_id (para conferir os acks). */
+  signalStates(): Record<string, string> {
+    return Object.fromEntries([...this.log.values()].map((l) => [l.msg_id, l.state]));
+  }
   private counter = 0;
   private readonly clock: () => number;
 
@@ -310,6 +316,8 @@ export class FakeSupabase {
       verifyUser: async () => user,
       authorize: async (_jwt, req, bytes) => this.authorize(user, req, bytes),
       setState: async (msgId, state) => {
+        // Como a Edge Function real: `published` é gravado DEPOIS do Broadcast (atraso medido na Rodada 2: 0,8–1,2 s).
+        if (state === 'published' && this.publishedLagMs > 0) await new Promise((resolve) => setTimeout(resolve, this.publishedLagMs));
         for (const l of this.log.values()) if (l.msg_id === msgId) l.state = state;
       },
       publish: async (topic, envelope) => {
