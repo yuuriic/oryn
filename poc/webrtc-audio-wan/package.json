@@ -1,0 +1,37 @@
+{
+  "name": "@oryn/poc-webrtc-audio-wan",
+  "private": true,
+  "version": "0.0.0",
+  "description": "POC-02B: áudio WebRTC bidirecional entre redes distintas (descartável; baseline copiado da POC-02A)",
+  "type": "module",
+  "packageManager": "pnpm@12.6.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "serve": "node server/index.ts",
+    "start": "vite build && node server/index.ts",
+    "e2e": "node scripts/e2e-two-browsers.mjs",
+    "preflight:cloudflare": "node server/preflight-cli.ts",
+    "readiness": "node server/readiness-cli.ts",
+    "diagnose": "node server/diagnostics-cli.ts",
+    "evidence:check": "node server/evidence-cli.ts"
+  },
+  "dependencies": {
+    "jose": "6.2.13",
+    "uqr": "0.1.3",
+    "ws": "8.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "@types/ws": "8.18.2",
+    "playwright-core": "1.64.1",
+    "typescript": "7.0.2",
+    "vite": "8.3.5",
+    "vitest": "5.0.5",
+    "yaml": "2.9.1"
+  }
+}

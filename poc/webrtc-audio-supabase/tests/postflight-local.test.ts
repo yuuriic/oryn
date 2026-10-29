@@ -1,0 +1,386 @@
+// Pré-voo e pós-voo (integration/sql) executados de verdade no PGlite com o shim (02C.2B, A3). Garante
+// que os scripts rodam, que o banco migrado não tem nenhuma linha FAIL, que o que depende do painel aparece
+// como NOT VERIFIED (nunca PASS) e que regressões de privilégio viram FAIL.
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { describe, expect, it } from 'vitest';
+import { TestDb, migrationFiles } from './helpers/db.ts';
+import { scenario } from './helpers/fixtures.ts';
+
+const sql = (name: string) => readFileSync(fileURLToPath(new URL(`../integration/sql/${name}`, import.meta.url)), 'utf8');
+
+interface Row {
+  item: string;
+  expected: string;
+  actual: string;
+  status: 'PASS' | 'FAIL' | 'NOT VERIFIED' | 'INFO';
+}
+
+async function postflight(db: TestDb): Promise<Row[]> {
+  await db.pg.exec('set role migration_owner');
+  try {
+    const results = await db.pg.exec(sql('01_postflight.sql'));
+    return results.find((r) => r.fields.some((f) => f.name === 'status'))!.rows as Row[];
+  } finally {
+    await db.pg.exec('reset role');
+  }
+}
+
+describe('pós-voo no banco migrado (PGlite + shim)', () => {
+  it('zero FAIL; Data API e "Allow public access" como NOT VERIFIED; fatos do Supabase como INFO', async () => {
+    const db = await TestDb.create();
+    try {
+      const rows = await postflight(db);
+      expect(rows.filter((r) => r.status === 'FAIL')).toEqual([]);
+      expect(rows.filter((r) => r.status === 'PASS').length).toBeGreaterThan(290);
+      const notVerified = rows.filter((r) => r.status === 'NOT VERIFIED').map((r) => r.item);
+      expect(notVerified).toEqual(expect.arrayContaining([expect.stringMatching(/^Data API/), expect.stringMatching(/Allow public access/)]));
+      const info = rows.filter((r) => r.status === 'INFO').map((r) => r.item);
+      expect(info).toEqual(expect.arrayContaining([expect.stringMatching(/^realtime\.send: EXECUTE/), expect.stringMatching(/dono/)]));
+      // O EXECUTE padrão de realtime.send é registrado, não reprovado.
+      expect(rows.find((r) => r.item.startsWith('realtime.send: EXECUTE'))!.actual).toBe('anon=true, authenticated=true');
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('o pré-voo roda inteiro em transação somente leitura', async () => {
+    const db = await TestDb.create();
+    try {
+      await db.pg.exec('set role migration_owner');
+      const results = await db.pg.exec(sql('00_preflight.sql'));
+      await db.pg.exec('reset role');
+      const p5 = results.find((r) => r.fields.some((f) => f.name === 'policy_grant'))!.rows[0] as Record<string, unknown>;
+      expect(p5).toMatchObject({ owner: 'supabase_realtime_admin', rls_enabled: true, policy_grant: false }); // sem supautils local
+    } finally {
+      await db.close();
+    }
+  });
+});
+
+describe('pós-voo detecta regressões (cada uma vira FAIL)', () => {
+  it.each([
+    ['EXECUTE para anon numa RPC', 'grant execute on function public.join_room(uuid) to anon', /EXECUTE anon public\.join_room/],
+    ['USAGE no schema privado', 'grant usage on schema oryn to authenticated', /USAGE authenticated schema oryn$/],
+    ['política permissiva em tabela de domínio', 'create policy x on oryn.rooms for select to authenticated using (true)', /nenhuma política no schema oryn/],
+    ['barreira restritiva de escrita removida', 'drop policy oryn_topics_no_client_write on realtime.messages', /barreira restritiva de escrita|oryn_topics_no_client_write/],
+    ['join_room sem a trava (M5)', `create or replace function public.join_room(p_room_id uuid) returns table (session_id uuid, topic text)
+       language plpgsql security definer set search_path = '' as $$ begin return; end $$`, /join_room trava a linha de membro/],
+  ])('%s', async (_label, mutation, expectedFail) => {
+    const db = await TestDb.create();
+    try {
+      await db.migrate(mutation);
+      const fails = (await postflight(db)).filter((r) => r.status === 'FAIL').map((r) => r.item);
+      expect(fails.some((i) => expectedFail.test(i)), fails.join(' | ')).toBe(true);
+    } finally {
+      await db.close();
+    }
+  });
+});
+
+describe('verificação entre migrações (05_step_checks.sql)', () => {
+  it('a cada passo: nada FAIL, nada pendente até o passo atual, e o resto PENDING', async () => {
+    const db = await TestDb.createBare();
+    try {
+      const run = async () => {
+        await db.pg.exec('set role migration_owner');
+        try {
+          const res = await db.pg.exec(sql('05_step_checks.sql'));
+          return res.find((r) => r.fields.some((f) => f.name === 'status'))!.rows as { step: number; item: string; status: string }[];
+        } finally {
+          await db.pg.exec('reset role');
+        }
+      };
+      const before = await run();
+      expect(before.every((r) => r.status === 'PENDING')).toBe(true);
+      const files = migrationFiles();
+      for (let n = 1; n <= files.length; n++) {
+        await db.migrate(files[n - 1]![1]);
+        const rows = await run();
+        expect(rows.filter((r) => r.status === 'FAIL'), `passo ${n}`).toEqual([]);
+        expect(rows.filter((r) => r.step <= n && r.status !== 'PASS'), `passo ${n}`).toEqual([]);
+        expect(rows.filter((r) => r.step > n).every((r) => r.status === 'PENDING'), `passo ${n}`).toBe(true);
+      }
+      // Regressão no passo 1 (privilégio indevido) vira FAIL.
+      await db.admin('grant select on oryn.rooms to anon');
+      expect((await run()).filter((r) => r.status === 'FAIL').map((r) => r.item)).toEqual(['nenhum privilégio de anon nas tabelas de oryn']);
+    } finally {
+      await db.close();
+    }
+  });
+});
+
+describe('reversão (90_rollback.sql) depois de cada etapa', () => {
+  it.each([1, 2, 3, 4])('depois de aplicar %i migração(ões): volta ao estado vazio e a reaplicação é limpa', async (n) => {
+    const db = await TestDb.createBare();
+    try {
+      const files = migrationFiles();
+      for (let i = 0; i < n; i++) await db.migrate(files[i]![1]);
+      await db.migrate(sql('90_rollback.sql'));
+      const left = await db.admin<{ schemas: number; fns: number; policies: number }>(`
+        select (select count(*)::int from pg_namespace where nspname in ('oryn', 'oryn_realtime')) as schemas,
+               (select count(*)::int from pg_proc p join pg_namespace s on s.oid = p.pronamespace where s.nspname = 'public') as fns,
+               (select count(*)::int from pg_policies where schemaname = 'realtime' and policyname like 'oryn_%') as policies`);
+      expect(left[0]).toEqual({ schemas: 0, fns: 0, policies: 0 });
+      // RLS e dono de realtime.messages intocados pela reversão.
+      expect((await db.admin<{ rls: boolean; owner: string }>(`select relrowsecurity as rls, pg_get_userbyid(relowner) as owner from pg_class where oid = 'realtime.messages'::regclass`))[0]).toEqual({ rls: true, owner: 'supabase_realtime_admin' });
+      for (const [, m] of files) await db.migrate(m);
+      expect((await postflight(db)).filter((r) => r.status === 'FAIL')).toEqual([]);
+    } finally {
+      await db.close();
+    }
+  });
+});
+
+describe('06_cli_side_effects.sql e 07_initial_state.sql (02C.3A.1)', () => {
+  const sideEffects = async (db: TestDb) => {
+    const res = await db.pg.exec(sql('06_cli_side_effects.sql'));
+    const rows = res.find((r) => r.fields.some((f) => f.name === 'actual'))!.rows as { item: string; actual: string }[];
+    return Object.fromEntries(rows.map((r) => [r.item.split(' ')[0], r.actual]));
+  };
+  const state = async (db: TestDb) => {
+    const res = await db.pg.exec(sql('07_initial_state.sql'));
+    return (res.find((r) => r.fields.some((f) => f.name === 'estado'))!.rows[0] as { estado: Record<string, unknown> }).estado;
+  };
+
+  it('06: sem histórico nem papéis temporários → tudo vazio; com histórico → as versões, em ordem', async () => {
+    const db = await TestDb.createBare();
+    try {
+      expect(await sideEffects(db)).toEqual({ cli_login_roles: '{}', supabase_migrations: 'false', history: '{}' });
+      await db.pg.exec(`create schema supabase_migrations; create table supabase_migrations.schema_migrations (version text primary key);
+                      insert into supabase_migrations.schema_migrations values ('20261023000200'), ('20261023000100');
+                      create role cli_login_postgres nologin`);
+      expect(await sideEffects(db)).toEqual({ cli_login_roles: '{cli_login_postgres}', supabase_migrations: 'true', history: '{20261023000100,20261023000200}' });
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('07 (02C.3B.1): histórico da CLI e partições novas do Realtime NÃO mudam o platform_fingerprint; outra relação muda', async () => {
+    const db = await TestDb.createBare();
+    try {
+      const before = await state(db);
+      expect(before['supabase_migrations_relacoes']).toEqual([]);
+      // Mesma DDL de histórico que o `db push` da CLI 2.122.0 executa na primeira aplicação.
+      await db.pg.exec(`create schema if not exists supabase_migrations;
+                        create table if not exists supabase_migrations.schema_migrations (version text not null primary key);
+                        alter table supabase_migrations.schema_migrations add column if not exists statements text[];
+                        alter table supabase_migrations.schema_migrations add column if not exists name text;
+                        insert into supabase_migrations.schema_migrations values ('20261023000100', '{}', 'oryn_schema')`);
+      // Partição diária nova, como o serviço Realtime cria (o shim tem uma partição larga; aqui, outra faixa).
+      await db.pg.exec(`create table realtime.messages_2101_01_01 partition of realtime.messages for values from ('2101-01-01') to ('2101-01-02')`);
+      const after = await state(db);
+      expect(after['supabase_migrations_relacoes']).toEqual(['schema_migrations:r', 'schema_migrations_pkey:i']);
+      expect(after['platform_fingerprint']).toBe(before['platform_fingerprint']);
+      expect((after['realtime_messages'] as { particoes: number }).particoes).toBe((before['realtime_messages'] as { particoes: number }).particoes + 1);
+      // Qualquer outra relação de plataforma continua mudando a impressão digital (= interromper).
+      await db.pg.exec('create table realtime.objeto_inesperado (id int)');
+      expect((await state(db))['platform_fingerprint']).not.toBe(before['platform_fingerprint']);
+    } finally {
+      await db.close();
+    }
+  });
+
+  it.each([1, 2, 3, 4])('07: impressão digital do escopo da Oryn muda com %i etapa(s) e VOLTA ao valor inicial depois da reversão', async (n) => {
+    const db = await TestDb.createBare();
+    try {
+      const before = await state(db);
+      expect(before['aviso']).toBe('registro de estado; NÃO é backup');
+      expect(before['schemas_oryn']).toEqual([]);
+      const files = migrationFiles();
+      for (let i = 0; i < n; i++) await db.migrate(files[i]![1]);
+      const applied = await state(db);
+      expect(applied['oryn_scope_fingerprint']).not.toBe(before['oryn_scope_fingerprint']);
+      await db.migrate(sql('90_rollback.sql'));
+      const after = await state(db);
+      expect(after['oryn_scope_fingerprint']).toBe(before['oryn_scope_fingerprint']);
+      expect(after['oryn_scope_objetos']).toBe(before['oryn_scope_objetos']);
+      expect(after['realtime_messages']).toEqual(before['realtime_messages']);
+    } finally {
+      await db.close();
+    }
+  });
+});
+
+describe('MVP 01: 08_scope_entries.sql e 91_rollback_0400.sql', () => {
+  const state = async (db: TestDb) => {
+    const res = await db.pg.exec(sql('07_initial_state.sql'));
+    return (res.find((r) => r.fields.some((f) => f.name === 'estado'))!.rows[0] as { estado: Record<string, unknown> }).estado;
+  };
+  const entries = async (db: TestDb) => {
+    const res = await db.pg.exec(sql('08_scope_entries.sql'));
+    const rows = res.find((r) => r.fields.some((f) => f.name === 'entrada'))!.rows as { n: number | null; entrada: string }[];
+    return { list: rows.filter((r) => r.n !== null).map((r) => r.entrada), total: rows.find((r) => r.n === null)!.entrada };
+  };
+  const history = async (db: TestDb) => (await db.admin<{ v: string }>('select version as v from supabase_migrations.schema_migrations order by 1')).map((r) => r.v);
+  /** Banco só com 0100–0300 e o histórico da CLI correspondente (o estado remoto de antes da Etapa 4). */
+  const beforeStep4 = async () => {
+    const db = await TestDb.createBare();
+    const files = migrationFiles();
+    expect(files.map(([f]) => f.split('_')[0])).toEqual(['20261023000100', '20261023000200', '20261023000300', '20261028000400']);
+    for (const [, m] of files.slice(0, 3)) await db.migrate(m);
+    // Histórico com o mesmo dono das migrações (no projeto, o `postgres` cria e roda o 91).
+    await db.migrate(`create schema supabase_migrations; create table supabase_migrations.schema_migrations (version text primary key);
+                      insert into supabase_migrations.schema_migrations values ('20261023000100'), ('20261023000200'), ('20261023000300')`);
+    return { db, step4: async () => {
+      await db.migrate(files[3]![1]);
+      await db.admin(`insert into supabase_migrations.schema_migrations values ('20261028000400')`);
+    } };
+  };
+
+  it('08: a 0400 acrescenta EXATAMENTE 2 entradas (as RPCs novas) e não muda nenhuma das anteriores; o total é o do 07', async () => {
+    const { db, step4 } = await beforeStep4();
+    try {
+      const e3 = await entries(db);
+      const s3 = await state(db);
+      expect(e3.total).toBe(`TOTAL ${s3['oryn_scope_objetos']} / md5 ${s3['oryn_scope_fingerprint']}`);
+      await step4();
+      const e4 = await entries(db);
+      const s4 = await state(db);
+      expect(e3.list.filter((x) => !e4.list.includes(x))).toEqual([]);
+      const added = e4.list.filter((x) => !e3.list.includes(x));
+      expect(added).toHaveLength(2);
+      expect(added[0]).toMatch(/^fn:close_room\(uuid\):[0-9a-f]{32}$/);
+      expect(added[1]).toMatch(/^fn:list_my_rooms\(\):[0-9a-f]{32}$/);
+      expect(Number(s4['oryn_scope_objetos'])).toBe(Number(s3['oryn_scope_objetos']) + 2);
+      expect(e4.total).toBe(`TOTAL ${s4['oryn_scope_objetos']} / md5 ${s4['oryn_scope_fingerprint']}`);
+      expect(s4['platform_fingerprint']).toBe(s3['platform_fingerprint']);
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('91: volta o 07 e o 08 exatamente ao estado de antes da Etapa 4, preserva os dados e é idempotente', async () => {
+    const { db, step4 } = await beforeStep4();
+    try {
+      const e3 = await entries(db);
+      const s3 = await state(db);
+      await step4();
+      const s = await scenario(db);
+      await db.rpc(s.owner, 'public.close_room', { p_room_id: s.room });
+      await db.migrate(sql('91_rollback_0400.sql'));
+      expect((await entries(db)).list).toEqual(e3.list);
+      const s91 = await state(db);
+      for (const k of ['oryn_scope_objetos', 'oryn_scope_fingerprint', 'platform_fingerprint']) expect(s91[k], k).toEqual(s3[k]);
+      expect(await history(db)).toEqual(['20261023000100', '20261023000200', '20261023000300']);
+      // Dados preservados: a sala continua encerrada e as sessões, revogadas.
+      const kept = await db.admin<{ closed: boolean; live: number }>(`
+        select (select closed_at is not null from oryn.rooms where id = $1) as closed,
+               (select count(*)::int from oryn.room_sessions where room_id = $1 and revoked_at is null) as live`, [s.room]);
+      expect(kept[0]).toEqual({ closed: true, live: 0 });
+      // O 05 volta a ver o passo 4 como pendente, sem FAIL.
+      await db.pg.exec('set role migration_owner');
+      const steps = (await db.pg.exec(sql('05_step_checks.sql'))).find((r) => r.fields.some((f) => f.name === 'status'))!.rows as { step: number; status: string }[];
+      await db.pg.exec('reset role');
+      expect(steps.filter((r) => r.status === 'FAIL')).toEqual([]);
+      expect(steps.filter((r) => r.step === 4).every((r) => r.status === 'PENDING')).toBe(true);
+      // Idempotente.
+      await db.migrate(sql('91_rollback_0400.sql'));
+      expect((await entries(db)).list).toEqual(e3.list);
+      // E a 0400 reaplica limpa depois da reversão.
+      await step4();
+      expect((await db.rpc(s.owner, 'public.list_my_rooms'))[0]).toMatchObject({ room_id: s.room, is_open: false });
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('91 sem a 0400 aplicada: sem efeito', async () => {
+    const { db } = await beforeStep4();
+    try {
+      const e3 = await entries(db);
+      await db.migrate(sql('91_rollback_0400.sql'));
+      expect((await entries(db)).list).toEqual(e3.list);
+      expect(await history(db)).toEqual(['20261023000100', '20261023000200', '20261023000300']);
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('91 falha fechada: com uma função estranha em public, nada é revertido', async () => {
+    const { db, step4 } = await beforeStep4();
+    try {
+      await step4();
+      await db.migrate('create function public.estranha() returns int language sql as $$ select 1 $$');
+      // O erro deixa a transação explícita do script abortada (no SQL editor, ela é desfeita): rollback aqui.
+      await db.pg.exec('set role migration_owner');
+      await expect(db.pg.exec(sql('91_rollback_0400.sql'))).rejects.toThrow(/oryn-91: public não ficou com as 12 RPCs/);
+      await db.pg.exec('rollback; reset role');
+      expect((await db.admin<{ ok: boolean }>(`select to_regprocedure('public.close_room(uuid)') is not null as ok`))[0]!.ok).toBe(true);
+      expect(await history(db)).toContain('20261028000400');
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('91 só apaga as 2 funções e a linha do histórico: nenhum comando que remova schema, tabela ou dados', () => {
+    const text = sql('91_rollback_0400.sql').replace(/--.*$/gm, '');
+    expect(text.match(/\bdrop\s+\w+/gi)).toEqual(['drop function', 'drop function']);
+    expect(text).not.toMatch(/\b(truncate|alter|cascade)\b/i);
+    expect(text.match(/\bdelete\s+from\s+[\w.]+/gi)).toEqual(['delete from supabase_migrations.schema_migrations']);
+  });
+});
+
+describe('11_c0w_postflight.sql (02C.6A, Z9)', () => {
+  // O shim não tem as tabelas de sessão do Auth nem o histórico da CLI: stubs mínimos com o mesmo nome.
+  const stubs = `create table auth.identities (id uuid primary key);
+                 create table auth.sessions (id uuid primary key);
+                 create table auth.refresh_tokens (id bigint primary key);
+                 create schema supabase_migrations;
+                 create table supabase_migrations.schema_migrations (version text primary key);
+                 insert into supabase_migrations.schema_migrations values ('20261023000100'), ('20261023000200'), ('20261023000300'), ('20261028000400')`;
+  const z9 = async (db: TestDb) => {
+    const res = await db.pg.exec(sql('11_c0w_postflight.sql'));
+    const rows = res.find((r) => r.fields.some((f) => f.name === 'status'))!.rows as Row[];
+    return Object.fromEntries(rows.map((r) => [r.item.startsWith('INFO') ? r.item : r.item.split(' ')[0]!, r]));
+  };
+  const PARTS = 'INFO partições criadas (esperado: só realtime.messages_AAAA_MM_DD)';
+  const OFF_PATTERN = 'INFO partições fora do padrão de nome messages_AAAA_MM_DD';
+
+  it('banco migrado e vazio: dados, migrações e papéis PASS; fingerprints FAIL fora do Supabase (baseline do projeto real)', async () => {
+    const db = await TestDb.create();
+    try {
+      await db.pg.exec(stubs);
+      const r = await z9(db);
+      for (const item of ['1', '2', '3', '4', '5', '6', '7', '10', '11']) expect(r[item]!.status, `item ${item}: ${r[item]!.actual}`).toBe('PASS');
+      // O shim tem objetos de teste a mais: os md5 do projeto real não batem aqui, e o script acusa.
+      expect(r['8']!.status).toBe('FAIL');
+      expect(r['9']!.status).toBe('FAIL');
+      // A partição larga do shim cobre agora (item 1) e é registrada; o nome fora do padrão diário é acusado.
+      expect(r[PARTS]!.actual).toMatch(/^messages_shim FOR VALUES FROM/);
+      expect(r[OFF_PATTERN]!.status).toBe('FAIL');
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('acusa mensagem gravada, usuário, migração nova e cli_login_*; sem partição cobrindo agora, o D0 falha', async () => {
+    const db = await TestDb.create();
+    try {
+      await db.pg.exec(stubs);
+      await db.pg.exec(`insert into realtime.messages (topic, extension, payload, event) values ('it-c0-x', 'broadcast', '{}', 'x');
+                        insert into auth.users (id) values (gen_random_uuid());
+                        insert into supabase_migrations.schema_migrations values ('20261099000400');
+                        create role cli_login_postgres nologin`);
+      let r = await z9(db);
+      expect(['2', '4', '10', '11'].map((i) => r[i]!.status)).toEqual(['FAIL', 'FAIL', 'FAIL', 'FAIL']);
+      // Só partições diárias de outro dia: D0 não satisfeito, e o nome no padrão não é acusado.
+      await db.pg.exec(`delete from realtime.messages; alter table realtime.messages detach partition realtime.messages_shim;
+                        create table realtime.messages_2101_01_01 partition of realtime.messages for values from ('2101-01-01') to ('2101-01-02')`);
+      r = await z9(db);
+      expect(r['1']!.status).toBe('FAIL');
+      expect(r['1']!.actual).toBe('0');
+      expect(r[OFF_PATTERN]!.status).toBe('INFO');
+      expect(r[PARTS]!.actual).toMatch(/^messages_2101_01_01 FOR VALUES FROM/);
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('roda em transação somente leitura e termina em ROLLBACK; nenhum comando de escrita', () => {
+    const text = sql('11_c0w_postflight.sql');
+    expect(text).toMatch(/^begin;\r?\nset transaction read only;/m);
+    expect(text.trimEnd()).toMatch(/rollback;$/);
+    expect(text.replace(/--.*$/gm, '')).not.toMatch(/\b(insert|update|delete|truncate|create|drop|alter|grant|revoke|copy)\b/i);
+  });
+});

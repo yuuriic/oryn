@@ -1,0 +1,33 @@
+# MODELO do config.yml do cloudflared para a POC-02B (02B.3B). NÃO contém valores reais.
+#
+# - Túnel NOMEADO, gerenciado LOCALMENTE (este arquivo). Nada de Quick Tunnel nem de token na linha de comando.
+# - Copie para FORA do repositório (ex.: %USERPROFILE%\.cloudflared\config.yml) e troque os valores de
+#   exemplo. Rode a pré-validação offline antes de qualquer ativação:
+#     pnpm preflight:cloudflare -- --config=<caminho do config.yml> --env-file=<caminho do .env do servidor>
+# - Única entrada: o hostname público → listener de SINALIZAÇÃO em 127.0.0.1:5280.
+#   O listener administrativo NUNCA aparece aqui (nem como regra, caminho ou porta).
+
+# UUID do túnel nomeado (cloudflared tunnel create <nome>). Exemplo: zeros.
+tunnel: 00000000-0000-0000-0000-000000000000
+
+# Credenciais do túnel: arquivo SECRETO, sempre FORA do repositório, nunca versionado nem compartilhado.
+credentials-file: C:/Users/SEU-USUARIO/.cloudflared/00000000-0000-0000-0000-000000000000.json
+
+# debug/trace registram todos os cabeçalhos (inclusive Cf-Access-Jwt-Assertion): proibidos.
+loglevel: info
+transport-loglevel: warn
+
+ingress:
+  # Hostname público exato (o mesmo de ORYN_PUBLIC_HOSTNAMES). Sem path: cobre o hostname inteiro, inclusive /ws.
+  - hostname: oryn-poc.example.com
+    service: http://127.0.0.1:5280
+    originRequest:
+      # Sem httpHostHeader: o Host público original é preservado (o servidor exige Host e Origin coerentes).
+      # O cloudflared também valida o JWT do Access antes de encaminhar (a origem valida de novo).
+      access:
+        required: true
+        teamName: oryn-example
+        audTag:
+          - "0000000000000000000000000000000000000000000000000000000000000000"
+  # Catch-all obrigatório: qualquer outro hostname recebe 404.
+  - service: http_status:404

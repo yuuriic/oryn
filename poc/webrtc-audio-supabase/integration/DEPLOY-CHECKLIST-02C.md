@@ -1,0 +1,414 @@
+# POC-02C — Checklist de implantação (02C.2C.1)
+
+**Estado:** Etapas 1–3 (0100–0300) **aplicadas** na 02C (evidências 02C.3C–02C.3H em `integration/evidence/`);
+**Etapa 4 (0400, MVP 01) preparada, nada executado.** As seções 0 e 1 registram o estado de antes da Etapa 1 e
+ficam como histórico. Cada item marcado com ⛔ exige autorização explícita do arquiteto, dada **por etapa**. As consultas marcadas com 🔎 são somente leitura. O ref do projeto não fica neste
+arquivo (repositório público): ele é digitado no terminal como `<PROJECT_REF>`.
+
+Complementa `RUNBOOK-02C.1B.md` (fases 0–6) e `EVIDENCE-02C.1B.md` (matriz dos 18 testes).
+
+## Decisão arquitetural (02C.3B.1)
+
+| Ferramenta | Papel | Motivo |
+|---|---|---|
+| **Supabase CLI 2.122.0** (`db push` via `oryn-push-step.ps1`) | **único** mecanismo de aplicação das migrações **0100–0400** (Etapas 1–4) | grava no histórico a versão do nome do arquivo (`20261023000100`…, `20261028000400`). Comportamento lido na ajuda e no binário (seção 1a) |
+| **Supabase MCP** | **só inspeção e auditoria**: `get_project`, `list_migrations`, `list_edge_functions`, `list_branches`, `get_advisors` e `execute_sql` **somente** com as consultas 🔎 `00`, `01`, `05`, `06`, `07`, `08` e `12`, enviadas como estão no arquivo (todas abrem com `set transaction read only` e terminam em `ROLLBACK`). O `11` e o `13` também são só leitura, mas pertencem às janelas da C0 e da C2 (runbook §12). **Nunca** os scripts de escrita `90` e `91` | `execute_sql` roda como `postgres`, respeita `BEGIN … READ ONLY` (lido em 2026-10-26) e devolve o resultado do `SELECT` dentro da transação (conferido em 2026-10-28) |
+| `apply_migration` (MCP) | **proibido** para **0100–0400**, a 0400 incluída | a Management API não aceita `version` (só `query`, `name`, `rollback`). A versão seria gerada pela plataforma e divergiria do repositório. Consequências: a CLI pararia com `Remote migration versions not found…`, o `90_rollback.sql` e o `91_rollback_0400.sql` não limpariam o histórico e a integração GitHub tentaria reaplicar |
+| Wrapper via `execute_sql` | **não implementado** nesta etapa | avaliado no 02C.3B (versão exata e SHA-256 conferido dentro da transação; provado só localmente). Fica registrado como alternativa, sem uso |
+| SQL editor | proibido para aplicar | não grava o histórico |
+
+## 0. Estado inicial confirmado (leitura, 2026-10-23, 02C.2C)
+
+| Item | Valor |
+|---|---|
+| Git | `poc/webrtc-audio-supabase` @ `420b697` = `origin`; CI verde no Ubuntu e no Windows |
+| Projeto | `oryn`, ACTIVE_HEALTHY, PostgreSQL 17.11 |
+| Migrações, Edge Functions e branches | 0 / 0 / 0; `supabase_migrations` não existe |
+| Dados | `auth.users` = 0; nenhum schema `oryn*`; `public` sem funções e sem tabelas |
+| `realtime.messages` | dono `supabase_realtime_admin`, RLS ligado, **0 partições**, 0 políticas |
+| Advisors de segurança | 0 avisos |
+
+**Consequência do estado vazio:**
+- não há dados de usuário a perder;
+- reverter significa voltar exatamente a este estado, e o pré-voo P2/P3/P7 vazio prova isso.
+
+## 1. Pré-condições globais (todas, antes da Etapa 1)
+
+- [ ] Autorização ⛔ do arquiteto para a Etapa 1 (as Etapas 2 e 3 têm autorização própria).
+- [ ] `HEAD` aprovado, igual ao `origin`, árvore limpa, CI verde nesse commit.
+- [ ] 🔎 `list_migrations`, `list_edge_functions` e `list_branches` = 0/0/0 **no momento** da aplicação.
+- [ ] 🔎 `integration/sql/00_preflight.sql` (SQL editor) igual ao esperado revisto no 02C.2B. P5: `rls_enabled = true`, `policy_grant = true`.
+- [ ] Integração GitHub sem mudança: Working directory `.`, Deploy to production desligado.
+- [ ] **Registro auditável do estado inicial (substitui o `supabase db dump`, que exige Docker).** Rodar 🔎 `integration/sql/07_initial_state.sql` e salvar o JSON em `integration/evidence/estado-inicial-<data>.json` (fora do Git). **⚠ Não é backup:** não tem dados nem definições completas e não restaura nada. Serve para provar o ponto de partida e para comparar depois de uma reversão (o `oryn_scope_fingerprint` tem de voltar ao valor inicial). Registrado em 2026-10-24 (02C.3A.1) e confirmado em 2026-10-26 (02C.3A.2 e, com a definição revista, 02C.3B.1): `oryn_scope_fingerprint = e854d587…c513`, 7 objetos; `platform_fingerprint = 4ce64373…1359`; `supabase_migrations_relacoes = []`. O que cada campo pode fazer depois: seção 1c.
+- [ ] **Autenticação explícita no banco, sem papel temporário.** Sem a senha, a CLI cria o papel `cli_login_postgres` no projeto (documentação oficial), mesmo num `--dry-run`. É uma escrita persistente, gerida pela plataforma, que só sai pela Management API. A senha vai **só** em `SUPABASE_DB_PASSWORD`, pedida como `SecureString` e removida num `finally` (seção 1a). Nunca usar `-p` na linha de comando, nem deixar a variável no perfil ou em arquivo. **Senha vazia também cria o papel** (texto da própria CLI 2.122.0): o script recusa senha vazia.
+- [ ] **CLI exatamente 2.122.0** (`supabase --version`). Todo comportamento abaixo foi lido nessa versão. Em 2026-10-26 a CLI não estava no `PATH` desta máquina, e o cache do `npx` tinha a **2.115.0**: instalar ou fixar a 2.122.0 antes (só com a confirmação do usuário). Versão diferente = interromper. **Desde o 02C.3B.1, o script também recusa sozinho**, antes de pedir credenciais.
+- [ ] **Linha de base dos efeitos da CLI:** 🔎 `integration/sql/06_cli_side_effects.sql` deve dar `cli_login_roles = {}`, `supabase_migrations = false` e `history = {}`.
+- [ ] Mesmo método em todas as etapas (1–4): `integration/scripts/oryn-push-step.ps1`, que usa `supabase db push --skip-vault`. Nunca `apply_migration` do MCP nem o SQL editor (decisão arquitetural, acima).
+
+### 1a. Procedimento de cada etapa (`integration/scripts/oryn-push-step.ps1`)
+
+Antes, uma vez por terminal: `supabase login` (token pessoal; o `--project-ref` pode precisar ler a configuração do pooler pela Management API).
+
+```powershell
+cd "C:\Dev\Projeto - Oryn\poc\webrtc-audio-supabase"
+# 1) dry-run (pede o ref e a senha; senha como SecureString)
+pwsh -NoProfile -File integration/scripts/oryn-push-step.ps1 -Step 1
+# 2) 🔎 06_cli_side_effects.sql: tem de continuar {} / false / {}   ← prova que o dry-run não gravou
+# 3) ⛔ só com a autorização desta etapa: aplica (pede 'APLICAR <versão>' e mantém o prompt da CLI)
+pwsh -NoProfile -File integration/scripts/oryn-push-step.ps1 -Step 1 -Apply
+# 4) 🔎 05_step_checks.sql + 06_cli_side_effects.sql + histórico + advisors (critérios da etapa)
+```
+
+O que o script garante (testado em `tests/push-step-script.test.ts` com uma CLI falsa, sem rede):
+- **(02C.3B.1)** antes do workdir, das credenciais e de qualquer conexão com o projeto, roda `supabase --version` e exige **exatamente** `2.122.0` numa linha sozinha (o aviso de atualização, que cita outras versões, não conta). Recusa, sem chamar o `db push`, se:
+  - a CLI não existir;
+  - a versão for outra;
+  - o `--version` sair com código ≠ 0;
+  - a saída não tiver versão ou tiver mais de uma.
+
+  O `--version` não recebe ref nem senha. Ele pode consultar se existe versão nova (rede pública), sem tocar no projeto;
+- recusa rodar se `SUPABASE_DB_PASSWORD` já existir (não sobrescreve nem apaga segredo alheio) ou se houver mudança não commitada em `supabase/`;
+- monta um `--workdir` temporário com **só** as N primeiras migrações e confere o SHA-256 de cada uma contra o repositório;
+- valida o formato do ref; a senha nunca aparece na tela, na linha de comando nem na saída;
+- argumentos exatos: `--workdir <tmp> db push --project-ref <ref> --skip-vault [--dry-run]`;
+- no dry-run, interrompe se a saída **não** citar a versão-alvo ou citar **outra** migração;
+- no `-Apply`, exige a confirmação digitada `APLICAR <versão>` e roda a CLI no terminal, **sem `--yes`**, para o prompt dela aparecer;
+- **`finally`:** remove `SUPABASE_DB_PASSWORD`, as variáveis da senha e o workdir, **inclusive se a CLI falhar**.
+
+**⚠ O prompt da própria CLI não é trava.** Na 2.122.0, `Do you want to push these migrations to the remote database? [Y/n]` tem padrão **Sim**:
+- Enter vazio aplica;
+- com stdin que não é terminal, uma linha vazia ou o fim da entrada também aplicam;
+- com `--output-format json` ou `stream-json`, aplica sem perguntar.
+
+A trava é a confirmação `APLICAR <versão>` do script. No prompt da CLI, conferir que a lista tem **só** a migração da etapa e digitar `y` de propósito. Se a lista estiver diferente, digitar `n`.
+
+#### Evidência da CLI 2.122.0 (02C.3A.1)
+
+Fonte: a ajuda (`supabase db push --help`, `supabase --help`) e as strings do binário oficial `supabase@2.122.0` (npm, `cli-windows-x64`), lidos localmente sem acesso ao projeto.
+
+| Ponto | Fonte | O que mostra |
+|---|---|---|
+| `db push`: `--dry-run`, `--skip-vault`, `--project-ref`, `-p/--password`, `--include-all` | ajuda | sintaxe usada pelo script (inalterada) |
+| `--workdir` global | ajuda | "used exactly as given, with no ancestor directory search" |
+| `--yes`, `--output-format`, `--agent` | ajuda | globais; o script **não** usa nenhum deles |
+| `SUPABASE_DB_PASSWORD` | **não está na ajuda**; binário | a senha é resolvida nesta ordem: `--password` → `SUPABASE_DB_PASSWORD` → `supabase/.env` do workdir (o temporário não tem `.env`) |
+| `--project-ref` com a variável | binário | a variável só é ignorada quando o ref é "avulso" (`adHocProjectRef`), e esse modo só é ligado no `gen types`. No `db push --project-ref`, a variável vale |
+| Sem senha | ajuda (seção PERMISSIONS) e binário | cria o papel de login (`v1-create-login-role`). Se falhar 3 vezes pelo pooler, a CLI também **lê e apaga banimentos de rede** (`database_network_bans_*`). Com senha, nenhum dos dois acontece |
+| `--project-ref` sem `supabase link` | ajuda e binário | se o host direto (IPv6) for inalcançável, a CLI busca a configuração do pooler pela Management API (`database_pooling_config_read`). Por isso é preciso o `supabase login` |
+| `--dry-run` | binário | lista o histórico remoto (tabela ausente = histórico vazio, sem erro), imprime `Would push these migrations:` **no stderr** (o script junta stderr e stdout) e para. Não cria `supabase_migrations` e não atualiza o vault: o `CREATE SCHEMA IF NOT EXISTS supabase_migrations` só roda na aplicação |
+| Divergência | binário | `Remote migration versions not found in local migrations directory.` e `Found local migration files to be inserted before the last migration on remote database.` |
+
+**NOT VERIFIED contra o projeto** (a leitura do código não substitui a execução):
+- o formato exato da saída do dry-run (a checagem do script é pelo número da versão);
+- que o `--dry-run` com senha não grava nada. O código indica que não; a prova é o `06` antes e depois;
+- que a conexão com senha pelo pooler funciona com o `--project-ref` sem `supabase link`.
+
+### 1c. Impressões digitais do `07`: o que é esperado e o que interrompe (02C.3B.1)
+
+Rodar 🔎 `07_initial_state.sql` antes da Etapa 1, depois de cada dry-run, depois de cada etapa aplicada e depois de uma reversão. Salvar cada JSON em `integration/evidence/`.
+
+**Por que a definição mudou.** Na versão anterior, a primeira aplicação **sempre** mudaria o `platform_fingerprint`, porque o `db push` cria `supabase_migrations.schema_migrations` e o índice de chave primária. Depois de uma reversão, ele **não voltaria**, porque o `90_rollback.sql` não apaga esse schema. Outra fonte de mudança: o serviço Realtime cria partições diárias de `realtime.messages` por conta própria.
+
+Desde o 02C.3B.1, essas duas mudanças esperadas saem do `platform_fingerprint` e aparecem em campos próprios. Assim, **qualquer** outra mudança passa a ser motivo de interrupção. Enquanto os dois conjuntos estavam vazios, o valor de referência não mudou: `4ce64373…1359` antes e depois da revisão, lido no remoto em 2026-10-26.
+
+| Campo | Antes da Etapa 1 | Depois do dry-run | Depois da Etapa N aplicada | Depois do `90_rollback.sql` | Interromper se |
+|---|---|---|---|---|---|
+| `oryn_scope_fingerprint` / `oryn_scope_objetos` | `e854d587…c513` / 7 | **igual** | muda (esperado) | **volta** a `e854d587…c513` / 7 | mudou num dry-run; não voltou depois da reversão |
+| `platform_fingerprint` | `4ce64373…1359` | **igual** | **igual** | **igual** | **mudou em qualquer momento**. Pode ser atualização da plataforma: parar e investigar antes da próxima etapa |
+| `supabase_migrations` / `supabase_migrations_relacoes` | `false` / `[]` | **`false` / `[]`** | `true` / `["schema_migrations:r","schema_migrations_pkey:i"]` | `true` / mesma lista (o schema fica, vazio) | apareceu num dry-run; qualquer relação além dessas duas |
+| `cli_login_roles` | `[]` | `[]` | `[]` | `[]` | qualquer valor |
+| `realtime_messages.particoes` | 0 | ≥ 0 | ≥ 0 | ≥ 0 | nunca, sozinho (serviço Realtime). Já `dono`, `rls` e `politicas` seguem os critérios da etapa |
+| `realtime_messages.politicas` | 0 | 0 | 0 nas Etapas 1–2; 4 na Etapa 3 e **continua 4** na Etapa 4 | 0 | qualquer outro valor |
+
+A coluna "Antes da Etapa 1" é o histórico de 2026-10-23/26. **Para a Etapa 4**, o "antes" é o estado depois da
+Etapa 3: `oryn_scope` 58 / `1a5a563d…`, `platform` `4ce64373…` (igual), `supabase_migrations` `true` com as 2
+relações, `cli_login_roles` `[]`, 4 políticas. Depois da Etapa 4, só o `oryn_scope` muda (+2 entradas; medir).
+Depois do `91_rollback_0400.sql`, tudo volta ao "antes" da Etapa 4, **não** à coluna "Antes da Etapa 1".
+
+Testado em `tests/postflight-local.test.ts`: a DDL de histórico da CLI e uma partição nova não mudam o `platform_fingerprint`, e outra relação qualquer muda. Testes anteriores também provam que o `oryn_scope_fingerprint` volta ao valor inicial depois da reversão, nas 3 etapas. Para a Etapa 4 (MVP 01), os mesmos testes cobrem as 4 etapas com o `90`, e há testes próprios para o `08` (exatamente +2 entradas) e para o `91` (volta exata ao registro de antes, dados preservados, idempotência e falha fechada).
+
+## 2. Etapas
+
+Cada etapa é **independente**:
+- tem autorização própria;
+- aplica uma única migração;
+- termina com verificação somente leitura;
+- pode ser revertida:
+  - Etapas 1–3: pelo `90_rollback.sql`, idempotente e testado depois de cada etapa (hoje nos 4 cenários, porque
+    também reverte a 0400). Ele apaga o schema `oryn` **com os dados**;
+  - Etapa 4: **só** pelo `91_rollback_0400.sql`, que reverte a 0400 e preserva os dados (ver Etapa 4).
+
+**Verificação comum depois de cada etapa:**
+- 🔎 `integration/sql/06_cli_side_effects.sql`: `cli_login_roles = {}` e `history` = exatamente as N versões.
+- 🔎 `integration/sql/05_step_checks.sql`: aprova com nenhuma linha `FAIL` e nenhuma `PENDING` com `step ≤ N`.
+- 🔎 Histórico: `select version from supabase_migrations.schema_migrations order by version;` deve ter exatamente as N versões aplicadas.
+- 🔎 `get_advisors` (segurança e performance): nenhum aviso de nível ERROR. Avisos WARN e INFO conhecidos e
+  aceitos por desenho:
+  - WARN `0029 authenticated_security_definer_function_executable`: uma linha por RPC de usuário. **11** depois da
+    Etapa 2 e **13** depois da Etapa 4 (`list_my_rooms` e `close_room`). Outro número = interromper e investigar;
+  - INFO `0008 rls_enabled_no_policy`: as 8 tabelas de `oryn` (RLS ligado, nenhuma política, de propósito);
+  - fora do escopo das migrações (já existiam): WARN `auth_leaked_password_protection` (configuração do Auth) e
+    INFO `0001 unindexed_foreign_keys` (7 chaves de `oryn`).
+- 🔎 `integration/sql/07_initial_state.sql`: conforme a coluna "Depois da Etapa N aplicada" da seção 1c.
+
+### Critérios de interrupção comuns a todas as etapas (revisados no 02C.3A.1 e no 02C.3B.1)
+
+| Classe | Sinal | Ação |
+|---|---|---|
+| **Autenticação** | `password authentication failed`, `connection refused`, timeout, `IPv6 is not supported on your current network`, pedido de login/token, aviso de banimento de IP | Parar. **Não** tentar sem senha (criaria `cli_login_postgres`) e **não** usar `-p` na linha de comando. Conferir a senha no painel e repetir **uma vez**, só o dry-run. Falhas repetidas podem banir o IP no pooler, e com senha a CLI não desbane sozinha. Desbanir é escrita remota ⛔ |
+| **Divergência de migrações** | dry-run lista outra versão, não lista o alvo, ou diz que o banco está em dia (`Remote database is up to date.`); a CLI acusa `Remote migration versions not found in local migrations directory.` ou `Found local migration files to be inserted before the last migration on remote database.`; histórico diferente das N versões; SHA-256 diferente | Parar. Nada de `--include-all` nem de `migration repair` sem nova autorização |
+| **Efeito colateral** | qualquer `cli_login_*`; `supabase_migrations` criado por um dry-run; o dry-run mostrou `Do you want to push` ou `Applying migration`; objeto fora do esperado para a etapa; mudança no RLS ou no dono de `realtime.messages`; aviso ERROR nos advisors; qualquer sinal "Interromper se" da seção 1c (em especial **qualquer** mudança no `platform_fingerprint`, ou relação em `supabase_migrations` além de `schema_migrations` e do índice de chave primária) | Parar e registrar. Um `cli_login_*` só sai pela Management API: **não** apagar por SQL. A reversão (`90_rollback.sql`) só com autorização |
+| **Segredo exposto** | senha ou token em saída, log ou arquivo | Parar; trocar a senha do banco ou rotacionar o token no painel |
+| **Ambiente** | `SUPABASE_DB_PASSWORD` já definida; mudança não commitada em `supabase/`; `HEAD` diferente do aprovado; CLI ausente, versão ≠ 2.122.0 ou versão não identificável | Parar antes de chamar a CLI. O script já recusa todos, exceto o `HEAD` |
+| **Mecanismo** | qualquer proposta de aplicar por `apply_migration`, pelo SQL editor ou por `execute_sql` com escrita | Parar: fora da decisão arquitetural do 02C.3B.1 |
+
+### Etapa 1 — `20261023000100_oryn_schema.sql` ⛔
+
+**O que faz:**
+- cria o schema `oryn` e 8 tabelas, com RLS ligado e nenhuma política;
+- revoga tudo de `PUBLIC`, `anon`, `authenticated` e `service_role`;
+- privilégios padrão do schema `oryn` revogados.
+
+| | |
+|---|---|
+| Comando | `oryn-push-step.ps1 -Step 1` (dry-run) → 🔎 `06` → ⛔ `oryn-push-step.ps1 -Step 1 -Apply` |
+| `--dry-run` aprova se | lista **só** `20261023000100` |
+| 🔎 Verificação específica | `select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public';` = **0**; `select count(*) from pg_policies where schemaname = 'realtime' and policyname like 'oryn_%';` = **0** |
+| **Aprova** | 05: passo 1 todo PASS (8 tabelas, RLS ligado, dono `postgres`, nenhum privilégio nem USAGE de cliente); histórico = 1 versão; nada fora do esperado |
+| **Interrompe** | qualquer critério comum (acima); FAIL no passo 1; histórico ≠ 1; qualquer privilégio de `anon` ou `authenticated` em `oryn` |
+| Reversão ⛔ | `90_rollback.sql` (apaga `oryn`, linha 0100 do histórico) |
+
+### Etapa 2 — `20261023000200_oryn_functions.sql` ⛔
+
+**O que faz:**
+- cria as 12 RPCs `SECURITY DEFINER` em `public` e as funções internas em `oryn`;
+- cria `oryn_realtime.can_receive_topic`;
+- revoga e concede EXECUTE conforme o contrato.
+
+| | |
+|---|---|
+| Comando | `oryn-push-step.ps1 -Step 2` (dry-run: **só** `20261023000200`) → 🔎 `06` → ⛔ `-Apply` |
+| 🔎 Verificação específica | `select has_function_privilege('anon', 'public.join_room(uuid)', 'EXECUTE');` = **false**; `select has_function_privilege('authenticated', 'public.set_signal_state(uuid,text)', 'EXECUTE');` = **false**; políticas `oryn_*` em `realtime.messages` continuam **0** |
+| **Aprova** | 05: passos 1 e 2 todo PASS (exatamente 12 funções em `public`, todas DEFINER com `search_path` vazio; `anon` sem EXECUTE; `set_signal_state` só para `service_role`); histórico = 2 |
+| **Interrompe** | erro; FAIL; qualquer função extra em `public`; EXECUTE de `anon` ou de `PUBLIC` em qualquer função da Oryn |
+| Reversão ⛔ | `90_rollback.sql` (apaga RPCs, `oryn_realtime`, `oryn` e as linhas 0100/0200) |
+
+### Etapa 3 — `20261023000300_oryn_realtime.sql` ⛔
+
+**O que faz:**
+- **confere** que `realtime.messages` tem RLS. Se não tiver, para inteira, com `oryn-0300: RLS desligado…`;
+- cria 4 políticas (3 restritivas);
+- não altera a tabela.
+
+| | |
+|---|---|
+| Comando | `oryn-push-step.ps1 -Step 3` (dry-run: **só** `20261023000300`) → 🔎 `06` → ⛔ `-Apply` |
+| 🔎 Verificação específica | `select relrowsecurity, pg_get_userbyid(relowner) from pg_class where oid = 'realtime.messages'::regclass;` = `true`, `supabase_realtime_admin` (**inalterado**) |
+| **Aprova** | 05: passos 1–3 todo PASS; histórico = 3; depois, **`01_postflight.sql` com zero FAIL** (seção 3) |
+| **Interrompe** | erro (inclusive `oryn-0300: …`); dono ou RLS de `realtime.messages` diferente; número de políticas ≠ 4 |
+| Reversão ⛔ | `90_rollback.sql` (também apaga as 4 políticas; RLS e dono ficam como o Supabase entregou) |
+
+### Etapa 4 — `20261028000400_oryn_room_management.sql` ⛔ (MVP 01)
+
+**Estado: preparada, nada executado.** Autorização própria do arquiteto, separada de qualquer outra etapa.
+
+**O que faz** (aditiva; não altera tabela, política nem função existente, `join_room` incluída):
+- cria `public.list_my_rooms()`: as salas em que o chamador é membro ativo, abertas e encerradas, com `room_id`,
+  `name`, `role`, `is_open`, `closed_at`, `member_count`, `max_members` e `created_at`. Abertas primeiro, depois
+  as mais recentes; no máximo 50. Dos outros membros, só a contagem;
+- cria `public.close_room(p_room_id uuid) → timestamptz`, só para o dono (sala alheia ou inexistente:
+  `unauthorized`). Idempotente: sala já encerrada devolve o `closed_at` original sem mudar nada. Preserva o
+  histórico (preenche `closed_at`, não apaga nada). Na mesma transação:
+  1. trava a sala e depois todas as linhas de membro (ordem de `user_id`);
+  2. publica o `bye` já existente, de cada sessão viva para as demais;
+  3. revoga todas as sessões (`room-closed`);
+  4. revoga os convites pendentes livres, **sem esperar** pelos que estão travados (`SKIP LOCKED`). Um convite
+     pulado está com um resgate ou uma revogação em curso: a revogação o revoga; o resgate reconfere a sala sob
+     trava e recusa (`invite-invalid`);
+  5. preenche `closed_at`;
+- `EXECUTE` só para `authenticated`. Termina com uma **autoverificação**: se as 2 funções não forem
+  `SECURITY DEFINER` com `search_path=""`, ou se `anon`/`service_role` tiverem `EXECUTE`, ou se `authenticated` não
+  tiver, a migração levanta `oryn-0400: …`.
+
+**Pré-condições (todas):**
+- [ ] Autorização ⛔ da Etapa 4.
+- [ ] A 0400 commitada no `HEAD` aprovado; `supabase/` sem mudança não commitada (o script recusa).
+- [ ] **CI verde no `HEAD` aprovado** (a mesma exigência da seção 1, que continua valendo): o `HEAD` publicado no
+      `origin` e o workflow `POC-02C CI` verde **nesse commit**. Os gatilhos do `poc-02c-ci.yml` são push em
+      `poc/webrtc-audio-supabase` e `pull_request` para `main`: um push só de outra branch (ex.:
+      `mvp01/room-management`) **não roda o CI**. Como obter o CI verde é decisão ⛔ do arquiteto, antes do deploy.
+- [ ] Local: `pnpm test` todo verde (inclusive os testes do `push-step-script`, que só passam com a árvore
+      limpa), `pnpm test:pg` verde, `pnpm typecheck` e `pnpm build`.
+- [ ] 🔎 `12_c2_preflight.sql`: S1–S5 PASS (S2 `58 / 1a5a563d…`, S4 com as 3 versões). Qualquer outro valor =
+      deriva do ambiente: **parar antes do dry-run**.
+- [ ] 🔎 `06_cli_side_effects.sql`: `cli_login_roles = {}`; `history` = as 3 versões.
+- [ ] 🔎 `07_initial_state.sql` e 🔎 **`08_scope_entries.sql`** salvos em `integration/evidence/` como o registro
+      de **antes**. O total do `08` tem de ser `TOTAL 58 / md5 1a5a563de28e1e1cf2a670e5731af5a7`.
+
+| | |
+|---|---|
+| Comando | `oryn-push-step.ps1 -Step 4` (dry-run: **só** `20261028000400`) → 🔎 `06`, `07` e `08` **iguais** ao registro de antes → ⛔ `-Apply` |
+| 🔎 Verificação específica | `05`: passos 1–4 todo PASS (o passo 4 confere 14 funções, `SECURITY DEFINER`, `search_path=""` e `EXECUTE` só para `authenticated`, sem `PUBLIC`); `06`: `history` = 4 versões; `01_postflight.sql` (versão atual): **zero FAIL** (14 RPCs; todas as verificações de RLS e permissões continuam valendo); advisors sem ERROR e WARN `0029` = **13** (eram 11); `07`: `platform_fingerprint` **igual**; `12`: S1 igual (`true / 4`) |
+| 🔎 Diferença do `08` | as 58 entradas de antes continuam **todas iguais**, e há **exatamente 2** novas: `fn:close_room(uuid):…` e `fn:list_my_rooms():…` |
+| 🔎 Data API | uma chamada de `list_my_rooms` pela REST, com o JWT de uma conta de teste (cliente web ou harness), responde a lista, não `PGRST202` (cache de esquema do PostgREST recarregado: **NOT VERIFIED** até esta leitura) |
+| **Aprova** | todas as linhas acima |
+| **Interrompe** | erro (inclusive `oryn-0400: …`); qualquer FAIL no `05` ou no `01`; diferença do `08` diferente de exatamente +2; `platform_fingerprint` mudou; histórico ≠ 4 versões; S1 mudou; advisor ERROR; e os critérios comuns acima |
+| Reversão ⛔ | `91_rollback_0400.sql` (abaixo). **Não** usar o `90_rollback.sql`: ele apaga o schema inteiro, com os dados |
+
+**`01_postflight.sql` e a 0400.** A versão atual do `01` lista `list_my_rooms` e `close_room` em
+`::regprocedure` e `has_function_privilege`: **só roda com a 0400 aplicada** (sem ela, o PostgreSQL recusa com
+"function … does not exist", sem efeito, porque o script é `READ ONLY`). Para conferir RLS e permissões **sem** a
+0400 (antes da Etapa 4, ou depois do `91`), usar a versão anterior, idêntica salvo essas 2 RPCs e a contagem 12:
+`git show 074de82:poc/webrtc-audio-supabase/integration/sql/01_postflight.sql`. Lida assim em 2026-10-28, antes da
+Etapa 4 (mesmas verificações, com a projeção final resumida por status): **0 FAIL**, 303 PASS, 2 NOT VERIFIED
+(Data API e "Allow public access") e 4 INFO.
+
+**Baselines S2/S4: medir, não presumir.** O md5 do S2 inclui a ACL das funções, que no projeto tem o `postgres`
+como dono (nos testes é o `migration_owner`): não dá para calcular localmente.
+1. Só depois de **todas** as verificações acima aprovarem, registrar os valores **lidos** no projeto: a linha
+   `TOTAL <n> / md5 <md5>` do `08` (esperado `n = 60`; o md5 é o que aparecer) e o S4
+   (`20261023000100,20261023000200,20261023000300,20261028000400`).
+2. Atualizar S2 e S4 no `11_c0w_postflight.sql`, no `12_c2_preflight.sql` e no `13_c2_postflight.sql`, num
+   **commit próprio** que cite o arquivo de evidência com a saída do `08`.
+3. **Entre a aplicação e esse commit**, S2 e S4 do `11`/`12`/`13` dão FAIL **esperado**: nenhuma C2, C0 ou teste
+   remoto roda nesse intervalo.
+
+**Recuperação: `91_rollback_0400.sql` ⛔** (SQL editor, como `postgres`, com autorização própria):
+- apaga só as 2 funções e a linha `20261028000400` do histórico; idempotente (num banco sem a 0400, não faz nada);
+- **falha fechada:** se `public` não ficar com exatamente as 12 RPCs da 0200, levanta `oryn-91: …` e nada é
+  revertido;
+- **sucesso:** o `07` e o `08` voltam **exatamente** ao registro de antes (58 entradas, `1a5a563d…`), o `06`
+  mostra as 3 versões e o `05` mostra o passo 4 como `PENDING`, sem FAIL;
+- **controles depois do `91`** (os compatíveis com o estado sem a 0400): `05`, `06`, `07`, `08`, `12` e o `01`
+  da versão `074de82` (acima). O `01` atual daria erro. WARN `0029` volta a 11. No `12`, S1–S5 voltam a PASS
+  **se** os baselines ainda forem os de antes da 0400 (`58 / 1a5a563d…`, 3 versões); se o commit dos baselines
+  medidos já tiver sido feito, S2/S4 dão FAIL esperado até esse commit ser revertido (⛔, commit próprio);
+- **não desfaz dados:** salas já encerradas continuam com `closed_at` (o D2 do `12` passa a contar só as abertas),
+  sessões revogadas continuam revogadas e convites revogados continuam revogados. Sem a 0400, não há como
+  encerrar nem listar salas pela interface; o cliente mostra erro de carga no lobby.
+
+**Aplicação parcial.** Que a CLI aplica cada arquivo numa transação é **NOT VERIFIED** (runbook §5). Se for, um
+`oryn-0400: …` desfaz tudo. Se não for, as funções podem ficar criadas com permissões erradas: o passo 4 do `05`
+acusa (FAIL), e a recuperação é o `91`, que funciona com qualquer combinação das 2 funções.
+
+**Depois da Etapa 4 (cada item ⛔ com autorização própria):** encerrar a sala preservada da C2
+(`93468ee8-c2da-49ce-a9aa-fcd3c3bc205d`) pelo `close_room` para liberar a concessão do OWNER (1 sala aberta); o
+D2 do `12` volta a PASS sem apagar histórico. Validação manual no runbook §14.
+
+## 3. Pós-voo final (depois da Etapa 3; de novo depois da Etapa 4)
+
+- 🔎 `integration/sql/01_postflight.sql`: **zero FAIL**. Depois da Etapa 3 (sem a 0400), a versão `074de82` do
+  `01`; depois da Etapa 4, a versão atual (ver "`01_postflight.sql` e a 0400", na Etapa 4).
+- Resolver cada `NOT VERIFIED`:
+  - Data API: repetir o #3 por HTTP;
+  - "Allow public access": painel e teste #7.
+- Copiar as linhas `INFO` para a evidência.
+- 🔎 Advisors de novo.
+- Os testes reais (passo 5 do plano da 02C.2C) ficam **bloqueados** até a seção 6 ser resolvida.
+
+## 4. Auditoria das funções `SECURITY DEFINER` em `public`
+
+Origem dos dados: catálogo do PGlite e do PostgreSQL 17.10 depois das migrações, mais leitura do código da `0200`
+e da `0400`. São **14** funções: 12 da `0200` e 2 da `0400` (MVP 01, ainda não aplicada no remoto, que tem 12).
+- **Em todas as 14:** `SECURITY DEFINER` e `search_path = ''`, nomes qualificados, nenhum SQL dinâmico.
+- **EXECUTE:** só o papel indicado. Nem `anon` nem `PUBLIC`, inclusive por herança: `tests/sql-definer-audit.test.ts`.
+
+| Função | EXECUTE | Identidade do chamador | Autorização por sala/sessão | Risco entre usuários |
+|---|---|---|---|---|
+| `redeem_creator_invite` | authenticated | `require_uid()` | convite de criador de uso único (hash), consumo atômico | nenhum (token de 244 bits; erro genérico) |
+| `create_room` | authenticated | `require_uid()` | concessão de criador **travada**; limite de salas abertas | nenhum |
+| `create_room_invite` | authenticated | `require_uid()` | **dono** da sala, membro ativo, sala aberta, vaga, ≤ 3 pendentes; sala travada | nenhum |
+| `revoke_room_invite` | authenticated | `require_uid()` | **dono** da sala | nenhum |
+| `redeem_room_invite` | authenticated | `require_uid()` | convite e sala travados; capacidade; já-membro não consome | baixo: `already-member` só confirma a validade de um token para quem **já é membro** daquela sala |
+| `join_room` | authenticated | `require_uid()` | membro ativo, conferido de novo **com a linha de membro travada** (M5); limite de 2 sessões | nenhum; só expira as próprias sessões |
+| `touch_session` | authenticated | `require_uid()` | **própria** sessão, travada, de membro ativo; sessão sem batimento → `session-invalid` **sem gravar nada** (02C.3D.1, F1: a revogação gravada antes do erro era desfeita por ele). A revogação `expired` persistente fica com o `join_room` | nenhum |
+| `leave_room` | authenticated | `require_uid()` | **própria** sessão, travada | nenhum |
+| `get_roster` | authenticated | `require_uid()` | membro ativo da sala | por desenho, revela `session_id` e rótulo dos participantes **da mesma sala** (necessário para sinalizar) |
+| `authorize_signal` | authenticated | `require_uid()` | sessão **própria**, travada, viva, de membro ativo; destino vivo da **mesma** sala | baixo: chamável direto (a Edge Function usa o JWT do usuário); só cria registros sem payload nos **próprios** pares e gasta o próprio limite |
+| `ack_signals` | authenticated | `require_uid()` | **própria** sessão não revogada; só mensagens destinadas a ela e `published` | baixo: não exige batimento; dois `ack` simultâneos da mesma sessão com listas sobrepostas em ordem diferente poderiam se travar (sem efeito entre usuários) |
+| `set_signal_state` | **service_role** | não usa `auth.uid()` (servidor confiável) | só transições válidas, até 5 tentativas | nenhum para clientes (sem EXECUTE) |
+| `list_my_rooms` (0400) | authenticated | `require_uid()` | só salas em que o chamador é membro ativo; dos outros membros, só a contagem | nenhum |
+| `close_room` (0400) | authenticated | `require_uid()` | **dono** da sala (alheia ou inexistente: mesma resposta); sala travada, depois todos os membros; convites `SKIP LOCKED`; idempotente | nenhum; sem ciclo de travas com as RPCs da 0200 (provado em `tests/pg`, com controles) |
+
+Fora de `public`:
+- `oryn_realtime.can_receive_topic` (DEFINER, `search_path` vazio, EXECUTE só para `authenticated`) só responde se **o próprio** `auth.uid()` é dono de uma sessão viva de membro ativo em sala aberta;
+- as funções internas de `oryn` não têm EXECUTE de cliente.
+
+Comprovado por testes:
+- 38 chamadas indevidas recusadas sem efeito colateral, com RLS ligado e **desligado** (`sql-definer-audit`): 32
+  das RPCs da 0200 e 6 das da 0400;
+- corridas em PostgreSQL 17 real (`tests/pg`).
+
+## 5. Usuário anônimo autenticado × papel SQL `anon`
+
+- **Usuário anônimo** (`signInAnonymously`): o JWT tem `role = authenticated` e `is_anonymous = true`. Para o Postgres, é `authenticated`. É a identidade normal da Oryn (D1).
+- **Papel `anon`**: só a chave publicável, **sem** JWT de usuário.
+
+| Regra | `authenticated` (inclui anônimos) | `anon` |
+|---|---|---|
+| RPCs | as de usuário (11 da 0200; 13 com a 0400), autorizadas por convite, sessão ou dono da sala | **nenhuma** (sem EXECUTE) |
+| Ler `oryn:s:{sessão}` | só a própria sessão viva (`oryn_receive_own_session_topic` + `oryn_topics_read_guard`) | **nunca** (`oryn_topics_read_guard_anon`, sem depender de função) |
+| Escrever em `oryn:*` | **nunca** (`oryn_topics_no_client_write`, sem diferenciar maiúsculas) | **nunca** (mesma política) |
+| `is_anonymous` | **não é critério**: as políticas não leem essa claim | — |
+
+Testes (`tests/sql-anon-roles.test.ts`):
+- as políticas usam só esses papéis e não leem `is_anonymous`;
+- o usuário anônimo com convite funciona;
+- o mesmo usuário com `is_anonymous = false` tem a mesma autorização;
+- `anon` com o **`sub` de um membro forjado** nas claims não executa RPC, não lê o tópico e não escreve, nem em maiúsculas.
+
+## 6. Configurações de Auth, CAPTCHA, Realtime e JWT
+
+### 6a. Inspeção (somente leitura; pode ser feita já)
+
+| Item | Como inspecionar | Valor conhecido (02C.2C) | Esperado |
+|---|---|---|---|
+| Provedores de Auth | 🔎 `GET /auth/v1/settings` com a chave publicável | **só `email` ligado; anônimo desligado**; `disable_signup = false`; `mailer_autoconfirm = false` | anônimo ligado; e-mail desligado |
+| CAPTCHA | painel: Authentication › Attack Protection | não legível por API pública | Turnstile ligado (B5) |
+| Rate limit de anônimos | painel: Authentication › Rate Limits | não legível | 30/h por IP (ou menor) |
+| Expiração do JWT | painel: JWT Keys / Sessions | não legível | 600 s |
+| Chave de assinatura | 🔎 `GET /auth/v1/.well-known/jwks.json` | **ES256 (assimétrica)** | ES256: ok para `verify_jwt` (documentação) |
+| Chaves de API | 🔎 MCP `get_publishable_keys` (só tipo e estado); painel › API Keys para `sb_secret_` | `anon` legada **ativa** + `sb_publishable_` ativa; `sb_secret_` não verificada | `sb_publishable_` + `sb_secret_`; legadas desativadas antes de produção |
+| Data API | 🔎 HTTP com `Accept-Profile` (teste #3) | só `public`, `graphql_public` (**PASS**) | igual; repetir depois das migrações |
+| Realtime "Allow public access" | painel: Realtime › Settings | não legível | **desligado** |
+| Partições de `realtime.messages` | 🔎 `select count(*) from pg_inherits where inhparent = 'realtime.messages'::regclass` | **0** | > 0 antes do teste #11 (criadas pelo serviço Realtime; NOT VERIFIED) |
+| Integração GitHub | painel: Integrations | Working directory `.`, Deploy to production desligado (usuário) | igual |
+
+### 6b. Alterações futuras ⛔ (não autorizadas; cada uma com captura antes e depois)
+
+1. **Ligar o login anônimo** (Authentication › Providers › Anonymous). Pré-requisito de todos os testes reais com cliente.
+2. **Desligar o cadastro por e-mail** (Providers › Email). O D1 não prevê identidade por e-mail. O `config.toml` **não** aplica isso em produção.
+3. **CAPTCHA Turnstile** (B5). No ambiente de teste, decidir entre a chave de teste do Turnstile e o desligamento temporário. **Nunca** deixar o login anônimo aberto sem CAPTCHA em produção.
+4. **Expiração do JWT = 600 s**: limita a janela da autorização em cache do Realtime (teste #12).
+5. **Realtime: desligar "Allow public access"**, antes do teste #7.
+6. **Rate limit de anônimos**: confirmar 30/h ou reduzir.
+7. **Antes de produção:** desativar as chaves legadas (`anon` e `service_role`) depois de confirmar que nada depende delas.
+
+Ordem sugerida para o dia dos testes:
+- itens 1, 2, 3 e 5, antes do harness;
+- item 4, antes do #12;
+- item 7 só no fechamento.
+
+## 7. Limitações de recuperação
+
+- **Plano Free:** sem backup baixável e sem PITR. A recuperação é **lógica**: `90_rollback.sql` (tudo) ou
+  `91_rollback_0400.sql` (só a 0400).
+- **O que o `90_rollback.sql` reverte** (testado depois de cada uma das 4 etapas, com reaplicação limpa):
+  - schemas `oryn` e `oryn_realtime`, com tudo dentro (**inclusive os dados**: salas, membros, convites);
+  - as 14 RPCs (12 da 0200 e 2 da 0400);
+  - as 4 políticas;
+  - as linhas de histórico 0100–0400.
+  - RLS e dono de `realtime.messages` ficam como o Supabase entregou.
+- **O que NÃO reverte:**
+  - o schema `supabase_migrations` e a tabela `schema_migrations`, que ficam **vazios** (esperado; seção 1c);
+  - usuários de teste em `auth.users` e seus tokens (apagar pelo painel);
+  - mensagens `hello`/`bye` retidas em `realtime.messages` por 3 a 4 dias;
+  - logs da plataforma, da API e do Postgres;
+  - contadores de rate limit do Auth;
+  - configurações do painel e secrets alterados;
+  - versões já publicadas de Edge Functions.
+- **O que o `91_rollback_0400.sql` reverte:** só as 2 RPCs da 0400 e a linha `20261028000400` do histórico. **Não**
+  reverte dados: salas encerradas pelo `close_room` continuam encerradas, sessões e convites revogados continuam
+  revogados. Detalhes e controles: Etapa 4.
+- **Estado inicial vazio (Etapas 1–3, histórico):** com 0 usuários e 0 objetos da Oryn, o impacto de uma falha nas Etapas 1–3 era só o schema da própria POC, e o alvo da recuperação era o estado da seção 0. **Na Etapa 4 já há dados** (3 contas de teste, 1 sala, registros de sinalização): por isso a recuperação da 0400 é o `91`, nunca o `90`.
+- **Fora do escopo lógico** (por exemplo, corrupção de objetos do Supabase): o SQL não resolve, e a decisão é do arquiteto. Recriar o projeto não está autorizado.

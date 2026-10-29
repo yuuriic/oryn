@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Só a própria origem, o projeto Supabase (HTTPS e WSS) e mídia local. Sem scripts de terceiros. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' https://*.supabase.co wss://*.supabase.co ws://localhost:* ws://127.0.0.1:*; media-src 'self' blob: mediastream:; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <title>Oryn — voz 1:1 (POC-02C)</title>
+    <link rel="stylesheet" href="/src/web/style.css" />
+  </head>
+  <body>
+    <main>
+      <h1>Oryn · voz 1:1 <small>POC-02C</small></h1>
+      <p id="config-error" class="error" role="alert" hidden></p>
+
+      <section id="login" hidden>
+        <h2>Login</h2>
+        <form id="login-form" autocomplete="on">
+          <label>E-mail <input id="email" type="email" autocomplete="username" required /></label>
+          <label>Senha <input id="password" type="password" autocomplete="current-password" required /></label>
+          <button id="login-btn" type="submit">Entrar</button>
+        </form>
+      </section>
+
+      <section id="account" hidden>
+        <p>Conectado como <strong id="user-label"></strong> <button id="logout-btn" type="button">Sair da conta</button></p>
+
+        <h2>Minhas salas</h2>
+        <div class="buttons"><button id="rooms-refresh-btn" type="button">Atualizar lista</button></div>
+        <div id="rooms"></div>
+        <p id="rooms-error" class="error" role="alert" hidden></p>
+
+        <h3>Criar sala</h3>
+        <!-- maxlength conta unidades UTF-16 (um emoji vale 2): fica no dobro do limite real, que é conferido em
+             pontos de código, como no banco (40 e 32), com mensagem na tela. -->
+        <form id="create-form" autocomplete="off">
+          <label>Nome da sala (até 40 caracteres) <input id="create-name" type="text" maxlength="80" spellcheck="false" required /></label>
+          <label>Seu nome na sala (até 32 caracteres) <input id="create-display" type="text" maxlength="64" spellcheck="false" required /></label>
+          <button id="create-btn" type="submit">Criar sala (2 lugares)</button>
+        </form>
+
+        <h2>Chamada</h2>
+        <p>Sala: <strong id="call-room">—</strong></p>
+        <div class="buttons">
+          <button id="mute-btn" type="button" disabled>Mutar</button>
+          <button id="leave-btn" type="button" disabled>Sair da chamada</button>
+          <button id="listen-btn" type="button" hidden>Ouvir</button>
+        </div>
+
+        <details id="diagnostics">
+          <summary>Diagnóstico</summary>
+          <label>ID da sala <input id="room" type="text" spellcheck="false" autocomplete="off" size="38" /></label>
+          <button id="join-btn" type="button">Entrar na chamada por ID</button>
+        </details>
+      </section>
+
+      <p id="error" class="error" role="alert" hidden></p>
+
+      <section id="status" hidden>
+        <h2>Status</h2>
+        <dl>
+          <dt>Fase</dt><dd data-field="phase">—</dd>
+          <dt>Papel</dt><dd data-field="role">—</dd>
+          <dt>Microfone</dt><dd data-field="mic">—</dd>
+          <dt>Conexão</dt><dd data-field="peer">—</dd>
+          <dt>ICE</dt><dd data-field="ice">—</dd>
+          <dt>Caminho</dt><dd data-field="path">—</dd>
+          <dt>Codec</dt><dd data-field="codec">—</dd>
+          <dt>Envio / recepção</dt><dd data-field="rate">—</dd>
+          <dt>RTT / perda / jitter</dt><dd data-field="quality">—</dd>
+        </dl>
+        <div id="audio-container" hidden></div>
+        <h3>Registro</h3>
+        <ol id="log" class="log"></ol>
+      </section>
+    </main>
+    <script type="module" src="/src/web/main.ts"></script>
+  </body>
+</html>
