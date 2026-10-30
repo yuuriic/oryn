@@ -1,0 +1,28 @@
+{
+  "_comment": "02C.6E — motivos de recusa de entrada em canal do Realtime (formato real: '<Codigo>: <mensagem>'). Fonte: supabase/realtime, lib/realtime_web/channels/realtime_channel.ex (log_error), e respostas observadas na C0-W de 2026-10-27. Lido pelo harness (tests/remote/harness-utils.ts) e pelo executor (integration/scripts/oryn-c0.lib.ps1): uma unica fonte. Codigo fora destas listas = desconhecido (nunca PASS).",
+  "authorization": { "code": "Unauthorized", "message": "^You do not have permissions to read from this Channel topic(:|$)" },
+  "privateOnly": { "code": "PrivateOnly", "message": "^This project only allows private channels$" },
+  "credentialCodes": ["MalformedJWT", "InvalidJWTToken", "JwtSignatureError", "JwtSignerError"],
+  "infrastructureCodes": [
+    "MissingPartition",
+    "UnableToConnectToProject",
+    "InitializingProjectConnection",
+    "DatabaseLackOfConnections",
+    "DatabaseConnectionRateLimitReached",
+    "IncreaseConnectionPool",
+    "ConnectionRateLimitReached",
+    "ChannelRateLimitReached",
+    "ClientJoinRateLimitReached",
+    "UnknownErrorOnCounter",
+    "QueryCanceled",
+    "TimeoutOnRpcCall",
+    "ErrorOnRpcCall",
+    "RealtimeRestarting",
+    "RealtimeDisabledForTenant",
+    "TenantNotFound",
+    "UnableToSetPolicies",
+    "RlsPolicyError",
+    "MusterJoinError"
+  ],
+  "infrastructureMessages": ["^Realtime was unable to connect to the project database$"]
+}

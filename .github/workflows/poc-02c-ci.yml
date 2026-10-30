@@ -1,0 +1,146 @@
+# CI da POC-02C (poc/webrtc-audio-supabase): instalação reproduzível, typecheck, testes (unitários +
+# autorização SQL em Postgres em memória/PGlite) e auditoria de dependências. Independente do poc-02b-ci.yml.
+#
+# Segurança: somente leitura do repositório, sem segredos, sem acesso ao projeto Supabase, sem migrações
+# remotas e sem deploy. Os testes de integração real permanecem `todo` (NOT VERIFIED). O `test:pg` sobe um
+# PostgreSQL 17 embutido (embedded-postgres) só em 127.0.0.1 do runner, com senha gerada por execução.
+#
+# Checks obrigatórios × filtros de caminho (mesmo padrão aprovado na POC-02B): um workflow com "paths" no
+# gatilho de PR nem é criado quando o PR não toca esses caminhos, e um check obrigatório ficaria pendente
+# para sempre. Por isso:
+# - PRs para main NÃO têm filtro de caminho; o job "changes" decide se a POC-02C foi alterada;
+# - o job "checks" só roda quando há mudança relevante;
+# - o job "result" roda SEMPRE e é o único a indicar como check obrigatório.
+#
+# Ações fixadas por SHA, conferidos na API do GitHub contra as tags e iguais aos do poc-02b-ci.yml.
+
+name: POC-02C CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [poc/webrtc-audio-supabase]
+    paths:
+      - 'poc/webrtc-audio-supabase/**'
+      - '.github/workflows/poc-02c-ci.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: poc-02c-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '24.19.0'
+
+jobs:
+  changes:
+    name: Mudanças na POC-02C
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      relevant: ${{ steps.detect.outputs.relevant }}
+    steps:
+      - name: Checkout (histórico completo para comparar com a base)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Detectar arquivos da POC-02C alterados
+        id: detect
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            # Push: o gatilho já filtrou por caminho.
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Três pontos: mudanças do PR desde o ponto de divergência com a base.
+          changed="$(git diff --name-only "$BASE_SHA...$HEAD_SHA")"
+          if printf '%s\n' "$changed" | grep -qE '^(poc/webrtc-audio-supabase/|\.github/workflows/poc-02c-ci\.yml$)'; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  checks:
+    name: Verificações (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+        working-directory: poc/webrtc-audio-supabase
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: pnpm (versão do packageManager)
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: poc/webrtc-audio-supabase/package.json
+
+      - name: Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: poc/webrtc-audio-supabase/pnpm-lock.yaml
+
+      - name: Instalação reproduzível
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Testes (unitários + autorização SQL local; integração real como todo)
+        run: pnpm test
+
+      - name: Concorrência em PostgreSQL 17 real embutido (local ao runner; sem rede externa nem segredos)
+        run: pnpm test:pg
+
+      - name: Audit de dependências
+        if: runner.os == 'Linux'
+        run: pnpm audit
+
+  result:
+    name: POC-02C CI (resultado)
+    # Sempre executa: é o check a indicar como obrigatório, se a proteção de branch for usada.
+    if: always()
+    needs: [changes, checks]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Consolidar resultado
+        shell: bash
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          RELEVANT: ${{ needs.changes.outputs.relevant }}
+          CHECKS: ${{ needs.checks.result }}
+        run: |
+          echo "changes=$CHANGES relevant=$RELEVANT checks=$CHECKS"
+          if [ "$CHANGES" != "success" ]; then
+            echo "Falha ao detectar mudanças."; exit 1
+          fi
+          if [ "$RELEVANT" = "true" ]; then
+            if [ "$CHECKS" != "success" ]; then
+              echo "Verificações da POC-02C não aprovadas."; exit 1
+            fi
+          else
+            echo "Nenhuma mudança na POC-02C: verificações não necessárias."
+          fi
