@@ -7,6 +7,8 @@
 // 2. A página administrativa (listener administrativo, loopback) troca o código por um TOKEN de
 //    sessão administrativa (256 bits), mantido só em memória no navegador.
 // 3. O token autoriza create/rejoin/invite no listener administrativo.
+// 4. Revogar (novo pareamento, "codigo" no terminal ou desligamento) ou expirar a sessão administrativa
+//    encerra também as conexões de host autorizadas por ela (revisão independente IR-2).
 //
 // Só hashes SHA-256 ficam em memória no servidor; comparações em tempo constante.
 // O token nunca é impresso, registrado em log nem persistido.
@@ -59,6 +61,9 @@ export interface AdminAuthOptions {
 export class AdminAuth {
   private code: { hash: Buffer; expiresAt: number; attempts: number } | null = null;
   private session: { hash: Buffer; expiresAt: number } | null = null;
+  /** Avança a cada sessão administrativa nova ou revogada: autorizações de gerações antigas deixam de valer. */
+  private generation = 0;
+  private readonly revokeListeners: (() => void)[] = [];
   private readonly options: AdminAuthOptions;
 
   constructor(options: AdminAuthOptions) {
@@ -100,6 +105,8 @@ export class AdminAuth {
     const token = this.options.newToken();
     const expiresAt = this.options.now() + this.options.sessionTtlMs;
     this.session = { hash: sha256(token), expiresAt };
+    this.generation += 1;
+    this.notifyRevoked(); // o token anterior (se havia) deixou de valer
     return { ok: true, token, expiresAt };
   }
 
@@ -110,9 +117,26 @@ export class AdminAuth {
     return sameHash(sha256(token), session.hash);
   }
 
+  /** Geração da sessão administrativa vigente, ou null se não há sessão válida (revogada ou expirada). */
+  get activeGeneration(): number | null {
+    const session = this.session;
+    return session && session.expiresAt > this.options.now() ? this.generation : null;
+  }
+
+  /** Avisa quando a sessão administrativa é revogada ou substituída (expiração não avisa: vale activeGeneration). */
+  onRevoke(listener: () => void): void {
+    this.revokeListeners.push(listener);
+  }
+
   /** Revoga a sessão administrativa e o código pendente. */
   revokeAll(): void {
     this.code = null;
     this.session = null;
+    this.generation += 1;
+    this.notifyRevoked();
+  }
+
+  private notifyRevoked(): void {
+    for (const listener of this.revokeListeners) listener();
   }
 }

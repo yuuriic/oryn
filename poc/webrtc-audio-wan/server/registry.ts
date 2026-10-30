@@ -44,6 +44,11 @@ export interface RegistryOptions {
   admission: Admission;
   /** Verifica o token administrativo (pareamento). */
   verifyAdmin: (token: string) => boolean;
+  /**
+   * Geração da sessão administrativa vigente (null = revogada ou expirada). Um host continua autorizado só
+   * enquanto a geração for a mesma de quando entrou. Ausente = a autorização do host não expira (testes).
+   */
+  adminGeneration?: () => number | null;
   /** Origem pública (https://hostname) informada ao operador junto com o convite, ou null. */
   publicOrigin: string | null;
   now: () => number;
@@ -60,6 +65,8 @@ export class SessionRegistry {
   private readonly sessions = new Map<string, Session>();
   private readonly membership = new Map<string, Session>();
   private readonly authFailures = new Map<string, number>();
+  /** Geração administrativa com que cada host foi autorizado (id da conexão → geração). */
+  private readonly hostGeneration = new Map<string, number | null>();
   private readonly options: RegistryOptions;
 
   constructor(options: RegistryOptions) {
@@ -110,8 +117,23 @@ export class SessionRegistry {
     this.authFailures.delete(participant.id);
   }
 
+  /**
+   * Encerra os hosts cuja autorização administrativa deixou de valer (token revogado, substituído ou
+   * expirado). Síncrono: o host sai da sessão antes de qualquer outra mensagem dele ser processada.
+   */
+  enforceAdminRevocation(): void {
+    for (const session of [...this.sessions.values()]) {
+      const host = session.host;
+      if (!host || this.hostAuthorized(host)) continue;
+      this.leave(host);
+      host.close?.(1008, 'admin revoked');
+      this.log(`sessão ${shortId(session.id)}: operador desconectado (autorização administrativa revogada)`);
+    }
+  }
+
   /** Remove sessões ociosas com um único participante e convites expirados. */
   sweep(): void {
+    this.enforceAdminRevocation(); // cobre a expiração do token, que não gera aviso
     this.options.admission.sweep();
     const limit = this.options.now() - this.options.idleTimeoutMs;
     for (const session of [...this.sessions.values()]) {
@@ -145,6 +167,7 @@ export class SessionRegistry {
     const session: Session = { id, host: p, guest: null, epoch: 0, lastActivity: this.options.now() };
     this.sessions.set(id, session);
     this.membership.set(p.id, session);
+    this.hostGeneration.set(p.id, this.options.adminGeneration?.() ?? null);
     this.authFailures.delete(p.id);
     p.send({ type: 'session', sessionId: id, role: 'host', epoch: 0, peerPresent: false });
     this.sendInvite(p, session);
@@ -158,6 +181,7 @@ export class SessionRegistry {
     if (!session) return this.error(p, 'not-found');
     if (session.host) return this.error(p, 'session-full');
     this.authFailures.delete(p.id);
+    this.hostGeneration.set(p.id, this.options.adminGeneration?.() ?? null);
     this.occupy(session, 'host', p);
   }
 
@@ -165,6 +189,11 @@ export class SessionRegistry {
     const session = this.membership.get(p.id);
     // Só o operador (host) da sessão emite convites.
     if (!session || session.host !== p) return this.authFailure(p, 'unauthorized');
+    // Autorização administrativa revogada ou expirada depois da entrada: nenhum convite novo.
+    if (!this.hostAuthorized(p)) {
+      this.error(p, 'unauthorized');
+      return this.enforceAdminRevocation();
+    }
     if (session.guest) return this.error(p, 'session-full');
     this.sendInvite(p, session);
   }
@@ -216,6 +245,7 @@ export class SessionRegistry {
     const session = this.membership.get(p.id);
     if (!session) return;
     this.membership.delete(p.id);
+    this.hostGeneration.delete(p.id);
     if (session.host === p) session.host = null;
     if (session.guest === p) session.guest = null;
     const remaining = session.host ?? session.guest;
@@ -230,7 +260,12 @@ export class SessionRegistry {
   }
 
   private destroy(session: Session): void {
-    for (const p of [session.host, session.guest]) if (p) this.membership.delete(p.id);
+    for (const p of [session.host, session.guest]) {
+      if (p) {
+        this.membership.delete(p.id);
+        this.hostGeneration.delete(p.id);
+      }
+    }
     session.host = session.guest = null;
     this.sessions.delete(session.id);
     this.options.admission.revokeSession(session.id);
@@ -245,6 +280,13 @@ export class SessionRegistry {
   /** Listener administrativo E token válido; o listener de sinalização nunca tem privilégio administrativo. */
   private authorizedAdmin(token: string, context: ConnectionContext): boolean {
     return context.admin && this.options.verifyAdmin(token);
+  }
+
+  /** O host ainda tem a autorização administrativa com que entrou (mesma geração, não revogada nem expirada)? */
+  private hostAuthorized(p: Participant): boolean {
+    if (!this.options.adminGeneration) return true;
+    const current = this.options.adminGeneration();
+    return current !== null && this.hostGeneration.get(p.id) === current;
   }
 
   private authFailure(p: Participant, code: ErrorCode): void {

@@ -216,6 +216,21 @@ export function assertLoopbackHttpHost(host: string): void {
   }
 }
 
+/**
+ * Caminho da requisição sem lançar exceção (revisão independente IR-1). Só o origin-form simples é aceito:
+ * começa com uma única "/" e não tem "\" (o parser de URL trata "\" como "/" e "//x" como autoridade).
+ * Formas malformadas ou ambíguas ("//", "/\\", "//[", absolute-form) devolvem null e são recusadas com 400.
+ */
+export function requestPath(url: string | undefined): string | null {
+  const raw = url ?? '/';
+  if (!raw.startsWith('/') || raw.startsWith('//') || raw.includes('\\')) return null;
+  try {
+    return new URL(raw, 'http://x').pathname;
+  } catch {
+    return null;
+  }
+}
+
 export type HostCheck = 'ok' | 'missing' | 'unknown';
 
 /**
@@ -334,7 +349,10 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
     now: Date.now,
     randomId: newSessionId,
     log: (event) => log(`[sinalização] ${event}`),
+    adminGeneration: () => adminAuth.activeGeneration,
   });
+  // IR-2: revogar ou substituir o token administrativo encerra os hosts autorizados por ele.
+  adminAuth.onRevoke(() => registry.enforceAdminRevocation());
   const maxConnections = config.maxConnections ?? 8;
   const admissionTimeoutMs = config.admissionTimeoutMs ?? 10_000;
 
@@ -442,7 +460,18 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
   const accessDenied = (reason: string): { status: number; text: string } =>
     reason === 'unavailable' ? { status: 503, text: '503 Service Unavailable' } : { status: 403, text: '403 Forbidden' };
 
+  /** Defesa em profundidade (IR-1): nenhuma exceção síncrona de uma requisição derruba o processo. */
   const requestHandler = (kind: ListenerKind) => (req: http.IncomingMessage, res: http.ServerResponse): void => {
+    try {
+      handleRequest(kind, req, res);
+    } catch {
+      logRefusal('erro interno (http)');
+      if (!res.headersSent) res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' }).end('Erro interno');
+      else res.destroy();
+    }
+  };
+
+  const handleRequest = (kind: ListenerKind, req: http.IncomingMessage, res: http.ServerResponse): void => {
     for (const [k, v] of Object.entries(SECURITY_HEADERS)) res.setHeader(k, v);
     // Host antes de qualquer conteúdo.
     const zone = zoneOf(kind, req.headers.host);
@@ -475,7 +504,12 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
 
   /** Rotas, depois de Host, Origin e (na sinalização com Access) do JWT validados. */
   const serve = (kind: ListenerKind, req: http.IncomingMessage, res: http.ServerResponse): void => {
-    const path = new URL(req.url ?? '/', 'http://x').pathname;
+    const path = requestPath(req.url);
+    if (path === null) {
+      logRefusal('caminho inválido (http)');
+      res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' }).end('Requisição inválida');
+      return;
+    }
     // Endpoint administrativo existe SOMENTE no listener administrativo.
     if (kind === 'admin' && path === '/admin/pair') {
       handlePair(req, res, req.headers.host!);
@@ -510,12 +544,23 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
   const unadmittedSince = new Map<WebSocket, number>();
   const participants = new Map<WebSocket, Participant>();
 
+  /** Defesa em profundidade (IR-1): nenhuma exceção síncrona de um upgrade derruba o processo. */
   const onUpgrade = (kind: ListenerKind) => (req: http.IncomingMessage, socket: Duplex, head: Buffer): void => {
+    try {
+      handleUpgrade(kind, req, socket, head);
+    } catch {
+      logRefusal('erro interno (upgrade)');
+      socket.destroy();
+    }
+  };
+
+  const handleUpgrade = (kind: ListenerKind, req: http.IncomingMessage, socket: Duplex, head: Buffer): void => {
     // Política de Host verificada separadamente e antes do Origin.
     const zone = zoneOf(kind, req.headers.host);
     if (zone === 'missing') return refuse(socket, '400 Bad Request', 'host ausente');
     if (zone === 'unknown') return refuse(socket, '421 Misdirected Request', 'host');
-    const path = new URL(req.url ?? '/', 'http://x').pathname;
+    const path = requestPath(req.url);
+    if (path === null) return refuse(socket, '400 Bad Request', 'caminho inválido (upgrade)');
     if (path !== '/ws') return refuse(socket, '403 Forbidden', 'caminho');
     // Origin obrigatório, exato e coerente com o Host: impede uso por outros sites (CSWSH) e
     // combinações cruzadas (Host público com Origin local e vice-versa). "null" é recusado.
@@ -672,8 +717,9 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
   };
   const shutdown = async (): Promise<void> => {
     clearInterval(heartbeat);
-    adminAuth.revokeAll();
+    // Sessões primeiro (avisam "server-shutdown"); depois a revogação administrativa, que não acha mais hosts.
     registry.closeAll();
+    adminAuth.revokeAll();
     iceBroker.releaseAll();
     for (const ws of wss.clients) ws.close(1001, 'server shutdown');
     wss.close();
