@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Oryn POC-02B — Áudio entre redes</title>
+    <!-- A CSP é enviada pelo servidor (server/server.ts). CSS via <link> para style-src 'self'. -->
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Oryn · POC-02B</h1>
+        <p class="muted">Áudio WebRTC bidirecional entre dispositivos em redes distintas — prova de conceito descartável</p>
+        <p class="muted small" data-testid="env">—</p>
+      </header>
+
+      <section class="card notice" aria-labelledby="notice-title">
+        <h2 id="notice-title">Antes de testar</h2>
+        <ul>
+          <li><strong>Use fones de ouvido</strong> nos dois aparelhos. Se estiverem no mesmo cômodo, o som de um alto-falante volta pelo microfone do outro.</li>
+          <li>O áudio do outro participante começa <strong>sem som</strong>. Ligue “Ouvir participante” depois de colocar os fones.</li>
+          <li>O áudio vai direto entre os aparelhos (WebRTC). O servidor só troca mensagens de sinalização e não grava nada.</li>
+        </ul>
+      </section>
+
+      <section class="card" aria-labelledby="session-title">
+        <h2 id="session-title">Sessão</h2>
+        <div class="row">
+          <button id="btn-create" type="button" data-testid="btn-create" disabled>Criar sessão</button>
+          <button id="btn-rejoin" type="button" data-testid="btn-rejoin" hidden>Voltar à sessão</button>
+          <span class="muted">ou</span>
+          <label class="grow">
+            <span class="visually-hidden">Convite</span>
+            <input id="inp-session" type="text" inputmode="text" autocomplete="off" spellcheck="false" maxlength="43"
+              placeholder="Convite (43 caracteres)" data-testid="inp-session" />
+          </label>
+          <button id="btn-join" type="button" data-testid="btn-join">Entrar</button>
+        </div>
+        <div class="row">
+          <label class="inline" for="sel-ice">Modo ICE</label>
+          <select id="sel-ice" data-testid="ice-mode">
+            <option value="auto" selected>auto (STUN + TURN)</option>
+            <option value="direct">direct (só STUN)</option>
+            <option value="relay">relay (só TURN)</option>
+            <option value="relay-tls">relay-tls (só TURN sobre TLS)</option>
+          </select>
+          <span class="muted small">relay e relay-tls falham se o servidor não fornecer TURN.</span>
+        </div>
+        <div id="pairing" class="row" data-testid="pairing" hidden>
+          <label class="grow">
+            <span class="visually-hidden">Código de pareamento do operador</span>
+            <input id="inp-pair" type="text" autocomplete="off" spellcheck="false" maxlength="16"
+              placeholder="Código de pareamento (exibido no terminal)" data-testid="inp-pair" />
+          </label>
+          <button id="btn-pair" type="button" data-testid="btn-pair">Parear operador</button>
+        </div>
+        <p id="operator-hint" class="muted small" data-testid="operator-hint">
+          Criar sessões é exclusivo do operador: abra o endereço administrativo deste computador e informe o código de
+          pareamento exibido no terminal do servidor.
+        </p>
+
+        <div id="invite" class="invite" hidden data-testid="invite">
+          <p id="invite-intro">Convite de uso único para o celular:</p>
+          <div id="qr" class="qr" aria-label="QR code do convite" hidden></div>
+          <p><a id="invite-link" class="mono break" data-testid="invite-link" rel="noreferrer" hidden></a></p>
+          <p class="small">Código do convite: <span id="invite-token" class="mono break" data-testid="invite-token"></span></p>
+          <p class="small muted" id="invite-expiry" data-testid="invite-expiry"></p>
+          <button id="btn-copy" type="button">Copiar</button>
+        </div>
+        <!-- Fora do bloco do convite: após "Voltar à sessão" não há convite exibido, mas o operador precisa pedir um. -->
+        <button id="btn-invite" type="button" data-testid="btn-invite" hidden>Novo convite</button>
+        <p id="session-code" class="mono small" hidden data-testid="session-code"></p>
+      </section>
+
+      <section class="card controls" aria-label="Controles da chamada">
+        <button id="btn-mute" type="button" aria-pressed="false" disabled data-testid="btn-mute">Mutar microfone</button>
+        <label class="inline">
+          <input id="chk-listen" type="checkbox" disabled data-testid="chk-listen" />
+          Ouvir participante
+        </label>
+        <label class="inline">
+          Volume
+          <input id="rng-volume" type="range" min="0" max="1" step="0.05" value="0.5" disabled />
+        </label>
+        <button id="btn-end" type="button" class="danger" disabled data-testid="btn-end">Encerrar</button>
+      </section>
+
+      <p id="phase" class="phase" role="status" aria-live="polite" data-testid="phase" data-phase="idle">Estado: ocioso</p>
+      <p id="error" class="error" role="alert" hidden data-testid="error"></p>
+
+      <div class="grid">
+        <section class="card" aria-labelledby="state-title">
+          <h2 id="state-title">Estado</h2>
+          <table>
+            <tbody>
+              <tr><th>Papel</th><td data-field="role">—</td></tr>
+              <tr><th>Sinalização</th><td data-field="signaling" data-testid="signaling">—</td></tr>
+              <tr><th>Microfone</th><td data-field="mic" data-testid="mic">—</td></tr>
+              <tr><th>Reprodução</th><td data-field="playback" data-testid="playback">—</td></tr>
+              <tr><th>connectionState</th><td data-peer="connection" data-testid="pc-connection">—</td></tr>
+              <tr><th>iceConnectionState</th><td data-peer="ice">—</td></tr>
+              <tr><th>iceGatheringState</th><td data-peer="gathering">—</td></tr>
+              <tr><th>signalingState</th><td data-peer="signaling">—</td></tr>
+            </tbody>
+          </table>
+          <h3>Níveis</h3>
+          <div class="meter-row"><span>Meu microfone</span><meter id="meter-local" min="0" max="0.3" value="0"></meter></div>
+          <div class="meter-row"><span>Participante</span><meter id="meter-remote" min="0" max="0.3" value="0" data-testid="meter-remote"></meter></div>
+        </section>
+
+        <section class="card" aria-labelledby="metrics-title">
+          <h2 id="metrics-title">Métricas (getStats, 1 s)</h2>
+          <table class="metrics">
+            <tbody>
+              <tr><th>Codec</th><td data-metric="codec" data-testid="codec">indisponível</td></tr>
+              <tr><th>Taxa enviada</th><td data-metric="sendKbps">indisponível</td></tr>
+              <tr><th>Taxa recebida</th><td data-metric="recvKbps">indisponível</td></tr>
+              <tr><th>Pacotes enviados</th><td data-metric="packetsSent" data-testid="packets-sent">indisponível</td></tr>
+              <tr><th>Pacotes recebidos</th><td data-metric="packetsReceived" data-testid="packets-received">indisponível</td></tr>
+              <tr><th>Perda (recebido)</th><td data-metric="loss">indisponível</td></tr>
+              <tr><th>Perda (enviado, visão do outro lado)</th><td data-metric="remoteLoss">indisponível</td></tr>
+              <tr><th>Jitter (recebido)</th><td data-metric="jitter">indisponível</td></tr>
+              <tr><th>RTT</th><td data-metric="rtt">indisponível</td></tr>
+              <tr><th>Par ICE (sem endereços)</th><td data-metric="pair" data-testid="pair">indisponível</td></tr>
+              <tr><th>Caminho de mídia (par selecionado)</th><td data-metric="path" data-testid="media-path">indisponível</td></tr>
+              <tr><th>Modo ICE / servidores</th><td data-field="ice" data-testid="ice-info">—</td></tr>
+            </tbody>
+          </table>
+          <p class="row">
+            <button id="btn-evidence" type="button" data-testid="btn-evidence">Copiar evidência (sanitizada)</button>
+            <span class="muted small">Sem IPs, tokens, cookies ou credenciais; dados ausentes saem como "indisponível".</span>
+          </p>
+          <pre id="evidence" class="mono small break" data-testid="evidence" hidden></pre>
+        </section>
+      </div>
+
+      <section class="card" aria-labelledby="log-title">
+        <h2 id="log-title">Eventos (somente nesta página; sem SDP, candidatos ou endereços)</h2>
+        <ol id="log" class="log mono small" data-testid="log"></ol>
+      </section>
+
+      <div id="audio-container" hidden></div>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
