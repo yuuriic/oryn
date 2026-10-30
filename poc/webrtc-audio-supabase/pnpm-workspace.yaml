@@ -1,0 +1,6 @@
+# Scripts de instalação liberados SÓ para os binários do PostgreSQL embutido (testes de concorrência em
+# Postgres 17 real, 02C.2B), nas duas plataformas do CI. O script (`scripts/hydrate-symlinks.js`) só recria
+# links simbólicos dentro do próprio pacote, sem rede. Qualquer outro pacote com script continua bloqueado.
+allowBuilds:
+  '@embedded-postgres/windows-x64': true
+  '@embedded-postgres/linux-x64': true
