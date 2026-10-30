@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Só a própria origem, o projeto Supabase (HTTPS e WSS) e mídia local. Sem scripts de terceiros. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' https://*.supabase.co wss://*.supabase.co ws://localhost:* ws://127.0.0.1:*; media-src 'self' blob: mediastream:; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <title>Oryn — voz 1:1 (POC-02C)</title>
+    <link rel="stylesheet" href="/src/web/style.css" />
+  </head>
+  <body>
+    <main>
+      <h1>Oryn · voz 1:1 <small>POC-02C</small></h1>
+      <p id="config-error" class="error" role="alert" hidden></p>
+
+      <section id="login" hidden>
+        <h2>Login</h2>
+        <form id="login-form" autocomplete="on">
+          <label>E-mail <input id="email" type="email" autocomplete="username" required /></label>
+          <label>Senha <input id="password" type="password" autocomplete="current-password" required /></label>
+          <button id="login-btn" type="submit">Entrar</button>
+        </form>
+      </section>
+
+      <section id="account" hidden>
+        <p>Conectado como <strong id="user-label"></strong> <button id="logout-btn" type="button">Sair da conta</button></p>
+        <h2>Sala</h2>
+        <label>ID da sala <input id="room" type="text" spellcheck="false" autocomplete="off" size="38" /></label>
+        <div class="buttons">
+          <button id="join-btn" type="button">Entrar na chamada</button>
+          <button id="mute-btn" type="button" disabled>Mutar</button>
+          <button id="leave-btn" type="button" disabled>Sair da chamada</button>
+          <button id="listen-btn" type="button" hidden>Ouvir</button>
+        </div>
+      </section>
+
+      <p id="error" class="error" role="alert" hidden></p>
+
+      <section id="status" hidden>
+        <h2>Status</h2>
+        <dl>
+          <dt>Fase</dt><dd data-field="phase">—</dd>
+          <dt>Papel</dt><dd data-field="role">—</dd>
+          <dt>Microfone</dt><dd data-field="mic">—</dd>
+          <dt>Conexão</dt><dd data-field="peer">—</dd>
+          <dt>ICE</dt><dd data-field="ice">—</dd>
+          <dt>Caminho</dt><dd data-field="path">—</dd>
+          <dt>Codec</dt><dd data-field="codec">—</dd>
+          <dt>Envio / recepção</dt><dd data-field="rate">—</dd>
+          <dt>RTT / perda / jitter</dt><dd data-field="quality">—</dd>
+        </dl>
+        <div id="audio-container" hidden></div>
+        <h3>Registro</h3>
+        <ol id="log" class="log"></ol>
+      </section>
+    </main>
+    <script type="module" src="/src/web/main.ts"></script>
+  </body>
+</html>
