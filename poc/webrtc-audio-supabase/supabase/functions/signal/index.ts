@@ -1,5 +1,6 @@
 // Edge Function `signal` (Deno) — só a LIGAÇÃO dos módulos de ../_shared, que são puros e testados no Node.
-// NÃO foi executada nem implantada: o comportamento no Supabase real é NOT VERIFIED (02C.1B).
+// Publicada no projeto real pela CLI, com autorização (runbook §13), e exercitada nas chamadas 1:1 reais de
+// 2026-10-28. Os testes automáticos do Supabase real seguem `todo` (tests/integration.pending.test.ts).
 //
 // Credenciais (ver _shared/edge-config.ts): a plataforma injeta SUPABASE_URL e as chaves; o único secret
 // próprio é ORYN_ALLOWED_ORIGINS. Nenhuma chave é registrada em log.

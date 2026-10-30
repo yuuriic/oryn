@@ -48,7 +48,7 @@ Validação local feita agora: `00_preflight.sql` e `01_postflight.sql` rodam no
 |---|---|---|
 | B1 | **Corrigido localmente.** Chamadas do usuário (`/auth/v1/user`, `authorize_signal`) levam `apikey` publicável + `Bearer <JWT do usuário>`. Chamadas do servidor (`set_signal_state`, Broadcast REST) levam **só** `apikey` secreta, sem `Authorization` (`_shared/supabase-http.ts`). O 401 do gateway vira `jwt-invalid` (401), não "banco indisponível" | `tests/edge-auth.test.ts`: headers por operação com chaves novas e legadas; negativos; mutação reintroduzindo o bug detectada |
 | B2 | **Corrigido.** As chaves vêm de `SUPABASE_SECRET_KEYS`/`SUPABASE_PUBLISHABLE_KEYS` (JSON, chave `default`), injetadas pela plataforma, com alternativa legada validada pelo papel. O único secret próprio é `ORYN_ALLOWED_ORIGINS`. README corrigido | `tests/edge-auth.test.ts` (configuração; mensagens sem valores) |
-| B3 | **Preparado.** `supabase/config.toml` (CLI 2.122.0) com `[functions.signal] enabled = false`, `verify_jwt = true` e seed desligado | Carregado pela CLI 2.122.0 sem erro (o `status` só para por falta de Docker). Tipo errado é recusado; **chave desconhecida é ignorada em silêncio** |
+| B3 | **Preparado.** `supabase/config.toml` (CLI 2.122.0) com `[functions.signal] enabled = false`, `verify_jwt = true` e seed desligado. Depois, `enabled = true` no deploy autorizado (§13) | Carregado pela CLI 2.122.0 sem erro (o `status` só para por falta de Docker). Tipo errado é recusado; **chave desconhecida é ignorada em silêncio** |
 | B4 | Pendente (decisão de Git) | — |
 | B5 | Pendente (decisão do Turnstile) | — |
 
@@ -70,8 +70,8 @@ Validação local feita agora: `00_preflight.sql` e `01_postflight.sql` rodam no
 3. ~~Correção B1/B2~~ feita localmente (02C.1B.0A); falta a revisão.
 4. ~~Dependência `@supabase/supabase-js`~~ adicionada (2.118.0, fixa, só de desenvolvimento).
 5. **Turnstile** no ambiente de teste (B5).
-6. **Quando liberar a função:** trocar `enabled = false` por `true` no `config.toml` só no passo de
-   publicação autorizado.
+6. ~~**Quando liberar a função**~~ **feito no deploy autorizado (§13):** o `config.toml` passou de
+   `enabled = false` para `enabled = true`, que é o valor atual.
 
 ## 5. Procedimento controlado
 
@@ -228,7 +228,7 @@ Verificação, sem alterar nada:
   - JWT, chaves, tokens de convite ou a string de conexão;
   - IDs completos em logs públicos (usar os 8 primeiros caracteres).
 
-## 9. Harness remoto (implementado no 02C.1B.0A; **nunca executado**)
+## 9. Harness remoto (implementado no 02C.1B.0A; executado só pelos executores do §12, com autorização)
 
 - **Arquivos:** `tests/remote/integration.remote.test.ts` e `tests/remote/remote-env.ts` (portão), com
   `vitest.remote.config.ts` próprio. Ficam **fora** do `pnpm test` e do CI (`exclude` no `vitest.config.ts`).
@@ -967,12 +967,13 @@ pwsh -NoProfile -Command ". integration/scripts/oryn-c2.lib.ps1; Get-C2Shareable
 
 ## 13. Chamada de voz 1:1 pelo cliente web (integração Supabase + WebRTC; ⛔ cada passo marcado exige autorização própria)
 
-Cliente em `src/web/` (README, "Cliente web de voz 1:1"). Tudo o que segue é **remoto** e ainda **não foi
-feito**. Nada aqui altera RLS, migrações, permissões, Auth ou salas.
+Cliente em `src/web/` (README, "Cliente web de voz 1:1"). Tudo o que segue é **remoto**. Os passos foram
+executados em 2026-10-28, cada um com autorização própria; os registros abaixo descrevem o que foi feito e o
+estado deixado. Nada aqui altera RLS, migrações, permissões, Auth ou salas.
 
 **Pré-requisitos locais (sem rede):** `pnpm typecheck`, `pnpm test`, `pnpm test:pg` e `pnpm build` verdes.
 
-> **Registro do deploy autorizado (passos 1–3), CLI 2.122.0, projeto `oryn` (`praufvcaggcxbhcmfqgw`):**
+> **Registro do deploy autorizado (passos 1–3), CLI 2.122.0, projeto `oryn` (`<PROJECT_REF>`, §1):**
 > - antes: nenhuma Edge Function publicada e nenhum secret próprio;
 > - `config.toml`: só `[functions.signal] enabled = true`; `verify_jwt = true` preservado;
 > - `supabase secrets set ORYN_ALLOWED_ORIGINS=http://127.0.0.1:5173 --project-ref …`: único secret próprio;
@@ -1052,7 +1053,7 @@ feito**. Nada aqui altera RLS, migrações, permissões, Auth ou salas.
 > - **`12`:**
 >   - **A7 PASS**;
 >   - **D5 PASS** preservado;
->   - **D2 FAIL esperado:** a sala `93468ee8-c2da-49ce-a9aa-fcd3c3bc205d` continua aberta, preservada, com 2
+>   - **D2 FAIL esperado:** a sala `93468ee8…` continua aberta, preservada, com 2
 >     membros. Continua FAIL enquanto a sala estiver aberta. Fechá-la é outra decisão (§12.4).
 > - Nenhuma credencial ou token foi registrado.
 
@@ -1062,7 +1063,7 @@ feito**. Nada aqui altera RLS, migrações, permissões, Auth ou salas.
 >   sobre TURN.
 > - **Topologia:**
 >   - OWNER no Windows (Wi-Fi doméstico) e MEMBER no iPhone (Safari), **só com dados móveis 5G**;
->   - os dois na sala `93468ee8-c2da-49ce-a9aa-fcd3c3bc205d`;
+>   - os dois na sala `93468ee8…`;
 >   - página servida pelo build de produção (`vite preview` em 127.0.0.1:4173), por um Cloudflare Quick Tunnel
 >     temporário (`cloudflared` 2026.9.1 portátil, SHA-256 conferido).
 >   - O túnel serve só o `dist/`: `.env.local`, `package.json`, `src/` e `supabase/` devolvem o fallback
@@ -1128,15 +1129,15 @@ feito**. Nada aqui altera RLS, migrações, permissões, Auth ou salas.
 >   - **A7 PASS** e `INFO sessões de Auth ativas por conta = (nenhuma)`;
 >   - **D5 PASS** (`0 / 0 / 0 / 0`);
 >   - A1–A6, D1, D3, D4 e S1–S5 PASS (S2 `58 / 1a5a563d…`, S3 `4ce64373…`, iguais ao baseline);
->   - **D2 FAIL esperado:** a sala `93468ee8-c2da-49ce-a9aa-fcd3c3bc205d` continua aberta, preservada, com 2
+>   - **D2 FAIL esperado:** a sala `93468ee8…` continua aberta, preservada, com 2
 >     membros;
 >   - INFO: salas 1 (1 aberta), membros 2, convites de sala 1, convites de criador 1 (1 usado), concessões 1;
 >     sessões de sala 21 (0 não revogadas), `signal_log` 38, `pair_counters` 7, `realtime.messages` em `oryn:*` 50.
 > - Nenhuma credencial ou token foi registrado.
 
 1. ⛔ **Publicar a Edge Function `signal`** (CLI, com o PAT só no terminal do operador, nunca no repositório). O
-   `config.toml` está com `[functions.signal] enabled = false`; o comportamento do `functions deploy` com essa
-   trava é NOT VERIFIED. A troca para `true` é feita no próprio passo autorizado. A integração GitHub não lê esta
+   `config.toml` estava com `[functions.signal] enabled = false` (trava). A troca para `true` foi feita no
+   próprio passo autorizado e é o valor atual do arquivo (registro do deploy, acima). A integração GitHub não lê esta
    pasta (Working directory `.`, §1): um push não publica nada. `verify_jwt` continua `true`.
 2. ⛔ **Secret `ORYN_ALLOWED_ORIGINS=http://127.0.0.1:5173`** (origem do `pnpm dev`; o `edge-config.ts` aceita
    `http://localhost` e `http://127.0.0.1` só para desenvolvimento). Nenhum outro secret: `SUPABASE_*` é

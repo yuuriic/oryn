@@ -9,24 +9,64 @@ Prova de conceito **descartável** do Oryn. Substitui o servidor Node de sinaliz
 A mídia continua WebRTC P2P, e o Cloudflare TURN entra só como relay. Contrato e decisões: relatórios
 POC-02C.0 e 02C.0A (D1 a D4).
 
-## Estado: incrementos 02C.1A e 02C.1A.1 — fundação local revisada
+## Estado (último registro documentado: 2026-10-28)
 
-- **Feito:** contratos TypeScript, migrações SQL, políticas RLS restritivas, RPCs de domínio, esqueleto da Edge
-  Function `signal` e testes automatizados.
-- **Não feito (por decisão):** nenhum projeto Supabase, Vercel ou Cloudflare foi criado; nenhum deploy;
-  nenhuma credencial.
+Fontes: `integration/RUNBOOK-02C.1B.md` (§1, §12 e §13). Esta seção não foi relida no projeto remoto: descreve o
+último estado registrado.
+
+1. **Implementado neste repositório:**
+   - contratos TypeScript e migrações `0100`–`0300` (schema `oryn`, RLS, RPCs, políticas do Realtime);
+   - Edge Function `signal` e cliente web de voz 1:1 (`src/web/`);
+   - testes locais, harness remoto (desligado por padrão) e scripts de integração (`integration/`).
+2. **Implantado no projeto Supabase real** (ref fora do repositório, runbook §1), cada passo com autorização
+   própria:
+   - migrações `0100`–`0300` aplicadas (leitura `07` do runbook §13: 58 objetos no escopo `oryn`);
+   - Edge Function `signal` publicada pela CLI, com `verify_jwt = true` e um único secret próprio,
+     `ORYN_ALLOWED_ORIGINS` (runbook §13);
+   - 3 contas de teste de e-mail e senha, criadas pelo operador no painel (runbook §12.3).
+   - A integração GitHub do Supabase não aplica esta pasta (Working directory `.`, Deploy to production
+     desligado; confirmado em 2026-10-23, runbook §1). Toda publicação foi feita pela CLI.
+3. **Testado no Supabase real** (operador ou executor, com autorização):
+   - C0-R (2026-10-27): leituras e recusas de permissão (runbook §12.1);
+   - C0-W, 1ª execução (2026-10-27): Z8 PASS, Z6 INCONCLUSIVO e **Z7 FAIL** (o Realtime avaliou
+     `private_only = false`; runbook §12.2);
+   - C2 com contas preexistentes: criou a sala `it-02c4b-*` usada nas chamadas. O resultado detalhado não está
+     registrado no runbook;
+   - chamadas 1:1 reais (2026-10-28): mesma rede 6/6 PASS, WAN só com STUN PASS e D5 PASS (nenhum SDP ou
+     candidato em `realtime.messages`). Detalhes em "Cliente web de voz 1:1" e no runbook §13.
+4. **Pendente ou `todo`:**
+   - os 18 itens de `tests/integration.pending.test.ts` continuam `todo` no `pnpm test` (evidência manual não
+     converte teste automático em PASS);
+   - os 12 itens do harness remoto (`pnpm test:remote`) não rodam no CI;
+   - a matriz `integration/EVIDENCE-02C.1B.md` está na situação de 2026-10-23 e **não** inclui as execuções acima;
+   - fluxo anônimo com Turnstile (#5, janela C1) suspenso;
+   - TURN, NAT restritivo (simétrico, CGNAT), redes corporativas e grupo: não testados.
+5. **Recursos remotos ainda ativos** (último estado documentado, 2026-10-28; nenhum desligamento registrado):
+   - Edge Function `signal` `ACTIVE`, `verify_jwt: true`, `ORYN_ALLOWED_ORIGINS` só com `http://127.0.0.1:5173`;
+   - a sala da C2 (`93468ee8…`) aberta, com 2 membros (D2 "FAIL esperado");
+   - as 3 contas de teste, com senhas de longa duração (trocar ou apagar no fim da campanha, runbook §12.4);
+   - na última leitura: 0 sessões de Auth e 0 sessões de sala vivas;
+   - "Allow public access" do Realtime: a 1ª C0-W observou `private_only = false` e o runbook não registra uma
+     leitura posterior com `true`. **NOT VERIFIED.**
+
+### Histórico dos incrementos
+
+- **02C.1A e 02C.1A.1 (fundação local):** contratos TypeScript, migrações SQL, políticas RLS restritivas, RPCs de
+  domínio, esqueleto da Edge Function `signal` e testes automatizados. Nessa etapa não houve deploy nem
+  credencial; o que veio depois está em "Estado".
 - **Testes de autorização:** rodam em **Postgres real em memória (PGlite 0.5.11, Postgres 18)** com um **shim**
   das peças do Supabase (`tests/helpers/supabase-shim.sql`). As migrações rodam como **dono não
   superusuário** (`migration_owner`, como o `postgres` do Supabase), para que as funções `SECURITY DEFINER`
   executem com privilégios realistas.
 - **CI:** `.github/workflows/poc-02c-ci.yml` (02C.1A.1). Roda instalação congelada, typecheck, testes e audit,
   sem segredos e sem deploy.
-- **Comportamento do Supabase real:** **NOT VERIFIED** (`tests/integration.pending.test.ts`, 17 itens `todo`: os 15
-  do 02C.1A mais 2 da revisão).
+- **Testes automáticos do Supabase real:** `tests/integration.pending.test.ts`, 18 itens `todo` (15 do 02C.1A,
+  2 da revisão e o #18 do 02C.2B). A evidência manual colhida depois está em "Estado".
 - **02C.1B.0A (correções locais):**
   - Edge Function com credenciais separadas (B1);
   - secrets sem nomes reservados (B2);
-  - `supabase/config.toml` com a função travada (`enabled = false`; B3);
+  - `supabase/config.toml` com a função travada (`enabled = false`; B3). A trava foi retirada no deploy
+    autorizado: o valor atual é `enabled = true`;
   - auditoria das RPCs `SECURITY DEFINER`;
   - harness remoto desligado por padrão.
 - **02C.2B (compatibilidade com o Supabase real observado na 02C.2A):**
@@ -64,7 +104,7 @@ Requisitos: Node 24+ e pnpm 12+. Não há serviço a instalar: o PGlite e o Post
 | `supabase/migrations/…0300_oryn_realtime.sql` | Políticas de `realtime.messages`: receber só no próprio tópico; **nenhum envio de cliente** em `oryn:*` |
 | `supabase/functions/_shared/` | Contrato da sinalização e núcleo da Edge Function (puros e testados) |
 | `supabase/functions/_shared/edge-config.ts`, `supabase-http.ts`, `signal-http.ts` | Credenciais, chamadas HTTP com headers separados por operação e camada HTTP/CORS (puros e testados) |
-| `supabase/functions/signal/index.ts` | Só a ligação Deno dos módulos de `_shared`. **Não executado**; fora do typecheck |
+| `supabase/functions/signal/index.ts` | Só a ligação Deno dos módulos de `_shared`. Publicado no projeto real (runbook §13); fora do typecheck do Node |
 | `supabase/config.toml` | CLI 2.122.0: Data API só `public`, sem seed, JWT de 600 s, função `signal` habilitada e publicada (`enabled = true`, `verify_jwt = true`) |
 | `tests/remote/` | Harness do Supabase real (`pnpm test:remote`), desligado por padrão |
 | `tests/pg/` | Concorrência e compatibilidade em PostgreSQL 17 real embutido (`pnpm test:pg`; roda no CI) |
@@ -134,8 +174,13 @@ um túnel HTTPS temporário:
 
 ## Modelo de segurança
 
-- **Identidade:** Supabase Auth anônimo (D1). Uma conta anônima **sozinha não alcança nada**: toda RPC exige
-  convite resgatado ou sessão própria.
+- **Identidade:**
+  - **desenho (D1):** Supabase Auth anônimo. As políticas tratam `authenticated` igual, com ou sem
+    `is_anonymous` (`tests/sql-anon-roles.test.ts`);
+  - **em uso hoje:** contas de e-mail e senha criadas pelo operador (C2 e cliente web, `signInWithPassword`). O
+    caminho C0/C2 confere o cadastro anônimo **desligado** no projeto real (runbook §12, Z1), e o fluxo anônimo
+    com Turnstile (C1) está suspenso;
+  - em qualquer caso, uma conta **sozinha não alcança nada**: toda RPC exige convite resgatado ou sessão própria.
 - **Primeira sala:** só quem resgatou um **convite de criador**. O convite é emitido **somente pelo
   administrador do projeto** no SQL editor:
   `select oryn.admin_issue_creator_invite(60, 2);`. O token aparece uma vez e só o hash fica guardado. Cada
@@ -198,10 +243,12 @@ um túnel HTTPS temporário:
   - descarta epoch antigo e mensagens com mais de 60 s;
   - confirma em lotes de até 64.
 
-## Configuração do projeto Supabase (para o 02C.1B, só com autorização; nada disto foi feito)
+## Configuração do projeto Supabase (referência das configurações exigidas)
 
-O projeto Supabase já existe e o repositório GitHub foi conectado pela integração do painel (informado pelo
-usuário). Nenhuma configuração foi alterada nesta etapa. Nenhum valor real vai para o repositório.
+O projeto Supabase já existe, e o repositório GitHub está conectado pela integração do painel (informado pelo
+usuário). As alterações feitas desde então (migrações, Edge Function, secret, contas e janelas de teste) estão
+registradas no runbook (§10, §12 e §13), cada uma com autorização própria. Nenhum valor real vai para o
+repositório.
 
 **Antes do primeiro push destas migrações (bloqueante), conferir no painel, só lendo:**
 - **Diretório de trabalho** da integração GitHub. Se apontar para `poc/webrtc-audio-supabase`, as migrações
@@ -210,20 +257,24 @@ usuário). Nenhuma configuração foi alterada nesta etapa. Nenhum valor real va
   Edge Functions numa branch de preview (documentação oficial).
 - **Deploy to production** e **branch de produção.** No push ou merge na branch de produção, as migrações
   novas são aplicadas.
-- Até o 02C.1B ser autorizado, a integração não deve aplicar nada desta pasta.
+- A integração não deve aplicar nada desta pasta. Último estado confirmado: Working directory `.` e Deploy to
+  production desligado (2026-10-23, runbook §1).
 
 - **Data API:** expor **apenas** `public`; nunca `oryn` nem `realtime`.
 - **Realtime:** "Allow public access" **desligado**; clientes com `private: true`.
-- **Auth:**
+- **Auth, para o fluxo anônimo (D1; hoje suspenso, com o cadastro anônimo desligado):**
   - anonymous sign-ins ligado;
   - **Cloudflare Turnstile** (ou CAPTCHA invisível) obrigatório;
   - JWT com expiração curta (proposta: 10 min).
+- **Auth, para o caminho em uso (contas de e-mail e senha, runbook §12.3):** login por e-mail habilitado; contas
+  criadas só pelo operador no painel, sem cadastro pelo cliente.
 - **Variáveis da Edge Function:**
   - **injetadas pela plataforma**, nunca criadas como secret, porque nomes `SUPABASE_*` são reservados:
     `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEYS`, `SUPABASE_SECRET_KEYS` (e as legadas `SUPABASE_ANON_KEY` e
     `SUPABASE_SERVICE_ROLE_KEY`, usadas só se as novas não existirem);
-  - **único secret próprio:** `ORYN_ALLOWED_ORIGINS` (origens HTTPS, separadas por vírgula), definido no painel ou
-    por `supabase secrets set` digitado no terminal, nunca em arquivo versionado.
+  - **único secret próprio:** `ORYN_ALLOWED_ORIGINS` (origens HTTPS, separadas por vírgula; `http://localhost` e
+    `http://127.0.0.1` só para desenvolvimento, que é o valor atual), definido no painel ou por
+    `supabase secrets set` digitado no terminal, nunca em arquivo versionado.
 - **Uso das credenciais pela Edge Function** (`_shared/supabase-http.ts`):
   - chamadas do **usuário** levam `apikey` publicável + `Authorization: Bearer <JWT do usuário>`, então
     `auth.uid()` é o usuário;
@@ -232,9 +283,11 @@ usuário). Nenhuma configuração foi alterada nesta etapa. Nenhum valor real va
   cliente: o harness remoto aborta se encontrar qualquer uma delas no ambiente.
 - **Logs e evidências:** nunca chaves, JWT, tokens de convite ou string de conexão; IDs só com 8 caracteres.
 
-## NOT VERIFIED (exige Supabase real)
+## Sem teste automático no Supabase real (`todo`)
 
-Lista completa e executável em `tests/integration.pending.test.ts`. Procedimento, scripts SQL (pré-voo e
+Lista completa e executável em `tests/integration.pending.test.ts` (18 itens `todo`). Parte dos itens já tem
+evidência **manual** (seção "Estado", item 3, por exemplo a não persistência do Broadcast REST pelo D5), mas
+continua `todo` como teste automático. Procedimento, scripts SQL (pré-voo e
 pós-voo somente leitura, concorrência, reversão) e matriz de evidências do 02C.1B: `integration/`. Inclui:
 - versão do Postgres do projeto;
 - privilégios padrão reais;
