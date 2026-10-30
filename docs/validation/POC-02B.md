@@ -642,9 +642,12 @@ depende do commit e do push do usuário.
 
 **[Revisão independente, 29/10/2026]** A afirmação "`codigo` + Enter revoga o token do atacante" estava
 incompleta: a revogação impedia novos `create`/`rejoin`, mas uma conexão de host já estabelecida continuava
-ativa e podia emitir convites (IR-2, §13.9). **Corrigido neste PR:** revogar, substituir ou expirar o token
-administrativo agora encerra (1008) as conexões de host autorizadas por ele, e `invite` reconfere a
-autorização (`tests/admin-revocation.test.ts`).
+ativa e podia emitir convites (IR-2, §13.9). **Corrigido neste PR:** revogar ou substituir o token
+administrativo encerra (1008), de forma síncrona, as conexões de host autorizadas por ele, e `invite`
+reconfere a autorização (`tests/admin-revocation.test.ts`). A **expiração** do token não gera aviso: as
+conexões de host são encerradas (1008) na próxima limpeza periódica (heartbeat, a cada 10 s com os padrões)
+ou quando uma operação revalidar a autorização (`invite`; `create`/`rejoin` reconferem o token). Até lá
+existe uma janela residual de até cerca de 10 s em que o host ainda sinaliza e pode obter TURN (DR-1, §13.9).
 
 O risco "chave do operador no terminal" do §8.7 foi **eliminado**: o token nunca é impresso. O risco "túnel
 reescrevendo `Host` para `localhost`" foi **reduzido**: a reescrita não concede privilégio administrativo e só
@@ -1583,7 +1586,7 @@ apenas para a integração offline.
 | Risco | Severidade | Situação |
 |---|---|---|
 | **IR-1** Caminho de requisição malformado (`//`, `/\\`, `//[` …) lançava exceção não tratada em `new URL(...)` e **derrubava o processo**, nos dois listeners, em HTTP e no upgrade. **[Observado, 29/10/2026]** reproduzido em cópia descartável (`ERR_INVALID_URL`, processo encerrado) | Média | **Corrigido neste PR:** `requestPath()` aceita só origin-form simples e recusa o resto com 400; os handlers HTTP e de upgrade não deixam exceção síncrona escapar. Host, Origin e Access inalterados. Teste: `tests/malformed-path.test.ts` (falha contra `b4101de`, passa com a correção) |
-| **IR-2** Revogar o token administrativo não encerrava a conexão de host já estabelecida, que continuava emitindo convites | Baixa | **Corrigido neste PR:** geração da sessão administrativa; revogação, novo pareamento ou expiração encerram (1008) os hosts autorizados por ela e `invite` reconfere a autorização. Teste: `tests/admin-revocation.test.ts` (os casos de servidor falham contra `b4101de`) |
+| **IR-2** Revogar o token administrativo não encerrava a conexão de host já estabelecida, que continuava emitindo convites | Baixa | **Corrigido neste PR:** geração da sessão administrativa; revogação e novo pareamento encerram (1008), de forma síncrona, os hosts autorizados por ela, e `invite` reconfere a autorização. A expiração encerra esses hosts só na próxima limpeza periódica (heartbeat, 10 s com os padrões) ou quando uma operação revalidar a autorização; janela residual de até cerca de 10 s (DR-1). Teste: `tests/admin-revocation.test.ts` (os casos de servidor falham contra `b4101de`) |
 | **IR-3** Revogações TURN disparadas sem espera no desligamento; podem não completar antes do `process.exit` (T6, §12) | Baixa (só com TURN real) | **Aceito temporariamente, só para a integração offline.** Correção obrigatória antes de qualquer exposição WAN: `releaseAll()` aguardado com timeout curto |
 | **IR-4** Corrida na emissão TURN: conexão que sai e é readmitida durante a chamada ao provedor recebe credencial registrada num estado órfão, sem revogação; a cota por conexão reinicia (inclui B-1) | Baixa (só com TURN real) | **Aceito temporariamente, só para a integração offline.** Correção obrigatória antes de qualquer exposição WAN: comparar a identidade do estado; teto global por janela |
 | **IR-5** = B-2 | Baixa | **Aceito temporariamente, só para a integração offline.** Correção obrigatória antes de qualquer exposição WAN (ver B-2) |
@@ -1599,6 +1602,24 @@ apenas para a integração offline.
 | **B-1** `IceBroker.release()` apaga o estado ao sair da sessão; `rejoin` do operador recomeça a cota de credenciais TURN | Baixa | **Aceito temporariamente, só para a integração offline**; exige token administrativo. Correção obrigatória antes de qualquer exposição WAN (com IR-4) |
 | **B-2** No HTTP, a validação do Access não limita verificações pendentes (só o upgrade tem `maxPendingAccessChecks`) | Baixa | **Aceito temporariamente, só para a integração offline**; atenuado pela borda do Access. Correção obrigatória antes de qualquer exposição WAN: limite também no HTTP |
 | **B-3** Adaptador `CloudflareTurnProvider` (emissão e revogação) não exercitado contra a API real; revogação que falha depende do TTL (padrão 2 h, mínimo 10 min) | Baixa | **Aceito temporariamente, só para a integração offline**; R5 e R6 comprovam no ambiente real antes de qualquer exposição WAN |
+
+**Achados da revisão independente do delta `b4101de..e007f4d` (29/10/2026).** Revisor sem participação na
+escrita do código, em modo somente leitura. Execuções: suíte completa em `e007f4d` (29/29 arquivos, 615/615
+testes); testes novos contra um clone descartável em `b4101de` (`malformed-path`: 5 falham com
+`ERR_INVALID_URL`, 1 passa; `admin-revocation`: 2 casos de integração falham, 1 passa); sondagens só em
+loopback. Parecer: **favorável com ressalvas para o escopo offline**; IR-1 e IR-2 corrigidos; Host, Origin e
+Access preservados; nenhum achado Crítico, Alto ou Médio. Limitações declaradas: sem Cloudflare Access nem
+TURN reais; o `closeTimeout` do `ws` foi inferido, não medido. A coluna Situação registra a **decisão
+arquitetural de 30/10/2026**.
+
+| Risco | Severidade | Situação |
+|---|---|---|
+| **DR-1** Depois da expiração do token administrativo, e até a próxima limpeza periódica, o host ainda sinaliza e pode obter credencial TURN: só `invite` reconfere `hostAuthorized`; `signal` e `ice-request` checam apenas a participação na sessão. **[Observado, 29/10/2026]** por sondagem em loopback: sinal de host expirado entregue ao convidado antes da limpeza; depois dela, host fora da sessão e fechado com 1008. A emissão TURN na janela foi inferida por leitura | Baixa | **Aceito temporariamente, só para a prontidão offline.** Correção e validação obrigatórias antes de qualquer exposição WAN: reconferir a autorização em toda mensagem de host, inclusive `ice-request`. Janela: até cerca de 10 s com os padrões (validade do token: 12 h). Revogação e substituição explícitas não têm essa janela |
+| **DR-2** A revogação do token não libera na hora as credenciais TURN do host encerrado: `enforceAdminRevocation` fecha a conexão, mas a liberação só ocorre no evento `close` do WebSocket | Baixa (só com TURN real) | **Aceito temporariamente, só para a prontidão offline.** Correção e validação obrigatórias antes de qualquer exposição WAN: liberar as credenciais (`iceBroker.release`) no próprio fluxo de revogação. [Inferido] cliente que não completa o fechamento retém as credenciais até o `closeTimeout` do `ws` (cerca de 30 s) |
+| **DR-3** Callbacks assíncronos fora dos novos `try/catch`: fim do corpo do pareamento (`pair()` agora executa os avisos de revogação de forma síncrona) e `.then`/`.catch` do Access (um `catch` que escreve 500 depois de cabeçalhos enviados lançaria `ERR_HTTP_HEADERS_SENT`) | Info | Limitação informativa registrada; não bloqueia o escopo offline. Nenhum gatilho realista encontrado; parte já existia antes do delta |
+| **DR-4** A regra de caminho é mais restritiva que o necessário: `\` também na query, absolute-form e `*` recebem 400 | Info | Limitação informativa registrada; não bloqueia o escopo offline. Nenhum fluxo do app depende dessas formas |
+| **DR-5** Lacunas de teste: caminho malformado com JWT válido do Access; `signal`/`ice-request` após a expiração (DR-1); liberação TURN na revogação (DR-2); asserção fraca em `admin-revocation.test.ts` (`toBeLessThanOrEqual`); o teste "corrida" exercita expiração, não revogação; `raw()` em `malformed-path.test.ts` sem timeout próprio | Info (teste) | Limitação informativa registrada; não bloqueia o escopo offline |
+| **DR-6** Este documento afirmava que a expiração do token "encerra" os hosts, sem mencionar que isso só ocorre na limpeza periódica ou numa revalidação | Info (documentação) | **Corrigido documentalmente nesta etapa** (§9.7, linha IR-2 acima e README). Sem alteração de código |
 
 ### 13.10 Execuções repetidas e mutações
 
@@ -1654,9 +1675,9 @@ fonte e referência. Verificações feitas antes disso ficam registradas como ev
 | A3 | Nenhum segredo versionado: tokens, `<UUID>.json` e `cert.pem` do túnel, `.env` real | `.gitignore` + busca no diff do PR | Pendente de reconfirmação no head publicado (sem achados em `b4101de` e nas alterações deste PR) |
 | A4 | Padrões fechados (`ORYN_ACCESS_MODE=off`, `ORYN_TURN_PROVIDER=off`, nenhum hostname público); listeners só em loopback literal, conferido depois do bind | `server/index.ts`, `server/server.ts`; testes `server-host`, `public-access` | Pendente de reconfirmação no head final |
 | A5 | Hostname público sem Access é recusado na partida; configuração ambígua de Access ou TURN impede a partida | Testes `public-access`, `cli-access` | Pendente de reconfirmação no head final |
-| A6 | README, este documento e a descrição do PR coerentes com o escopo offline | Revisão | Pendente: documentos atualizados neste PR; descrição do PR não publicada |
+| A6 | README, este documento e a descrição do PR coerentes com o escopo offline | Revisão | Pendente de nova validação: correção documental de DR-6 (30/10/2026) e atualização correspondente da descrição do PR |
 | A7 | R1–R8 registrados como **não executados**; relay e relay-tls **não** declarados comprovados | §13.1, §13.9 e README | Pendente de reconfirmação no head final |
-| A8 | Revisão independente concluída e achados tratados (corrigidos, aceitos ou adiados com registro) | Relatório da revisão; §13.9 | A revisão independente foi concluída. IR-1 e IR-2 foram corrigidos neste PR e possuem testes de regressão. Os achados IR-3 a IR-13 receberam decisão arquitetural em 29/10/2026, conforme §13.9 e §14.3. O aceite final de A8 permanece condicionado à verificação do HEAD publicado e à resolução de eventuais threads. |
+| A8 | Revisão independente concluída e achados tratados (corrigidos, aceitos ou adiados com registro) | Relatório da revisão; §13.9 | A revisão independente foi concluída. IR-1 e IR-2 foram corrigidos neste PR e possuem testes de regressão. Os achados IR-3 a IR-13 receberam decisão arquitetural em 29/10/2026, conforme §13.9 e §14.3. A revisão independente do delta `b4101de..e007f4d` foi concluída (favorável com ressalvas); DR-1 a DR-6 receberam decisão arquitetural em 30/10/2026 (§13.9, §14.3). O aceite final de A8 permanece condicionado à nova validação, à verificação do HEAD publicado e à resolução de eventuais threads. |
 | A9 | Exposição pública e testes reais com aprovação própria registrada antes de qualquer ativação | §13.5, §13.11 e esta seção | Pendente de confirmação na revisão final |
 
 ### 14.2 Processo do projeto × ruleset da `main`
@@ -1678,6 +1699,14 @@ fonte e referência. Verificações feitas antes disso ficam registradas como ev
   - IR-10 e IR-11: melhorias de hardening JWT/JWKS;
   - IR-12: lacuna de teste de path traversal; requer teste de integração real;
   - IR-13: melhoria de classificação de dependência.
+
+**Decisão arquitetural de 30/10/2026 sobre a revisão independente do delta `b4101de..e007f4d`:**
+
+- **Aceitos temporariamente, só para a prontidão offline, com correção e validação obrigatórias antes de
+  qualquer exposição WAN:** DR-1 (janela residual de até cerca de 10 s após a expiração do token
+  administrativo) e DR-2 (credenciais TURN do host revogado não liberadas na hora).
+- **Limitações informativas registradas, sem bloqueio para o escopo offline:** DR-3, DR-4 e DR-5.
+- **Corrigido documentalmente:** DR-6 (comportamento da expiração descrito em §9.7, §13.9 e README).
 
 Detalhes e evidências em §13.9. A exposição pública continua **proibida** (§14).
 

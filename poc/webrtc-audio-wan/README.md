@@ -49,6 +49,13 @@ Tunnel) e STUN/TURN gerenciado (Cloudflare). Plano, decisões e evidências em `
   (`tests/malformed-path.test.ts`, `tests/admin-revocation.test.ts`). IR-3 a IR-6 aceitos temporariamente só
   para a integração offline, com correção obrigatória antes de qualquer exposição WAN; IR-7 a IR-13 registrados
   como melhorias, validações ou lacunas de teste. Decisão e detalhes em `POC-02B.md` §13.9 e §14.3.
+  - Revogar ou substituir o token administrativo encerra na hora (1008) as conexões de operador autorizadas
+    por ele. A **expiração** do token (12 h) encerra essas conexões só na próxima limpeza periódica (até cerca
+    de 10 s com os padrões) ou quando uma operação revalidar a autorização; nessa janela o operador ainda
+    sinaliza (DR-1).
+  - Revisão independente do delta `b4101de..e007f4d`: DR-1 e DR-2 aceitos temporariamente só para a prontidão
+    offline, com correção e validação obrigatórias antes de qualquer exposição WAN; DR-3 a DR-5 registrados
+    como limitações informativas; DR-6 corrigido nesta documentação.
 
 ### Escopo proposto para integração
 
