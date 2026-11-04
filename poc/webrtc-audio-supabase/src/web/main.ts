@@ -11,7 +11,7 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { isUuid } from '../../supabase/functions/_shared/signal-contract.ts';
 import { PeerCall, type CallPhase, type CallStats, type PeerStates } from './call.ts';
 import { parseWebConfig, type WebConfig } from './config.ts';
-import { DISCONNECT_CHECKING, LobbyController, explainDisconnect, formatCallError, isClosingOwnCall, type Notice } from './rooms.ts';
+import { DISCONNECT_CHECKING, LobbyController, PEER_UNREACHABLE, disconnectPhase, explainDisconnect, formatCallError, isClosingOwnCall, type Notice } from './rooms.ts';
 import { renderLobby } from './rooms-view.ts';
 import { describePair, formatCodec, formatMetric } from './stats.ts';
 import { createSupabaseBackend } from './supabase-backend.ts';
@@ -75,6 +75,8 @@ let callActive = false;
 let lobby: LobbyController;
 /** Muda a cada chamada nova, logout e desconexão explicada: uma explicação de 4403 antiga não sobrescreve nada. */
 let disconnectTicket = 0;
+/** JWT atual, lido de forma síncrona no pagehide. Fica só em memória, como a sessão de login. */
+let accessToken: string | null = null;
 
 function setField(name: string, value: string): void {
   const node = document.querySelector<HTMLElement>(`[data-field="${name}"]`);
@@ -144,19 +146,25 @@ function renderPhase(phase: CallPhase, error?: string): void {
     ui.muteBtn.textContent = 'Mutar';
     setField('role', '—');
   }
+  if ((phase === 'connected' || phase === 'ended') && ui.error.textContent === PEER_UNREACHABLE.text) showNotice(null);
   // O dono encerrou a sala desta chamada por aqui: a queda que isso causa não é erro para quem encerrou.
+  if (phase === 'failed' && isClosingOwnCall(lobby?.state.busy ?? null, callRoomId)) setField('phase', PHASES.ended);
   if (phase === 'failed' && error && !isClosingOwnCall(lobby?.state.busy ?? null, callRoomId)) {
     const code = Number(/código (\d{4})/.exec(error)?.[1]);
     const technical = formatCallError(error, DISCONNECT_MESSAGES[code]);
     if (code === DISCONNECT.session && callRoomId) {
       // Sem veredito ainda: aviso neutro; o motivo vem da lista de salas (o código fica no registro).
       showNotice(DISCONNECT_CHECKING);
+      setField('phase', 'verificando o motivo');
       const ticket = ++disconnectTicket;
       const user = selfUserId;
       void explainDisconnect(callRoomId, technical, {
         listRooms: () => createSupabaseBackend(client).rpc<unknown[]>('list_my_rooms', {}),
         isCurrent: () => ticket === disconnectTicket && !callActive && selfUserId === user,
-        show: showNotice,
+        show: (notice) => {
+          showNotice(notice);
+          setField('phase', PHASES[disconnectPhase(notice)]);
+        },
       });
     } else {
       showNotice({ tone: 'error', text: technical });
@@ -198,7 +206,7 @@ function startCall(roomInput: string): void {
   callRoomId = roomId;
   ui.room.value = roomId;
   ui.callRoom.textContent = lobby.state.rooms.find((r) => r.room_id === roomId)?.name ?? roomId;
-  const backend = createSupabaseBackend(client);
+  const backend = createSupabaseBackend(client, { url: cfg.supabaseUrl, publishableKey: cfg.publishableKey, accessToken: () => accessToken });
   ui.status.hidden = false;
   ui.log.replaceChildren();
 
@@ -207,7 +215,7 @@ function startCall(roomInput: string): void {
       getUserMedia: (c) => navigator.mediaDevices.getUserMedia(c),
       createPeerConnection: (c) => new RTCPeerConnection(c),
       createSignaling: (handlers) => {
-        signaling = new SupabaseSignaling({ backend, roomId, selfUserId: userId, handlers, iceServers: cfg.iceServers, log: (m) => call === current && log(m) });
+        signaling = new SupabaseSignaling({ backend, roomId, selfUserId: userId, handlers, iceServers: cfg.iceServers, log: (m) => call === current && log(m), onPeerUnreachable: () => call === current && showNotice(PEER_UNREACHABLE) });
         return signaling;
       },
       audioCodecs: () => RTCRtpReceiver.getCapabilities?.('audio')?.codecs ?? null,
@@ -250,8 +258,12 @@ ui.muteBtn.addEventListener('click', () => {
   setField('mic', call.muted ? 'capturando (mutado)' : 'capturando');
 });
 ui.leaveBtn.addEventListener('click', () => void endCall());
-// Fechar a aba: tenta sair da sala; se não der tempo, a sessão vence sozinha em até 90 s.
-window.addEventListener('pagehide', () => call?.end());
+// Fechar ou recarregar a aba: sai da sala por um envio que sobrevive ao descarregamento. Se ele não chegar (rede,
+// queda do navegador), a sessão vence sozinha em até 90 s.
+window.addEventListener('pagehide', () => {
+  signaling?.closeOnPageHide();
+  call?.end();
+});
 
 // ---------- lobby (MVP 01) ----------
 
@@ -312,6 +324,7 @@ ui.loginForm.addEventListener('submit', (event) => {
     ui.loginBtn.disabled = false;
     if (error || !data.session || !data.user) return showError(`Login recusado (${authCode(error?.code)}).`);
     selfUserId = data.user.id;
+    accessToken = data.session.access_token;
     // Canais privados exigem o JWT do usuário no Realtime antes da inscrição.
     await client.realtime.setAuth(data.session.access_token);
     showLoggedIn(data.user.email);
@@ -344,7 +357,8 @@ try {
       if (callActive && callRoomId === roomId) await endCall();
     },
   });
-  client.auth.onAuthStateChange((event) => {
+  client.auth.onAuthStateChange((event, session) => {
+    accessToken = session?.access_token ?? null;
     if (event === 'TOKEN_REFRESHED') log('Token de acesso renovado.');
     if (event === 'SIGNED_OUT' && selfUserId !== null) {
       // Renovação falhou ou logout: a chamada não continua sem identidade válida.

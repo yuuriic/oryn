@@ -15,11 +15,34 @@ export const CHANNEL_JOIN_TIMEOUT_MS = 12_000;
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
-export function createSupabaseBackend(client: SupabaseClient): RoomBackend {
+/** O necessário para sair da sala sem o supabase-js, no descarregamento da página (ver leaveOnUnload). */
+export interface UnloadConfig {
+  url: string;
+  publishableKey: string;
+  /** JWT atual do usuário, lido na hora; null sem login. */
+  accessToken(): string | null;
+}
+
+export function createSupabaseBackend(client: SupabaseClient, unload?: UnloadConfig): RoomBackend {
   return {
     async rpc<T>(fn: string, args: Record<string, unknown>): Promise<RpcResult<T>> {
       const { data, error } = await client.rpc(fn, args);
       return { data: (data as T) ?? null, error: error ? error.message : null };
+    },
+
+    // O supabase-js resolve a sessão de forma assíncrona antes do fetch: numa recarga, a página descarrega antes
+    // e o leave_room nunca sai (o par fica sem bye até a sessão vencer). Aqui o fetch sai na própria chamada, com
+    // keepalive, que o navegador mantém depois do descarregamento.
+    leaveOnUnload(sessionId: string): boolean {
+      const token = unload?.accessToken();
+      if (!unload || !token) return false;
+      void fetch(`${unload.url}/rest/v1/rpc/leave_room`, {
+        method: 'POST',
+        keepalive: true,
+        headers: { apikey: unload.publishableKey, Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ p_session_id: sessionId }),
+      }).catch(() => undefined);
+      return true;
     },
 
     async invokeSignal(request: SignalRequest): Promise<TransportResponse> {

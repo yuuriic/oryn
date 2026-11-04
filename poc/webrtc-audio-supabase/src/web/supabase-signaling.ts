@@ -50,6 +50,8 @@ export interface RoomBackend {
   invokeSignal(request: SignalRequest): Promise<TransportResponse>;
   /** Assina o tópico privado; resolve quando SUBSCRIBED, rejeita se a entrada for recusada. */
   openChannel(topic: string, handlers: ChannelHandlers): Promise<ChannelHandle>;
+  /** Sai da sala por um envio que sobrevive ao descarregamento da página. False: não enviou (use a RPC). */
+  leaveOnUnload?(sessionId: string): boolean;
 }
 
 // ---------- regras determinísticas ----------
@@ -151,6 +153,8 @@ export interface SupabaseSignalingOptions {
   handlers: SignalingHandlers;
   iceServers: IceServerConfig[];
   log?: (message: string) => void;
+  /** O par foi dado como inalcançável e a recuperação começou (a página avisa, sem tratar como erro). */
+  onPeerUnreachable?: () => void;
   now?: () => number;
   randomUUID?: () => string;
   heartbeatMs?: number;
@@ -171,7 +175,15 @@ export interface SupabaseSignalingOptions {
 interface Outgoing {
   request: SignalRequest;
   peer: string;
+  /** restart-request: vale mesmo depois de `peer` deixar de ser o par atual (é justamente para o suspeito). */
+  control?: boolean;
 }
+
+/** Recuperações por par na janela: limita a renegociação quando os dois estão vivos e não há caminho entre eles. */
+const MAX_RECOVERIES = 2;
+const RECOVERY_WINDOW_MS = 60_000;
+
+export type PeerLossReason = 'ice-failed' | 'negotiation-timeout';
 
 /** Lote de confirmação: `ids` fixos; `confirmed` = soma do que o banco contou para estes ids. */
 interface AckBatch {
@@ -188,6 +200,14 @@ export class SupabaseSignaling implements SignalingLike {
   private state: State = 'new';
   private sessionId: string | null = null;
   private peer: string | null = null;
+  /**
+   * Pares dados como inalcançáveis, que ainda constam vivos no roster (até 90 s sem batimento, sem como saber antes).
+   * Não são adotados pelo roster: só voltam com prova de vida (sinal recebido, autenticado pelo servidor).
+   */
+  private readonly suspects = new Set<string>();
+  /** Sessões cujos sinais foram ignorados por haver outro par: se forem adotadas, a offer delas se perdeu. */
+  private readonly ignoredFrom = new Set<string>();
+  private readonly recoveries = new Map<string, { count: number; last: number }>();
   private channel: ChannelHandle | null = null;
   private receiver: SignalReceiver | null = null;
   private timers: ReturnType<typeof setInterval>[] = [];
@@ -233,6 +253,7 @@ export class SupabaseSignaling implements SignalingLike {
   constructor(options: SupabaseSignalingOptions) {
     this.o = {
       log: () => undefined,
+      onPeerUnreachable: () => undefined,
       now: Date.now,
       randomUUID: () => crypto.randomUUID(),
       heartbeatMs: 30_000,
@@ -323,6 +344,90 @@ export class SupabaseSignaling implements SignalingLike {
     }
   }
 
+  /**
+   * O PeerCall perdeu o caminho até o par (falha de ICE ou negociação sem resposta). A falha de ICE vem em cerca de
+   * 17-18 s, antes do batimento (30 s) e bem antes de a sessão do par vencer (90 s): aqui ainda não se sabe se ele
+   * caiu ou se foi só a rede. Sem encerrar a sessão: pede prova de vida (restart-request), confere a própria sessão
+   * na hora (sala encerrada ou sessão vencida viram 4403) e deixa outra sessão assumir.
+   * False: sem recuperação possível (outro par ou orçamento esgotado), e a falha é do PeerCall.
+   */
+  peerUnreachable(epoch: number, reason: PeerLossReason): boolean {
+    const peer = this.peer;
+    if (this.isClosed() || !peer || !this.sessionId || epoch !== pairEpoch(this.sessionId, peer)) return false;
+    if (!this.spendRecovery(peer)) {
+      this.o.log(`Par inalcançável (${reason}): tentativas de recuperação esgotadas.`);
+      return false;
+    }
+    this.o.log(`Par inalcançável (${reason}); aguardando reconexão.`);
+    this.peer = null;
+    this.suspects.add(peer);
+    this.dropQueued(peer);
+    this.sendRestart(peer, 'ice-failed');
+    this.o.onPeerUnreachable();
+    this.emit({ type: 'peer-left', epoch });
+    void this.heartbeat().then(() => this.discover(false));
+    return true;
+  }
+
+  private spendRecovery(peer: string): boolean {
+    const now = this.o.now();
+    const entry = this.recoveries.get(peer);
+    const count = entry && now - entry.last <= RECOVERY_WINDOW_MS ? entry.count : 0;
+    if (count >= MAX_RECOVERIES) return false;
+    this.recoveries.set(peer, { count: count + 1, last: now });
+    return true;
+  }
+
+  private dropQueued(peer: string): void {
+    const before = this.queue.length;
+    this.queue = this.queue.filter((q) => q.peer !== peer);
+    this.counters.dropped += before - this.queue.length;
+  }
+
+  /** `ice-failed` pede que o par refaça a conexão; `renegotiate` responde e nunca gera resposta: não há como virar loop. */
+  private sendRestart(peer: string, reason: 'ice-failed' | 'renegotiate'): void {
+    const sid = this.sessionId;
+    if (!sid) return;
+    const request: SignalRequest = { session_id: sid, to_session_id: peer, client_msg_id: this.o.randomUUID(), pair_epoch: pairEpoch(sid, peer), kind: 'restart-request', payload: { reason } };
+    this.queue.push({ request, peer, control: true });
+    void this.pump();
+  }
+
+  /** O remetente vem do servidor (sessão viva da mesma sala): é prova de vida. */
+  private onRestartRequest(env: SignalEnvelope): void {
+    const from = env.from_session;
+    const reason = (env.payload as { reason?: unknown }).reason;
+    if (reason !== 'ice-failed' && reason !== 'renegotiate') return this.o.log('Pedido de reconexão com outro motivo ignorado.');
+    if (this.peer === null) {
+      this.suspects.delete(from);
+      this.ignoredFrom.delete(from); // quem pediu já refaz a própria parte
+      this.adopt(from);
+      return;
+    }
+    if (from !== this.peer) {
+      this.counters.ignored += 1;
+      this.ignoredFrom.add(from);
+      return this.o.log('Pedido de reconexão de terceira sessão ignorado (1:1).');
+    }
+    if (reason === 'renegotiate') return; // resposta a um pedido nosso: o par já está em andamento
+    if (!this.spendRecovery(from)) return this.o.log('Pedido de reconexão ignorado: tentativas esgotadas.');
+    this.o.log('O par pediu reconexão.');
+    const epoch = pairEpoch(this.sessionId!, from);
+    this.peer = null;
+    this.dropQueued(from);
+    this.sendRestart(from, 'renegotiate'); // antes da offer, na ordem da fila
+    this.emit({ type: 'peer-left', epoch });
+    this.adopt(from);
+  }
+
+  /** Como close(), para o pagehide: a saída da sala (bye para o par) vai por um envio que sobrevive à página. */
+  closeOnPageHide(): void {
+    if (this.isClosed()) return;
+    const sid = this.sessionId;
+    if (sid && this.o.backend.leaveOnUnload?.(sid)) this.sessionId = null; // leave() não repete pela RPC
+    this.close();
+  }
+
   /** Idempotente. Para timers, descarta a fila, sai da sala (bye para o par) e remove o canal. */
   close(): void {
     if (this.state === 'closed') return;
@@ -362,7 +467,14 @@ export class SupabaseSignaling implements SignalingLike {
     if (this.memberGone(res.error)) return;
     const roster = (res.data ?? []).map(parseRosterEntry).filter((e): e is RosterEntry => e !== null);
     if (res.error) this.o.log(`Roster indisponível (${shortCode(res.error)}).`);
-    const others = roster.filter((e) => !e.is_self && e.session_id !== this.sessionId);
+    if (!res.error) {
+      for (const suspect of [...this.suspects]) {
+        if (roster.some((e) => e.session_id === suspect)) continue;
+        this.forgetSuspect(suspect);
+        this.o.log('Par saiu (sessão vencida).');
+      }
+    }
+    const others = roster.filter((e) => !e.is_self && e.session_id !== this.sessionId && !this.suspects.has(e.session_id));
     if (initial) {
       const first = others[0];
       if (first) this.peer = first.session_id;
@@ -387,7 +499,15 @@ export class SupabaseSignaling implements SignalingLike {
     if (!this.sessionId || this.peer !== null) return;
     this.peer = peer;
     this.o.log(`Par adotado: ${peer.slice(0, 8)}…`);
+    // A offer dele foi ignorada enquanto havia outro par: quem só responde precisa pedir que ela venha de novo.
+    if (this.ignoredFrom.delete(peer) && this.roleWith(peer) === 'guest') this.sendRestart(peer, 'ice-failed');
     this.emit({ type: 'peer-joined', epoch: pairEpoch(this.sessionId, peer), role: this.roleWith(peer) });
+  }
+
+  private forgetSuspect(session: string): void {
+    this.suspects.delete(session);
+    this.ignoredFrom.delete(session);
+    this.receiver?.forgetPeer(session);
   }
 
   private dropPeer(reason: string): void {
@@ -427,6 +547,10 @@ export class SupabaseSignaling implements SignalingLike {
     if (ctl.session_id === this.sessionId) return;
     if (ctl.event === 'bye') {
       if (ctl.session_id === this.peer) this.dropPeer('bye');
+      else if (this.suspects.has(ctl.session_id)) {
+        this.forgetSuspect(ctl.session_id);
+        this.o.log('Par saiu (bye).');
+      }
       return;
     }
     // hello: confirma pelo roster (sessão viva e de OUTRA conta) antes de adotar.
@@ -440,9 +564,12 @@ export class SupabaseSignaling implements SignalingLike {
       this.counters.ignored += 1;
       return this.o.log('Sinal de outra sessão da própria conta ignorado.');
     }
+    if (env.kind === 'restart-request') return this.onRestartRequest(env);
+    this.suspects.delete(env.from_session);
     if (this.peer === null) this.adopt(env.from_session); // chegou antes do hello/roster: o servidor já validou
     if (env.from_session !== this.peer) {
       this.counters.ignored += 1;
+      this.ignoredFrom.add(env.from_session);
       return this.o.log('Sinal de terceira sessão ignorado (1:1).');
     }
     const payload = fromEnvelope(env);
@@ -488,7 +615,7 @@ export class SupabaseSignaling implements SignalingLike {
           continue;
         }
         const item = this.queue.shift()!;
-        if (item.peer !== this.peer) {
+        if (!item.control && item.peer !== this.peer) {
           this.counters.dropped += 1;
           continue;
         }
@@ -531,6 +658,8 @@ export class SupabaseSignaling implements SignalingLike {
       if (this.isClosed() || this.memberGone(roster.error) || roster.error) return;
       const live = (roster.data ?? []).map(parseRosterEntry).some((e) => e?.session_id === this.peer);
       if (!live) this.dropPeer('sessão vencida');
+    } else if (this.suspects.size > 0) {
+      this.discover(false); // o suspeito venceu? outra sessão assumiu?
     }
   }
 

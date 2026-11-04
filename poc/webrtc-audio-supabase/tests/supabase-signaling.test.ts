@@ -1,9 +1,12 @@
 // SupabaseSignaling (02C, integração): adaptador do PeerCall sobre o backend Supabase. Backend em memória com
 // o núcleo REAL da Edge Function (tests/helpers/web-fakes.ts). Sem rede.
+import { readFileSync } from 'node:fs';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MAX_SDP_LENGTH, parseSignalRequest, type SignalEnvelope } from '../supabase/functions/_shared/signal-contract.ts';
 import type { ServerMessage, SignalPayload } from '../src/web/protocol.ts';
 import { DISCONNECT, RateWindow, SupabaseSignaling, fromEnvelope, isInitiator, pairEpoch, toRequestPayload, type SupabaseSignalingOptions } from '../src/web/supabase-signaling.ts';
+import { createSupabaseBackend } from '../src/web/supabase-backend.ts';
 import { FakeSupabase, ROOM, USERS, settle } from './helpers/web-fakes.ts';
 
 const STUN = [{ urls: ['stun:stun.l.google.com:19302'] }];
@@ -352,6 +355,81 @@ describe('batimento e par que cai', () => {
     expect(a.disconnects).toEqual([]);
     handlers.onStatus('CLOSED');
     expect(a.disconnects).toEqual([DISCONNECT.channel]);
+  });
+});
+
+describe('saída no descarregamento da página (pagehide)', () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  it('closeOnPageHide(): sai pelo envio que sobrevive ao descarregamento, uma vez e sem repetir pela RPC', async () => {
+    const backend = server.backend(USERS.owner);
+    const leaveOnUnload = vi.fn(() => true);
+    const a = await joined(USERS.owner, { backend: { ...backend, leaveOnUnload } });
+    const sid = a.s.session!;
+    a.s.closeOnPageHide();
+    a.s.closeOnPageHide();
+    await a.s.closed;
+    expect(leaveOnUnload).toHaveBeenCalledTimes(1);
+    expect(leaveOnUnload).toHaveBeenCalledWith(sid);
+    expect(rpcs(USERS.owner, 'leave_room')).toHaveLength(0);
+    expect(server.subscribers()).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('closeOnPageHide(): sem esse envio (sem token ou backend sem suporte), cai na saída normal pela RPC', async () => {
+    for (const extra of [{ leaveOnUnload: () => false }, {}]) {
+      const backend = server.backend(USERS.owner);
+      const a = await joined(USERS.owner, { backend: { ...backend, ...extra } });
+      const before = rpcs(USERS.owner, 'leave_room').length;
+      a.s.closeOnPageHide();
+      await a.s.closed;
+      expect(rpcs(USERS.owner, 'leave_room')).toHaveLength(before + 1);
+    }
+    expect(server.liveSessions()).toEqual([]);
+  });
+
+  it('closeOnPageHide(): antes da entrada na sala, não há sessão para encerrar e nada é enviado', () => {
+    const leaveOnUnload = vi.fn(() => true);
+    const a = client(USERS.owner, { backend: { ...server.backend(USERS.owner), leaveOnUnload } });
+    a.s.closeOnPageHide();
+    expect(leaveOnUnload).not.toHaveBeenCalled();
+  });
+
+  it('leaveOnUnload do backend real: POST síncrono com keepalive, chave publicável e JWT do usuário', () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(null, { status: 204 })));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const backend = createSupabaseBackend({} as SupabaseClient, {
+      url: 'http://127.0.0.1:54321',
+      publishableKey: 'sb_publishable_' + 'chave',
+      accessToken: () => 'jwt-do-usuario',
+    });
+    expect(backend.leaveOnUnload?.('sessao-1')).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1); // já disparado ao retornar: a página pode não ter outra chance
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('http://127.0.0.1:54321/rest/v1/rpc/leave_room');
+    expect(init.method).toBe('POST');
+    expect(init.keepalive).toBe(true);
+    expect(init.headers).toEqual({ apikey: 'sb_publishable_' + 'chave', Authorization: 'Bearer jwt-do-usuario', 'Content-Type': 'application/json' });
+    expect(JSON.parse(init.body as string)).toEqual({ p_session_id: 'sessao-1' });
+  });
+
+  it('leaveOnUnload do backend real: sem JWT ou sem configuração, não envia e devolve false', () => {
+    const fetchMock = vi.fn();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const noToken = createSupabaseBackend({} as SupabaseClient, { url: 'http://127.0.0.1:54321', publishableKey: 'k', accessToken: () => null });
+    expect(noToken.leaveOnUnload?.('sessao-1')).toBe(false);
+    expect(createSupabaseBackend({} as SupabaseClient).leaveOnUnload?.('sessao-1')).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('a página usa essa saída no pagehide, antes de encerrar a chamada', () => {
+    const main = readFileSync(new URL('../src/web/main.ts', import.meta.url), 'utf8');
+    const handler = /addEventListener\('pagehide', \(\) => \{([\s\S]*?)\}\);/.exec(main)?.[1] ?? '';
+    expect(handler.indexOf('signaling?.closeOnPageHide()')).toBeGreaterThanOrEqual(0);
+    expect(handler.indexOf('signaling?.closeOnPageHide()')).toBeLessThan(handler.indexOf('call?.end()'));
   });
 });
 
