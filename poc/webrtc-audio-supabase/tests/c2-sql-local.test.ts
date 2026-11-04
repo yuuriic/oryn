@@ -29,7 +29,7 @@ const AUTH_STUBS = `
   create table auth.refresh_tokens (id bigserial primary key, session_id uuid, revoked boolean not null default false);
   create schema supabase_migrations;
   create table supabase_migrations.schema_migrations (version text primary key);
-  insert into supabase_migrations.schema_migrations values ('20261023000100'), ('20261023000200'), ('20261023000300');`;
+  insert into supabase_migrations.schema_migrations values ('20261023000100'), ('20261023000200'), ('20261023000300'), ('20261028000400');`;
 
 const EMAILS = { owner: 'dono+oryn@teste.example', member: 'membro+oryn@teste.example', stranger: 'estranho+oryn@teste.example' };
 type Accounts = Record<keyof typeof EMAILS, { uid: string }>;
@@ -280,5 +280,22 @@ describe('12/13: somente leitura', () => {
     expect(sessions(s13)).toBe(sessions(s12));
     expect(accounts(s12).length).toBeGreaterThan(400);
     expect(sessions(s12)).toMatch(/not_after[\s\S]*not coalesce\(r\.revoked, false\)/);
+  });
+
+  it('MVP 01: o oryn_scope do 08 (entradas) é idêntico ao do 07 e do 11, inclusive a fórmula do total/md5', () => {
+    const core = (t: string) => t.slice(t.indexOf('oryn_scope as ('), t.indexOf('\n),', t.indexOf('oryn_scope as (')));
+    const [s07, s08, s11] = ['07_initial_state.sql', '08_scope_entries.sql', '11_c0w_postflight.sql'].map(sql) as [string, string, string];
+    expect(core(s08).length).toBeGreaterThan(1000);
+    expect(core(s08)).toBe(core(s07));
+    expect(core(s08)).toBe(core(s11));
+    expect(s08).toContain(`pg_catalog.md5(coalesce(pg_catalog.string_agg(o, '|' order by o), ''))`);
+    expect(s11).toContain(`pg_catalog.md5(coalesce(pg_catalog.string_agg(o, '|' order by o), ''))`);
+  });
+
+  it('MVP 01: 08 roda em transação READ ONLY, termina em ROLLBACK e não tem comando de escrita', () => {
+    const text = sql('08_scope_entries.sql');
+    expect(text).toMatch(/^begin;\r?\nset transaction read only;/m);
+    expect(text.trimEnd()).toMatch(/rollback;$/);
+    expect(text.replace(/--.*$/gm, '')).not.toMatch(/\b(insert|update|delete|truncate|create|drop|alter|grant|revoke|copy|call|perform)\b/i);
   });
 });

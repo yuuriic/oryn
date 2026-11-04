@@ -16,7 +16,8 @@ user_rpcs(sig) as (values
   ('public.create_room_invite(uuid,integer)'), ('public.revoke_room_invite(uuid)'),
   ('public.redeem_room_invite(text,text)'), ('public.join_room(uuid)'), ('public.touch_session(uuid)'),
   ('public.leave_room(uuid)'), ('public.get_roster(uuid)'),
-  ('public.authorize_signal(uuid,uuid,uuid,text,integer,integer)'), ('public.ack_signals(uuid,uuid[])')),
+  ('public.authorize_signal(uuid,uuid,uuid,text,integer,integer)'), ('public.ack_signals(uuid,uuid[])'),
+  ('public.list_my_rooms()'), ('public.close_room(uuid)')),
 internal_fns(sig) as (values
   ('oryn.admin_issue_creator_invite(integer,integer)'), ('oryn.publish_control(uuid,uuid,text,jsonb)'),
   ('oryn.new_token()'), ('oryn.token_hash(text)'), ('oryn.is_active_member(uuid,uuid)'), ('oryn.require_uid()')),
@@ -97,8 +98,8 @@ checks(item, expected, actual) as (
   union all
   -- Auditoria 02C.1B.0A: o conjunto exposto em public é EXATAMENTE o contrato (num projeto novo, public
   -- começa vazio; qualquer função a mais precisa de revisão antes de seguir).
-  select 'public contém só as 12 RPCs do contrato', true,
-         (select pg_catalog.count(*) = 12 from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+  select 'public contém só as 14 RPCs do contrato', true,
+         (select pg_catalog.count(*) = 14 from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid = p.pronamespace
            where n.nspname = 'public')
          and not exists (select 1 from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid = p.pronamespace
                           where n.nspname = 'public' and not p.prosecdef)

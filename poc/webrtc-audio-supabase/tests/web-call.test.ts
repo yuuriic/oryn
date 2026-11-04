@@ -210,3 +210,37 @@ describe('chamada 1:1 pelo Supabase (PeerCall + SupabaseSignaling + núcleo da E
     expect(failed.streams[0]!.track.readyState).toBe('ended');
   });
 });
+
+describe('MVP 01: sala encerrada durante a chamada', () => {
+  it('conectados → close_room: os dois lados derrubam a mídia e terminam em failed com o código 4403', async () => {
+    const owner = side(USERS.owner);
+    const member = side(USERS.member);
+    await start(owner);
+    await start(member);
+    expect([owner.call.phase, member.call.phase]).toEqual(['connected', 'connected']);
+    server.closeRoom();
+    await settle(3000);
+    for (const s of [owner, member]) {
+      expect(s.call.phase).toBe('failed');
+      expect(s.errors.at(-1)).toMatch(new RegExp(`código ${DISCONNECT.session}`));
+      expect(s.pcs[0]!.connectionState).toBe('closed');
+      expect(s.remote.at(-1)).toBeNull();
+    }
+    expect(server.liveSessions()).toEqual([]);
+  });
+
+  it('regressão: o outro só sai da chamada → waiting-peer, sem falha; depois reconecta', async () => {
+    const owner = side(USERS.owner);
+    const member = side(USERS.member);
+    await start(owner);
+    await start(member);
+    member.call.end();
+    await settle(3000);
+    expect(owner.call.phase).toBe('waiting-peer');
+    expect(owner.errors).toEqual([]);
+    const again = side(USERS.member);
+    await start(again);
+    expect(owner.call.phase).toBe('connected');
+    expect(again.call.phase).toBe('connected');
+  });
+});
