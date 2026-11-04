@@ -72,6 +72,14 @@ export interface Notice {
   text: string;
 }
 
+/** A conexão com o par caiu e a sessão continua: pode ser só a rede. Não é erro enquanto há como voltar. */
+export const PEER_UNREACHABLE: Notice = { tone: 'info', text: 'Conexão com o outro participante perdida. Aguardando reconexão…' };
+
+/** Fase mostrada depois de explicar um 4403: motivo confirmado é fim normal da chamada, não falha. */
+export function disconnectPhase(notice: Notice): 'ended' | 'failed' {
+  return notice.tone === 'info' ? 'ended' : 'failed';
+}
+
 /** Aviso enquanto a classificação de um 4403 está pendente. */
 export const DISCONNECT_CHECKING: Notice = { tone: 'info', text: 'Verificando o motivo…' };
 

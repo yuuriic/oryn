@@ -1214,8 +1214,13 @@ estado deixado. Nada aqui altera RLS, migrações, permissões, Auth ou salas.
    expirou". Sem veredito definitivo se a consulta falhar, vier fora do contrato ou se a sala não estiver numa
    lista cheia (50).
 
-Se o `bye` se perder (Broadcast do banco não tem garantia de entrega, só sai depois do commit), o batimento
-seguinte recebe `session-invalid` e encerra com `4403` em até 30 s.
+Se o `bye` se perder (Broadcast do banco não tem garantia de entrega, só sai depois do commit), quem ainda tem o
+par na chamada encerra com `4403` logo depois da falha de ICE (§14.4). Sem par, o batimento seguinte recebe
+`session-invalid` e encerra com `4403` em até 30 s.
+
+Motivo confirmado de encerramento ou expiração é informação: o aviso não cita o código, a fase mostrada é "encerrada"
+e o registro traz `Desconexão: … (código 4403)`, sem o rótulo de erro. O navegador ainda registra no console o `403`
+do `get_roster`: é a resposta esperada, e a página não controla essa linha.
 
 ### 14.1 Implantação ⛔ (executada em 2026-10-28; o texto abaixo fica como procedimento)
 
@@ -1256,9 +1261,13 @@ e S4 `20261023000100,20261023000200,20261023000300,20261028000400`.
 
 ### 14.3 Riscos conhecidos
 
-- **Sinalização:** o `bye` é entrega no máximo uma vez. Se ele se perder, o áudio P2P pode continuar até cerca de
-  30 s depois do encerramento, até o batimento derrubar a sessão. Um membro sozinho na sala (sem par) não recebe
-  `bye` nenhum e sai pelo batimento.
+- **Sinalização:** o `bye` é entrega no máximo uma vez. Com o `bye` perdido e o dono fora da chamada, o áudio P2P pode
+  continuar até cerca de 30 s depois do encerramento, até o batimento derrubar a sessão (previsto, **não medido**). Com
+  o dono na chamada, o áudio para na hora e o membro vê "sala encerrada" em cerca de 18 s (§14.4). Um membro sozinho na
+  sala (sem par) não recebe `bye` nenhum e sai pelo batimento.
+- **Sessão fantasma:** por até 90 s, uma sessão que caiu continua viva no roster, sem como distinguir antes disso. O
+  limite de 2 sessões por conta vale nesse intervalo: duas quedas seguidas fazem a 3ª entrada ser recusada com "aguarde
+  até 90 s". O `join_room` revoga as sessões vencidas da própria conta na entrada seguinte.
 - **Convites:** um convite que estava sendo resgatado no instante do encerramento fica sem `revoked_at`, mas é
   inútil. Invariante que precisa continuar valendo: **convite de sala utilizável ⇔ pendente e sala aberta**,
   conferido sob trava da sala por `create_room_invite` e `redeem_room_invite`. Toda função futura que aceite
@@ -1269,3 +1278,48 @@ e S4 `20261023000100,20261023000200,20261023000300,20261028000400`.
 - **Lista:** um membro só no lobby (fora da chamada) vê o encerramento quando atualiza a lista.
 - **Reversão:** o `91_rollback_0400.sql` não desfaz dados (salas encerradas continuam encerradas). Sem a 0400, o
   lobby mostra erro de carga.
+
+### 14.4 Queda do par, falha de ICE e recuperação
+
+**Antes (medido em 2026-11-03, stack local):** a falha de ICE era fatal. Sem `bye`, o `connectionState` chegava a
+`failed` em cerca de **17-18 s**, antes do batimento (30 s) e bem antes de a sessão do par vencer (90 s). Quem ficava via
+"A conexão WebRTC falhou", mesmo com a sala encerrada normalmente, e a sessão fantasma bloqueava a reconexão: uma nova
+sessão do par era ignorada ("terceira sessão") e entrar de novo terminava em "Tempo de negociação esgotado".
+
+**Agora, sem mudança de migração, RPC ou contrato da Edge Function:**
+- a falha de ICE e o tempo de negociação esgotado passam por `SupabaseSignaling.peerUnreachable`: o par vira **suspeito**
+  e a sessão na sala continua, sem criar sessão nova;
+- o suspeito não é adotado de novo pelo roster, que o mostra vivo por até 90 s. Só volta com **prova de vida**: um sinal
+  recebido, cujo remetente é validado pelo servidor. Outra sessão pode assumir no lugar dele;
+- a prova de vida usa o `restart-request` que já existia no contrato: `ice-failed` pede que o par refaça a conexão, e
+  `renegotiate` responde sem gerar nova mensagem, o que impede loop;
+- orçamento de **2 recuperações por par** a cada 60 s. Esgotado, a falha aparece como antes;
+- a própria sessão é conferida na hora (batimento e roster), então sala encerrada, sessão vencida e membro removido
+  não esperam os 30 s do batimento.
+
+| Situação | O que acontece | Aviso |
+|---|---|---|
+| Oscilação curta (ICE `disconnected`) | O ICE volta sozinho, com a mesma conexão | Nenhum |
+| Interrupção com os dois vivos (ICE `failed`) | Par refeito depois que a rede volta, sem sessão nova | Informativo: "Aguardando reconexão…", limpo ao conectar |
+| Queda real do par | Fica aguardando; a sessão nova do par assume | Informativo, limpo ao conectar |
+| Par fantasma ao entrar na sala | Negociação vence em 20 s e fica aguardando | Informativo |
+| Sem caminho entre dois vivos | Até 2 recuperações; depois encerra | Erro de ICE ou de negociação, como antes |
+| Própria sessão vencida | `4403`, motivo pela lista de salas | Informativo: "sessão expirou" |
+| Sala encerrada, com ou sem `bye` | `4403`, motivo pela lista de salas | Informativo: "sala encerrada" |
+| Membro removido | `4403`, motivo pela lista de salas | Erro: "não participa mais" |
+| `4403` sem motivo confirmado | Lista de salas indisponível | Erro com o código técnico |
+
+**Medido em 2026-11-04** (stack local, Chrome headless, microfone falso, as duas pontas na mesma máquina; a interrupção
+congela o processo de rede do Chrome do membro):
+- detecção da queda ou interrupção: 17,7-18,5 s;
+- interrupção de 25 s: reconexão 1,2 s depois de a rede voltar, com áudio nos dois sentidos, 1 conexão refeita e 0 sessões
+  novas;
+- interrupção de 125 s: 1 único pedido, fantasma esquecida ao vencer, membro volta com "sessão expirou" e reentra;
+- queda real com o par voltando depois: reconexão em 189 ms. Com o par voltando antes de o dono perceber: conecta em
+  cerca de 18 s, quando a falha de ICE libera o par antigo;
+- `bye` perdido com o dono na chamada: "sala encerrada" em 17,8 s, nunca como alerta.
+
+**Pendente (não reproduzido):** microfones reais e audição humana; NAT real e redes diferentes; Safari/iOS; queda de
+rede real de Wi-Fi ou 5G; laptop em suspensão, em que o sistema pode encerrar a faixa do microfone e o erro
+"microfone desconectado" é o esperado; `bye` perdido com o dono fora da chamada; esgotamento do orçamento com dois
+navegadores reais, coberto só em `tests/peer-recovery.test.ts`.

@@ -193,6 +193,8 @@ de deploy, Etapa 4 ⛔. Operação, validação manual e riscos: runbook §14.
 - **Encerramento visto por quem está na chamada:** `bye` → roster `not-member` → desconexão `4403`, e o motivo
   ("sala encerrada", "não participa mais" ou "sessão expirou") vem de uma consulta ao `list_my_rooms`. Se o `bye`
   se perder, o batimento encerra em até 30 s.
+- **Queda do par e falha de ICE** não encerram mais a chamada de quem ficou: a sessão continua, aguardando reconexão, com
+  no máximo 2 recuperações por par a cada 60 s (runbook §14.4).
 - **Fora do escopo:** convites pela interface, remover membro, grupo, TURN.
 
 ## Modelo de segurança

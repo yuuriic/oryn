@@ -73,6 +73,20 @@ describe('garantias estáticas do frontend', () => {
     expect(csp).toMatch(/connect-src 'self' https:\/\/\*\.supabase\.co wss:\/\/\*\.supabase\.co/);
   });
 
+  it('a CSP alcança o stack local que a configuração aceita, e HTTP sem TLS só no loopback', () => {
+    // Regressão: parseWebConfig aceita http://127.0.0.1 e a CSP só liberava ws:, então o login no stack local
+    // era bloqueado pelo navegador e aparecia como "Login recusado (erro)".
+    const csp = /Content-Security-Policy"\s+content="([^"]+)"/.exec(read('index.html'))?.[1] ?? '';
+    const connect = (/connect-src ([^;]+)/.exec(csp)?.[1] ?? '').split(/\s+/);
+    for (const host of ['127.0.0.1', 'localhost']) {
+      expect(ok({ VITE_SUPABASE_URL: `http://${host}:54321` }).supabaseUrl).toBe(`http://${host}:54321`);
+      expect(connect).toContain(`http://${host}:*`);
+      expect(connect).toContain(`ws://${host}:*`);
+    }
+    const insecure = connect.filter((source) => /^(http|ws):/.test(source));
+    expect(insecure.every((source) => /^(http|ws):\/\/(127\.0\.0\.1|localhost):\*$/.test(source))).toBe(true);
+  });
+
   it('configuração local fora do Git: .env.local e dist/ ignorados; .env.example versionável e sem valores', () => {
     const ignored = (p: string) => {
       try {

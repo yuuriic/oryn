@@ -98,6 +98,8 @@ export interface SignalingLike {
   connect(): Promise<void>;
   send(message: ClientMessage): boolean;
   close(): void;
+  /** 02C: o caminho até o par se perdeu. True: a sinalização assume a recuperação (emite peer-left); false: é falha. */
+  peerUnreachable?(epoch: number, reason: 'ice-failed' | 'negotiation-timeout'): boolean;
 }
 
 export interface CallDeps {
@@ -242,7 +244,8 @@ export class PeerCall {
     this.setPhase('connecting-signaling');
     const signaling = this.deps.createSignaling({
       onMessage: (m) => this.onServerMessage(m),
-      onDisconnected: (code) => this.fail(`Conexão com a sinalização perdida (código ${code}).`),
+      // 4403: a sessão deixou de valer, o que inclui o encerramento normal da sala. O código fica no registro, sem rótulo de erro.
+      onDisconnected: (code) => this.fail(`Conexão com a sinalização perdida (código ${code}).`, code === 4403 ? 'Desconexão' : 'Erro'),
       onInvalid: () => this.cb.onLog('Mensagem inválida do servidor descartada.'),
     });
     this.signaling = signaling;
@@ -424,7 +427,7 @@ export class PeerCall {
     this.setPhase('negotiating');
     this.negotiationTimer = setTimeout(() => {
       if (this.pc === pc && this.phaseValue === 'negotiating') {
-        this.fail('Tempo de negociação esgotado: a conexão WebRTC não foi estabelecida.');
+        this.peerLost('negotiation-timeout', 'Tempo de negociação esgotado: a conexão WebRTC não foi estabelecida.');
       }
     }, this.deps.negotiationTimeoutMs ?? 20_000);
     this.statsTimer = setInterval(() => void this.collectStats(pc, epoch), this.deps.statsIntervalMs ?? 1000);
@@ -466,7 +469,8 @@ export class PeerCall {
         this.clearNegotiationTimer();
         this.setPhase('connected');
       } else if (state === 'failed') {
-        this.fail(
+        this.peerLost(
+          'ice-failed',
           this.iceMode === 'relay' || this.iceMode === 'relay-tls'
             ? `A conexão WebRTC falhou no modo ${this.iceMode} (servidor TURN inalcançável ou credenciais recusadas; sem fallback).`
             : 'A conexão WebRTC falhou (nenhum par ICE funcionou).',
@@ -653,9 +657,14 @@ export class PeerCall {
     this.fail('O microfone foi desconectado ou encerrado pelo sistema.');
   };
 
-  private fail(message: string): void {
+  private peerLost(reason: 'ice-failed' | 'negotiation-timeout', message: string): void {
+    if (this.signaling?.peerUnreachable?.(this.epoch, reason)) return;
+    this.fail(message);
+  }
+
+  private fail(message: string, label = 'Erro'): void {
     if (this.disposed) return;
-    this.cb.onLog(`Erro: ${message}`);
+    this.cb.onLog(`${label}: ${message}`);
     this.signaling?.send({ type: 'leave' });
     this.release();
     this.setPhase('failed', message);
