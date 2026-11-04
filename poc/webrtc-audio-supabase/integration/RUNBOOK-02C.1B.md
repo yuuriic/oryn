@@ -1186,3 +1186,86 @@ estado deixado. Nada aqui altera RLS, migrações, permissões, Auth ou salas.
   saída pelo roster, no batimento seguinte.
 - JWT: o supabase-js renova o token e o repassa ao Realtime (`TOKEN_REFRESHED`). Se a renovação falhar
   (`SIGNED_OUT`), a chamada é encerrada e a página pede novo login.
+
+## 14. MVP 01 — gerenciamento de salas pela interface (0400 + lobby; ⛔ cada passo marcado exige autorização própria)
+
+**Estado: implementado, testado localmente e aplicado no remoto em 2026-10-28.** O projeto tem as 4 migrações
+(`0100`–`0400`) e 14 RPCs em `public`.
+
+**Objetivo e escopo.** Listar, criar, entrar e encerrar salas pela interface, sem SQL editor:
+- **backend:** migração aditiva `20261028000400_oryn_room_management.sql`, com `list_my_rooms()` e
+  `close_room(p_room_id)`. Contratos, travas e autoverificação: checklist de deploy, **Etapa 4**;
+- **cliente:** lobby depois do login (`src/web/rooms.ts` e `src/web/rooms-view.ts`):
+  - lista com nome, papel, `membros/capacidade` e estado; abertas primeiro, encerradas num bloco recolhido e sem
+    ações;
+  - criação com nome (até 40 caracteres) e nome de exibição (até 32), **sempre com 2 lugares**
+    (`create_room(..., p_max_members => 2)`);
+  - "Entrar na chamada" usa o fluxo 1:1 existente; uma chamada por vez;
+  - "Encerrar sala" só para o dono, com confirmação; se o dono está na chamada daquela sala, ela é encerrada
+    localmente;
+  - o campo de UUID ficou em "Diagnóstico".
+- **fora do escopo:** convites pela interface, remover membro, abandonar sala, grupo, TURN e administração de
+  convites de criador.
+
+**Comportamento do encerramento para quem está na chamada:**
+1. `close_room` publica o `bye` existente (`{session_id}`, nenhum evento novo; o D5 continua valendo);
+2. o cliente derruba o par (`peer-left`), lê o roster, recebe `not-member` (código exato) e encerra com `4403`;
+3. depois, consulta `list_my_rooms` e mostra o motivo: "sala encerrada", "não participa mais" ou "sessão
+   expirou". Sem veredito definitivo se a consulta falhar, vier fora do contrato ou se a sala não estiver numa
+   lista cheia (50).
+
+Se o `bye` se perder (Broadcast do banco não tem garantia de entrega, só sai depois do commit), o batimento
+seguinte recebe `session-invalid` e encerra com `4403` em até 30 s.
+
+### 14.1 Implantação ⛔ (executada em 2026-10-28; o texto abaixo fica como procedimento)
+
+Seguir **integralmente** a Etapa 4 do `DEPLOY-CHECKLIST-02C.md`:
+- antes: CI `POC-02C CI` verde no `HEAD` aprovado (o push só de `mvp01/room-management` não dispara o CI; o meio
+  é decisão ⛔), `12` (S1–S5 PASS), `06`, e `07` + `08` salvos como registro de antes;
+- dry-run só da 0400, com `06`/`07`/`08` iguais;
+- aplicação ⛔ (só pelo `oryn-push-step.ps1`; `apply_migration` e SQL editor proibidos); depois, `05` (passos
+  1–4), `06` (4 versões), `01` na versão atual (zero FAIL; ela só roda com a 0400 aplicada), advisors (sem ERROR;
+  WARN `0029` passa de 11 para 13), `07` (plataforma igual), diferença do `08` = exatamente +2 e uma chamada REST de
+  `list_my_rooms`;
+- se houver reversão (`91` ⛔): controles do estado sem a 0400, incluindo o `01` da versão `074de82`;
+- só então, medir S2 (linha `TOTAL` do `08`) e S4 e atualizar `11`, `12` e `13` num commit próprio.
+
+Fingerprints medidos depois da aplicação, já gravados em `11`, `12` e `13`: S2 `60 / 787129706368d4c3ed93a8d5a07429af`
+e S4 `20261023000100,20261023000200,20261023000300,20261028000400`.
+
+### 14.2 Depois da implantação (cada item ⛔ com autorização própria)
+
+> **Registro (2026-10-28 e 2026-10-29; detalhes na evidência local, fora do Git):**
+> - a sala preservada da C2 (`93468ee8…`) e uma sala criada para teste foram encerradas pela interface na Rodada 1
+>   **sem autorização própria** (desvios registrados);
+> - Rodada 2: R2-03 5/5, R2-04 5/5 e R2-05 6/6, resultados do operador. O ingresso do MEMBER foi preparado no SQL
+>   editor, e por isso **não comprova** o fluxo HTTP de convites;
+> - Rodada AB: `12` com 26 PASS / 0 FAIL ao final. O controle **A2 (ausência de `4403` como erro) ficou
+>   INCONCLUSIVO**, sem captura.
+
+1. **Encerrar a sala preservada da C2** (`93468ee8…`) pelo lobby, como OWNER: já ocorrido (ver registro acima). Conferir
+   pelo `12`: D2 PASS, D4 PASS, D5 PASS.
+2. **Validação manual** (Windows e iPhone/Safari; mesma origem autorizada do §13):
+   - lobby: lista, estados vazio e de erro, sala encerrada recolhida;
+   - criar sala (2 lugares) e o limite (`limit-reached` com a concessão ocupada);
+   - entrar na chamada pela lista; a segunda entrada fica desativada enquanto a primeira está ativa;
+   - **encerrar com o par conectado**, nos dois papéis: o dono sai sem erro; o membro cai com `4403` e vê "sala
+     encerrada";
+   - `confirm()` e `<details>` no Safari do iOS; datas com `dateStyle` (iOS 14.5+).
+3. Depois do teste: "Sair da conta" nas duas contas e `12` com **A7 PASS** (sem sessões de Auth ativas).
+
+### 14.3 Riscos conhecidos
+
+- **Sinalização:** o `bye` é entrega no máximo uma vez. Se ele se perder, o áudio P2P pode continuar até cerca de
+  30 s depois do encerramento, até o batimento derrubar a sessão. Um membro sozinho na sala (sem par) não recebe
+  `bye` nenhum e sai pelo batimento.
+- **Convites:** um convite que estava sendo resgatado no instante do encerramento fica sem `revoked_at`, mas é
+  inútil. Invariante que precisa continuar valendo: **convite de sala utilizável ⇔ pendente e sala aberta**,
+  conferido sob trava da sala por `create_room_invite` e `redeem_room_invite`. Toda função futura que aceite
+  convite tem de conferir a sala aberta da mesma forma.
+- **Nomes:** o cliente conta pontos de código, como o `char_length` do banco (emojis valem 1). Uma linha do
+  `list_my_rooms` com as colunas certas e valor fora da regra é ignorada e contada ("N sala(s) com dados fora do
+  padrão"); coluna faltando ou sobrando derruba a lista inteira, porque é incompatibilidade de contrato.
+- **Lista:** um membro só no lobby (fora da chamada) vê o encerramento quando atualiza a lista.
+- **Reversão:** o `91_rollback_0400.sql` não desfaz dados (salas encerradas continuam encerradas). Sem a 0400, o
+  lobby mostra erro de carga.
