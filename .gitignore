@@ -34,8 +34,8 @@ secrets/
 # Cloudflare Tunnel: credenciais (<UUID>.json), cert.pem e configuração real nunca são versionados
 .cloudflared/
 ????????-????-????-????-????????????.json
-supabase/.temp/
-supabase/.branches/
+**/supabase/.temp/
+**/supabase/.branches/
 .vercel/
 
 # --- Logs ---
@@ -73,3 +73,6 @@ $RECYCLE.BIN/
 
 # --- macOS (contributors) ---
 .DS_Store
+
+# POC-02C.1B: evidências locais (saídas SQL, capturas) nunca versionadas
+poc/webrtc-audio-supabase/integration/evidence/

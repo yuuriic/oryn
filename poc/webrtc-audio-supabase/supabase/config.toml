@@ -1,0 +1,73 @@
+# POC-02C — configuração do Supabase CLI e da integração GitHub (02C.1B.0A).
+# Sintaxe conferida com o template do `supabase init` da CLI 2.122.0 e com a documentação oficial
+# (guides/local-development/cli/config, functions/function-configuration, deployment/branching).
+#
+# O QUE ESTE ARQUIVO FAZ NA INTEGRAÇÃO GITHUB (documentação oficial):
+# - Branch de PREVIEW (só com "Automatic branching" ligado): cada commit roda Configure (aplica ESTE
+#   arquivo à branch), Migrate (supabase/migrations), Seed (desligado abaixo) e Deploy (Edge Functions).
+# - PRODUÇÃO (só com "Deploy to production" ligado, em push/merge na branch de produção): aplica as
+#   migrações novas e publica as Edge Functions DECLARADAS aqui; Auth, API e seed deste arquivo são
+#   IGNORADOS em produção. As configurações de produção ficam no painel.
+#
+# O QUE ESTE ARQUIVO NÃO CONSEGUE IMPEDIR: a aplicação de migrações. Ela depende só das opções do painel
+# (Working directory, branch de produção, Deploy to production, Automatic branching). Ver
+# integration/RUNBOOK-02C.1B.md, Fase 0.
+#
+# Nenhum segredo aqui. Valores sensíveis, se um dia forem necessários, só como env(NOME).
+
+# Identificador LOCAL do CLI (nome dos contêineres do `supabase start`); NÃO é o ref do projeto remoto.
+project_id = "oryn-poc-02c"
+
+[api]
+enabled = true
+# Data API: só public e graphql_public. NUNCA oryn, oryn_realtime ou realtime.
+schemas = ["public", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+# Versão do projeto remoto (Postgres 17.11, lida em 2026-10-23).
+major_version = 17
+
+[db.migrations]
+enabled = true
+
+[db.seed]
+# Sem seed: branches começam vazias e nenhum dado de teste é aplicado automaticamente.
+enabled = false
+
+[realtime]
+enabled = true
+
+[auth]
+enabled = true
+site_url = "http://127.0.0.1:5173"
+# JWT curto: o cache de autorização do Realtime só é recalculado ao entrar no canal ou com access_token.
+jwt_expiry = 600
+# D1: identidade anônima.
+enable_anonymous_sign_ins = true
+
+[auth.rate_limit]
+# Cadastros anônimos por hora por IP (padrão da plataforma).
+anonymous_users = 30
+
+[auth.email]
+# Sem cadastro por e-mail/senha: a única identidade da POC é a anônima (D1). O padrão da CLI deixaria o
+# cadastro por e-mail LIGADO e SEM confirmação. Não afeta o login anônimo (enable_anonymous_sign_ins).
+enable_signup = false
+
+# CAPTCHA (Turnstile): decisão B5 pendente. Quando aprovado, o segredo vem SÓ de env(), nunca literal:
+# [auth.captcha]
+# enabled = true
+# provider = "turnstile"
+# secret = "env(SUPABASE_AUTH_CAPTCHA_SECRET)"
+
+[functions.signal]
+# Deploy AUTORIZADO pelo arquiteto (integração de voz 1:1): habilitada para `supabase functions deploy signal
+# --project-ref … --use-api`. Antes ficava false como trava. A integração GitHub não lê esta pasta (Working
+# directory `.`, runbook §1); a publicação é só pela CLI, com autorização.
+enabled = true
+# Chamada só com o JWT do usuário (supabase.functions.invoke). Mesmo valor que a CLI gera para
+# `functions new --auth user`. A função valida o usuário de novo no código (/auth/v1/user).
+verify_jwt = true
+entrypoint = "./functions/signal/index.ts"
