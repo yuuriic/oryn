@@ -84,10 +84,8 @@ describe('garantias estáticas do frontend', () => {
     }
     const html = read('index.html');
     expect(html.match(/<script\b[^>]*>/g)).toEqual(['<script type="module" src="/src/web/main.ts">']);
-    const csp = /Content-Security-Policy"\s+content="([^"]+)"/.exec(html)?.[1] ?? '';
-    expect(csp).toMatch(/default-src 'self'/);
-    expect(csp).toMatch(/object-src 'none'/);
-    expect(csp).toMatch(/base-uri 'none'/);
+    // CSP da página e cabeçalhos: tests/security-headers.test.ts.
+    expect(html).toMatch(/http-equiv="Content-Security-Policy"\s+content="__ORYN_PAGE_CSP__"/);
   });
 
   it('exceção única no navegador: call-return.ts guarda só o ID validado da sala, com uma chave fixa', () => {
@@ -97,28 +95,6 @@ describe('garantias estáticas do frontend', () => {
     expect(c).toMatch(/if \(!isUuid\(roomId\)\) return false;[\s\S]*\.setItem\(RETURN_ROOM_KEY, roomId\)/);
     expect(c).not.toMatch(/access_token|refresh_token|password|getSession|\bjwt\b|\btoken\b|\bemail\b/i);
     expect(RETURN_ROOM_KEY).toBe('oryn.returnRoomId');
-  });
-
-  it('a página tem CSP restrita (sem inline nem eval) e só fala com o projeto Supabase', () => {
-    const html = read('index.html');
-    const csp = /Content-Security-Policy"\s+content="([^"]+)"/.exec(html)?.[1] ?? '';
-    expect(csp).toMatch(/script-src 'self'/);
-    expect(csp).not.toMatch(/unsafe-inline|unsafe-eval|(^|\s)\*(\s|;|$)|\shttps?:(\s|;)/); // sem origem * nem esquema inteiro
-    expect(csp).toMatch(/connect-src 'self' https:\/\/\*\.supabase\.co wss:\/\/\*\.supabase\.co/);
-  });
-
-  it('a CSP alcança o stack local que a configuração aceita, e HTTP sem TLS só no loopback', () => {
-    // Regressão: parseWebConfig aceita http://127.0.0.1 e a CSP só liberava ws:, então o login no stack local
-    // era bloqueado pelo navegador e aparecia como "Login recusado (erro)".
-    const csp = /Content-Security-Policy"\s+content="([^"]+)"/.exec(read('index.html'))?.[1] ?? '';
-    const connect = (/connect-src ([^;]+)/.exec(csp)?.[1] ?? '').split(/\s+/);
-    for (const host of ['127.0.0.1', 'localhost']) {
-      expect(ok({ VITE_SUPABASE_URL: `http://${host}:54321` }).supabaseUrl).toBe(`http://${host}:54321`);
-      expect(connect).toContain(`http://${host}:*`);
-      expect(connect).toContain(`ws://${host}:*`);
-    }
-    const insecure = connect.filter((source) => /^(http|ws):/.test(source));
-    expect(insecure.every((source) => /^(http|ws):\/\/(127\.0\.0\.1|localhost):\*$/.test(source))).toBe(true);
   });
 
   it('configuração local fora do Git: .env.local e dist/ ignorados; .env.example versionável e sem valores', () => {
