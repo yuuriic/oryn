@@ -121,7 +121,11 @@ Requisitos: Node 24+ e pnpm 12+. Não há serviço a instalar: o PGlite e o Post
 
 Chamada de voz entre OWNER e MEMBER, nas contas de e-mail e senha já existentes (as da C2), na sala da C2.
 
-- **Login:** `signInWithPassword`. A sessão de login fica só em memória (nada em `localStorage`). Sem anônimo,
+- **Retorno depois de recarregar:** a aba guarda só o ID da sala em `sessionStorage` (`src/web/call-return.ts`). O
+  servidor confirma a sala e a participação, e "Voltar para a chamada" pede um clique; o microfone não liga antes disso
+  (runbook §14.5).
+- **Login:** `signInWithPassword`. A sessão é persistida pelo mecanismo oficial do Auth, em `localStorage`, e sobrevive
+  a F5 e à reabertura do navegador (`src/web/auth-session.ts`; riscos no runbook §14.6). Sem anônimo,
   sem cadastro.
 - **Sala:** `join_room` → canal privado `oryn:s:{sessão}` → `get_roster`. `hello`/`bye` (publicados pelo banco)
   mostram quem entra e sai. Batimento `touch_session` a cada 30 s; `leave_room` ao sair.

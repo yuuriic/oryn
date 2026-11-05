@@ -3,13 +3,16 @@
 // MVP 01: lobby com as salas da conta (listar, criar com 2 lugares, entrar e encerrar), em rooms.ts e
 // rooms-view.ts; o campo de UUID ficou em "Diagnóstico".
 //
-// Sigilo: a senha só passa do campo para o supabase-js e o campo é limpo em seguida; a sessão de login fica
-// SÓ em memória (persistSession: false: nada em localStorage); o registro em tela nunca mostra token, SDP,
+// Sigilo: a senha só passa do campo para o supabase-js e o campo é limpo em seguida; a sessão de login é guardada
+// pelo mecanismo oficial do Auth (auth-session.ts; riscos no runbook §14.6) e o ID da sala, em call-return.ts;
+// o registro em tela nunca mostra token, SDP,
 // candidato ICE ou senha. A configuração aceita só a chave publicável (config.ts).
 
-import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { createClient, type Session, type SupabaseClient } from '@supabase/supabase-js';
 import { isUuid } from '../../supabase/functions/_shared/signal-contract.ts';
+import { authOptions, createAuthStorage, logout, restoreSession, type AuthStorage } from './auth-session.ts';
 import { PeerCall, type CallPhase, type CallStats, type PeerStates } from './call.ts';
+import { CallReturnController, ReturnRoomStore, type ReturnState } from './call-return.ts';
 import { parseWebConfig, type WebConfig } from './config.ts';
 import { DISCONNECT_CHECKING, LobbyController, PEER_UNREACHABLE, disconnectPhase, explainDisconnect, formatCallError, isClosingOwnCall, type Notice } from './rooms.ts';
 import { renderLobby } from './rooms-view.ts';
@@ -33,6 +36,10 @@ const ui = {
   account: el<HTMLElement>('account'),
   userLabel: el<HTMLElement>('user-label'),
   logoutBtn: el<HTMLButtonElement>('logout-btn'),
+  returnCall: el<HTMLElement>('return-call'),
+  returnRoom: el<HTMLElement>('return-room'),
+  returnBtn: el<HTMLButtonElement>('return-btn'),
+  returnDismissBtn: el<HTMLButtonElement>('return-dismiss-btn'),
   rooms: el<HTMLDivElement>('rooms'),
   roomsError: el<HTMLParagraphElement>('rooms-error'),
   refreshBtn: el<HTMLButtonElement>('rooms-refresh-btn'),
@@ -65,6 +72,9 @@ const PHASES: Record<CallPhase, string> = {
 
 let cfg: WebConfig;
 let client: SupabaseClient;
+let authStorage: AuthStorage;
+/** O logout desta aba está em curso: o SIGNED_OUT que ele causa não é "a sessão terminou". */
+let loggingOut = false;
 let selfUserId: string | null = null;
 let call: PeerCall | null = null;
 let signaling: SupabaseSignaling | null = null;
@@ -73,6 +83,7 @@ let remoteAudio: HTMLAudioElement | null = null;
 let callRoomId: string | null = null;
 let callActive = false;
 let lobby: LobbyController;
+let callReturn: CallReturnController;
 /** Muda a cada chamada nova, logout e desconexão explicada: uma explicação de 4403 antiga não sobrescreve nada. */
 let disconnectTicket = 0;
 /** JWT atual, lido de forma síncrona no pagehide. Fica só em memória, como a sessão de login. */
@@ -102,6 +113,10 @@ function showNotice(notice: Notice | null): void {
 function showError(message: string | null): void {
   showNotice(message === null ? null : { tone: 'error', text: message });
 }
+
+const SESSION_ENDED: Notice = { tone: 'info', text: 'Sua sessão de login terminou. Faça login de novo.' };
+const ACCOUNT_CHANGED: Notice = { tone: 'info', text: 'Outra aba entrou com outra conta: esta chamada foi encerrada.' };
+const SESSION_UNVERIFIED: Notice = { tone: 'error', text: 'Não foi possível verificar seu login agora (sem conexão com o servidor). Tente recarregar ou faça login.' };
 
 /** Código de erro do Auth exibível: só [a-z0-9_-] curto (nunca a mensagem inteira). */
 const authCode = (code: unknown): string => (typeof code === 'string' && /^[a-z0-9_-]{1,40}$/.test(code) ? code : 'erro');
@@ -147,6 +162,8 @@ function renderPhase(phase: CallPhase, error?: string): void {
     setField('role', '—');
   }
   if ((phase === 'connected' || phase === 'ended') && ui.error.textContent === PEER_UNREACHABLE.text) showNotice(null);
+  // A entrada na sala foi aceita: é a sala para a qual a aba pode voltar depois de recarregar.
+  if ((phase === 'waiting-peer' || phase === 'negotiating' || phase === 'connected') && callRoomId) callReturn.remember(callRoomId);
   // O dono encerrou a sala desta chamada por aqui: a queda que isso causa não é erro para quem encerrou.
   if (phase === 'failed' && isClosingOwnCall(lobby?.state.busy ?? null, callRoomId)) setField('phase', PHASES.ended);
   if (phase === 'failed' && error && !isClosingOwnCall(lobby?.state.busy ?? null, callRoomId)) {
@@ -158,9 +175,13 @@ function renderPhase(phase: CallPhase, error?: string): void {
       setField('phase', 'verificando o motivo');
       const ticket = ++disconnectTicket;
       const user = selfUserId;
-      void explainDisconnect(callRoomId, technical, {
+      const room = callRoomId;
+      void explainDisconnect(room, technical, {
         listRooms: () => createSupabaseBackend(client).rpc<unknown[]>('list_my_rooms', {}),
         isCurrent: () => ticket === disconnectTicket && !callActive && selfUserId === user,
+        onKind: (kind) => {
+          if (kind === 'closed' || kind === 'not-member') callReturn.forget(room);
+        },
         show: (notice) => {
           showNotice(notice);
           setField('phase', PHASES[disconnectPhase(notice)]);
@@ -197,6 +218,7 @@ function renderStats(s: CallStats | null): void {
 
 function startCall(roomInput: string): void {
   if (callActive) return; // uma chamada por vez
+  callReturn.hide(); // entrar em qualquer chamada substitui a oferta de retorno
   disconnectTicket += 1; // explicação pendente de uma chamada anterior não aparece nesta
   showError(null);
   const roomId = roomInput.trim().toLowerCase();
@@ -257,13 +279,29 @@ ui.muteBtn.addEventListener('click', () => {
   ui.muteBtn.textContent = call.muted ? 'Reativar microfone' : 'Mutar';
   setField('mic', call.muted ? 'capturando (mutado)' : 'capturando');
 });
-ui.leaveBtn.addEventListener('click', () => void endCall());
+ui.leaveBtn.addEventListener('click', () => {
+  callReturn.forget();
+  void endCall();
+});
 // Fechar ou recarregar a aba: sai da sala por um envio que sobrevive ao descarregamento. Se ele não chegar (rede,
 // queda do navegador), a sessão vence sozinha em até 90 s.
 window.addEventListener('pagehide', () => {
   signaling?.closeOnPageHide();
   call?.end();
 });
+
+// ---------- retorno à chamada depois de recarregar a aba ----------
+
+function renderReturn(state: ReturnState): void {
+  ui.returnCall.hidden = state.status !== 'offer';
+  if (state.status !== 'offer') return;
+  ui.returnRoom.textContent = state.name;
+  ui.returnBtn.disabled = state.busy;
+  ui.returnDismissBtn.disabled = state.busy;
+}
+
+ui.returnBtn.addEventListener('click', () => void callReturn.accept());
+ui.returnDismissBtn.addEventListener('click', () => callReturn.dismiss());
 
 // ---------- lobby (MVP 01) ----------
 
@@ -303,11 +341,35 @@ function showLoggedIn(email: string | undefined): void {
   ui.userLabel.textContent = email ?? '(conta sem e-mail)';
 }
 
+/** Entrada na conta, por login ou sessão restaurada. Nunca inicia chamada nem pede o microfone. */
+async function enterSession(session: Session): Promise<void> {
+  if (selfUserId === session.user.id) return;
+  selfUserId = session.user.id;
+  accessToken = session.access_token;
+  // Canais privados exigem o JWT do usuário no Realtime antes da inscrição.
+  await client.realtime.setAuth(session.access_token);
+  showLoggedIn(session.user.email);
+  void lobby.refresh();
+  void callReturn.offer();
+}
+
+/** A sessão acabou fora deste botão de logout (revogada, renovação recusada, logout ou troca de conta em outra aba). */
+function endByAuth(notice: Notice): void {
+  callReturn.forget();
+  // O supabase-js não envia mais o token: o leave_room pela RPC receberia 401 e deixaria uma sessão fantasma.
+  signaling?.closeOnPageHide();
+  call?.end();
+  showLoggedOut();
+  showNotice(notice);
+}
+
 function showLoggedOut(): void {
   selfUserId = null;
+  accessToken = null;
   disconnectTicket += 1;
   if (ui.error.textContent === DISCONNECT_CHECKING.text) showNotice(null); // a explicação pendente foi descartada
   lobby.reset();
+  callReturn.reset();
   ui.account.hidden = true;
   ui.login.hidden = false;
   ui.loginBtn.disabled = false;
@@ -323,20 +385,18 @@ ui.loginForm.addEventListener('submit', (event) => {
   void client.auth.signInWithPassword({ email, password }).then(async ({ data, error }) => {
     ui.loginBtn.disabled = false;
     if (error || !data.session || !data.user) return showError(`Login recusado (${authCode(error?.code)}).`);
-    selfUserId = data.user.id;
-    accessToken = data.session.access_token;
-    // Canais privados exigem o JWT do usuário no Realtime antes da inscrição.
-    await client.realtime.setAuth(data.session.access_token);
-    showLoggedIn(data.user.email);
-    void lobby.refresh();
+    await enterSession(data.session);
   });
 });
 
 ui.logoutBtn.addEventListener('click', () => {
   void (async () => {
+    loggingOut = true;
+    callReturn.forget();
     await endCall();
-    await client.auth.signOut({ scope: 'local' }).catch(() => undefined);
+    await logout(client, authStorage);
     showLoggedOut();
+    loggingOut = false;
   })();
 });
 
@@ -344,31 +404,55 @@ ui.logoutBtn.addEventListener('click', () => {
 
 try {
   cfg = parseWebConfig(import.meta.env as unknown as Record<string, string | undefined>);
-  // persistSession false: o login vive só nesta aba; autoRefreshToken renova o JWT (o supabase-js repassa
-  // o token novo ao Realtime). Nenhuma chave além da publicável.
-  client = createClient(cfg.supabaseUrl, cfg.publishableKey, { auth: { persistSession: false, autoRefreshToken: true, detectSessionInUrl: false } });
+  // Sessão persistida pelo Auth; autoRefreshToken renova o JWT (o supabase-js repassa o token novo ao Realtime).
+  // Nenhuma chave além da publicável.
+  authStorage = createAuthStorage();
+  client = createClient(cfg.supabaseUrl, cfg.publishableKey, { auth: authOptions(authStorage) });
   const backend = createSupabaseBackend(client);
+  callReturn = new CallReturnController({
+    store: new ReturnRoomStore(),
+    listRooms: () => backend.rpc<unknown[]>('list_my_rooms', {}),
+    start: (roomId) => startCall(roomId),
+    notify: showNotice,
+    onChange: renderReturn,
+  });
   lobby = new LobbyController({
     rpc: (fn, args) => backend.rpc(fn, args),
     confirm: (message) => window.confirm(message),
     onChange: () => renderRooms(),
     // O dono encerrou a sala da própria chamada: sai dela aqui, sem esperar o aviso do servidor.
     onClosed: async (roomId) => {
+      callReturn.forget(roomId);
       if (callActive && callRoomId === roomId) await endCall();
     },
   });
   client.auth.onAuthStateChange((event, session) => {
-    accessToken = session?.access_token ?? null;
+    // Sem sessão, guarda o último JWT: ainda é preciso sair da sala (ver endByAuth); showLoggedOut o descarta.
+    accessToken = session?.access_token ?? accessToken;
     if (event === 'TOKEN_REFRESHED') log('Token de acesso renovado.');
-    if (event === 'SIGNED_OUT' && selfUserId !== null) {
-      // Renovação falhou ou logout: a chamada não continua sem identidade válida.
-      call?.end();
-      showLoggedOut();
-      showError('A sessão de login terminou. Faça login de novo.');
-    }
+    // Fora do callback: o Auth segura uma trava aqui, e as RPCs que estas saídas disparam também precisam dela.
+    setTimeout(() => {
+      if (event === 'SIGNED_OUT') {
+        // Sessão revogada, renovação recusada ou logout em outra aba: a chamada não continua sem identidade válida.
+        if (selfUserId !== null && !loggingOut) endByAuth(SESSION_ENDED);
+      } else if (session && selfUserId !== null && session.user.id !== selfUserId) {
+        // O armazenamento é do navegador: outra aba entrou com outra conta, e esta aba não pode seguir misturando as duas.
+        endByAuth(ACCOUNT_CHANGED);
+        void enterSession(session);
+      } else if (event === 'SIGNED_IN' && session && selfUserId === null && !loggingOut) {
+        void enterSession(session); // login feito em outra aba
+      }
+    });
   });
   if (cfg.defaultRoomId) ui.room.value = cfg.defaultRoomId;
-  ui.login.hidden = false;
+  void restoreSession(client, authStorage).then(async (restored) => {
+    if (restored.status === 'valid' || restored.status === 'unverified') return enterSession(restored.session);
+    ui.login.hidden = false;
+    if (restored.status === 'revoked') showNotice(SESSION_ENDED);
+    if (restored.status === 'unavailable') showNotice(SESSION_UNVERIFIED);
+  }).catch(() => {
+    ui.login.hidden = false;
+  });
 } catch (error) {
   ui.configError.textContent = `Configuração inválida: ${error instanceof Error ? error.message : 'erro'}. Veja .env.example.`;
   ui.configError.hidden = false;

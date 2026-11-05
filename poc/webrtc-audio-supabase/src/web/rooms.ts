@@ -118,11 +118,13 @@ export function isClosingOwnCall(busy: LobbyAction | null, callRoomId: string | 
 export async function explainDisconnect(
   roomId: string,
   technical: string,
-  deps: { listRooms(): Promise<RpcResult<unknown[]>>; isCurrent(): boolean; show(notice: Notice): void },
+  deps: { listRooms(): Promise<RpcResult<unknown[]>>; isCurrent(): boolean; show(notice: Notice): void; onKind?(kind: DisconnectKind): void },
 ): Promise<Notice | null> {
   const res = await deps.listRooms().catch(() => ({ data: null, error: 'erro' }));
   if (!deps.isCurrent()) return null;
-  const notice = describeDisconnect(SESSION_GONE_CODE, classifyDisconnect(roomId, res), technical);
+  const kind = classifyDisconnect(roomId, res);
+  deps.onKind?.(kind);
+  const notice = describeDisconnect(SESSION_GONE_CODE, kind, technical);
   deps.show(notice);
   return notice;
 }

@@ -1319,7 +1319,82 @@ congela o processo de rede do Chrome do membro):
   cerca de 18 s, quando a falha de ICE libera o par antigo;
 - `bye` perdido com o dono na chamada: "sala encerrada" em 17,8 s, nunca como alerta.
 
-**Pendente (não reproduzido):** microfones reais e audição humana; NAT real e redes diferentes; Safari/iOS; queda de
-rede real de Wi-Fi ou 5G; laptop em suspensão, em que o sistema pode encerrar a faixa do microfone e o erro
-"microfone desconectado" é o esperado; `bye` perdido com o dono fora da chamada; esgotamento do orçamento com dois
-navegadores reais, coberto só em `tests/peer-recovery.test.ts`.
+**Pendente (não reproduzido):** NAT real e redes diferentes; Safari/iOS; queda de rede real de Wi-Fi ou 5G; laptop em
+suspensão, em que o sistema pode encerrar a faixa do microfone e o erro "microfone desconectado" é o esperado; `bye`
+perdido com o dono fora da chamada; esgotamento do orçamento com dois navegadores reais, coberto só em
+`tests/peer-recovery.test.ts`. Validação com microfones reais: §14.7.
+
+### 14.5 Retorno à chamada depois de recarregar a aba
+
+A aba guarda **apenas o ID da sala** em `sessionStorage` (chave `oryn.returnRoomId`, só em `src/web/call-return.ts`), sem
+nada mais nessa chave, e `tests/web-config.test.ts` confere. O ID sozinho não dá acesso: `join_room` exige o login e a
+participação.
+
+| Momento | O que acontece |
+|---|---|
+| Entrada aceita na sala | Guarda o ID |
+| Recarga ou queda da aba | O ID continua; o `pagehide` não limpa |
+| Entrada na conta (sessão restaurada ou login) | `list_my_rooms` confirma sala aberta e participação antes de oferecer "Voltar para a chamada" |
+| Clique em "Voltar para a chamada" | Valida de novo e só então entra na sala e pede o microfone. Nunca há retorno automático |
+| Sala encerrada ou conta fora da sala | Limpa o ID e não oferece |
+| Servidor indisponível | Não oferece; guarda o ID para outra tentativa |
+| "Sair da chamada", "Agora não" ou "Sair da conta" | Limpa o ID |
+| Sessão de login encerrada (revogada ou logout em outra aba) | Encerra a chamada e limpa o ID |
+| ID adulterado ou armazenamento indisponível | Descarta ou ignora; o lobby continua funcionando |
+
+O armazenamento vale só para a aba: fechar a aba apaga o ID, e o retorno passa a ser pela lista de salas. Depois de
+reabrir o navegador, a conta continua conectada, mas sem oferta de retorno.
+
+### 14.6 Sessão de login persistida
+
+**Decisão de produto:** não pedir login de novo depois de F5 ou de reabrir o navegador. Substitui o `persistSession: false`
+das etapas anteriores. Autenticação do backend, RLS e banco não mudaram.
+
+**Como funciona (`src/web/auth-session.ts`):** `persistSession: true`, com `autoRefreshToken`, sob a chave `oryn.auth` em
+`localStorage`.
+- ao abrir a página, `getSession` renova o token se preciso e `getUser` confirma no servidor que a sessão não foi revogada;
+- sessão revogada ou refresh token recusado limpam o navegador e pedem login;
+- sem rede, a sessão não é apagada: com token válido a conta entra sem confirmação, e com token expirado pede nova tentativa;
+- logout encerra a sessão no servidor (`scope: 'local'`, só esta sessão) e limpa o navegador mesmo sem resposta do servidor;
+- armazenamento indisponível: a sessão fica só em memória e não sobrevive à recarga;
+- o `localStorage` é do navegador, não da aba: logout em uma aba encerra as outras, e entrar com outra conta encerra a
+  chamada das demais. Duas contas ao mesmo tempo exigem perfis diferentes do navegador.
+
+**Riscos residuais:**
+| Risco | Situação | Mitigação |
+|---|---|---|
+| XSS lê os tokens em `localStorage` e continua a sessão, inclusive depois de fechar a aba | **Aceito com a decisão**; antes, o token já ficava acessível a um XSS enquanto a aba estivesse aberta | CSP sem `unsafe-inline`, `unsafe-eval` ou terceiros; sem HTML dinâmico (há teste) |
+| CSP permite `https://*.supabase.co`: um XSS poderia enviar tokens a um projeto Supabase de terceiros | **Aberto** | Restringir `connect-src` ao URL exato do projeto no build |
+| CSP por `<meta>` não aceita `frame-ancestors`: a página pode ser embutida em outro site | **Aberto** | Definir CSP e `frame-ancestors` por cabeçalho HTTP na publicação |
+| Computador compartilhado: quem abre o navegador já entra na conta | **Aceito**, sem `Sair da conta` | Orientar o usuário; duração da sessão no painel do Auth |
+| Token copiado do navegador continua válido até expirar ou ser revogado | **Aceito** | JWT curto; conferir no painel a rotação de refresh token com detecção de reuso |
+
+**Bloqueadores de produção (registrados em 2026-11-04; o cliente não deve ser publicado antes de concluí-los):**
+1. Restringir o CSP (`connect-src`) ao domínio exato do projeto Supabase.
+2. Configurar `frame-ancestors` por cabeçalho HTTP.
+3. Verificar a segurança das sessões no projeto remoto, sem alterá-la: rotação de refresh token, detecção de reuso,
+   duração do JWT e limite de duração da sessão. **Ainda não verificado.**
+
+### 14.7 Validação com microfones reais (2026-11-04)
+
+Stack local, Chrome 156 em dois perfis, as duas pontas na mesma máquina: microfones e saídas físicos diferentes por perfil,
+com a audição confirmada pelo operador e cruzada com `getStats`, estados da conexão, processos do Chrome e sessões no banco.
+
+| Critério | Evidência | Resultado |
+|---|---|---|
+| Áudio nos dois sentidos, mute e unmute | Sem queda nem renegociação; mudo zera o áudio recebido | Aprovado |
+| F5 sem login, com "Voltar para a chamada" | Sem microfone nem conexão antes do clique | Aprovado |
+| Queda real da aba | Processo encerrado; quem ficou recebe só aviso informativo; reconexão em 19 s | Aprovado |
+| Logout | Sessão e ID da sala removidos; F5 pede login | Aprovado |
+| 120 s contínuos | 138 s, voz nos dois sentidos no início, no meio e no fim, perda 0, nada ocultado; mute de 8 s em um lado | Aprovado com ressalva |
+| Reabertura do navegador | Processo terminou e outro nasceu; conta restaurada sem login; 73 s de voz nos dois sentidos; 1 sessão viva por conta | Aprovado |
+| Encerrar a sala (A2) | Aviso informativo, nunca alerta; o `4403` fica só no registro | Aprovado no Chrome |
+
+**Incidente do Windows durante a validação:** o motor de áudio do sistema (`AUDIODG.EXE`) falhou com corrupção de heap
+(`c0000374`, `ntdll.dll`) e reiniciou; os dois microfones pararam no mesmo segundo, em dois navegadores separados, e o app
+mostrou "microfone desconectado". Não houve reinício do sistema, e não se repetiu nas rodadas seguintes. O dump não
+foi analisado, então o gatilho segue indeterminado. O primeiro passo, se voltar a acontecer, é testar com os efeitos de áudio
+de terceiros desativados.
+
+**Sem cobertura aqui:** NAT, redes diferentes e Safari/iOS. A "pequena travada no início da fala" foi relatada uma vez, sem
+perda, jitter ou áudio ocultado na medição de 1 s, e não apareceu na rodada seguinte; causa não determinada.
