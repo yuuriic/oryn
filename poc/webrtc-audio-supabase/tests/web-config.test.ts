@@ -4,6 +4,8 @@ import { execFileSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { AUTH_STORAGE_KEY } from '../src/web/auth-session.ts';
+import { RETURN_ROOM_KEY } from '../src/web/call-return.ts';
 import { DEFAULT_STUN, WebConfigError, parseWebConfig } from '../src/web/config.ts';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -59,10 +61,42 @@ describe('garantias estáticas do frontend', () => {
     for (const [f, t] of Object.entries(web)) {
       const c = code(t);
       if (f !== 'config.ts') expect(c, f).not.toMatch(/sb_secret_|service_role|sbp_/);
-      expect(c, f).not.toMatch(/signInAnonymously|signUp\(|localStorage|sessionStorage|indexedDB/);
+      expect(c, f).not.toMatch(/signInAnonymously|signUp\(|indexedDB|document\.cookie/);
+      if (f !== 'auth-session.ts') expect(c, f).not.toMatch(/localStorage/);
+      if (f !== 'call-return.ts') expect(c, f).not.toMatch(/sessionStorage/);
     }
-    expect(code(web['main.ts']!)).toMatch(/persistSession: false/);
     expect(code(web['main.ts']!)).toMatch(/signInWithPassword/);
+  });
+
+  it('sessão de login: só auth-session.ts guarda, pelo Auth, com uma chave fixa e nada além disso', () => {
+    const c = code(web['auth-session.ts']!);
+    expect(c.match(/\blocalStorage\b/g)).toHaveLength(1);
+    expect(c).toMatch(/persistSession: true/);
+    expect(c).toMatch(/autoRefreshToken: true/);
+    expect(c).toMatch(/detectSessionInUrl: false/);
+    expect(AUTH_STORAGE_KEY).toBe('oryn.auth');
+    expect(c).not.toMatch(/password/i);
+  });
+
+  it('com sessão guardada no navegador, XSS é o risco principal: nada de HTML dinâmico ou código gerado', () => {
+    for (const [f, t] of Object.entries(web)) {
+      expect(code(t), f).not.toMatch(/\.innerHTML|\.outerHTML|insertAdjacentHTML|document\.write|\beval\(|new Function\(|srcdoc/);
+    }
+    const html = read('index.html');
+    expect(html.match(/<script\b[^>]*>/g)).toEqual(['<script type="module" src="/src/web/main.ts">']);
+    const csp = /Content-Security-Policy"\s+content="([^"]+)"/.exec(html)?.[1] ?? '';
+    expect(csp).toMatch(/default-src 'self'/);
+    expect(csp).toMatch(/object-src 'none'/);
+    expect(csp).toMatch(/base-uri 'none'/);
+  });
+
+  it('exceção única no navegador: call-return.ts guarda só o ID validado da sala, com uma chave fixa', () => {
+    const c = code(web['call-return.ts']!);
+    expect(c.match(/\bsessionStorage\b/g)).toHaveLength(1);
+    expect(c.match(/\.setItem\(/g)).toHaveLength(1);
+    expect(c).toMatch(/if \(!isUuid\(roomId\)\) return false;[\s\S]*\.setItem\(RETURN_ROOM_KEY, roomId\)/);
+    expect(c).not.toMatch(/access_token|refresh_token|password|getSession|\bjwt\b|\btoken\b|\bemail\b/i);
+    expect(RETURN_ROOM_KEY).toBe('oryn.returnRoomId');
   });
 
   it('a página tem CSP restrita (sem inline nem eval) e só fala com o projeto Supabase', () => {

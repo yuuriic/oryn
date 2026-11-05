@@ -28,6 +28,14 @@
       <section id="account" hidden>
         <p>Conectado como <strong id="user-label"></strong> <button id="logout-btn" type="button">Sair da conta</button></p>
 
+        <section id="return-call" hidden>
+          <p>Você estava na chamada da sala <strong id="return-room"></strong>. O microfone só é ativado se você voltar.</p>
+          <div class="buttons">
+            <button id="return-btn" type="button">Voltar para a chamada</button>
+            <button id="return-dismiss-btn" type="button">Agora não</button>
+          </div>
+        </section>
+
         <h2>Minhas salas</h2>
         <div class="buttons"><button id="rooms-refresh-btn" type="button">Atualizar lista</button></div>
         <div id="rooms"></div>
