@@ -18,6 +18,7 @@
 
       <section id="login" hidden>
         <h2>Login</h2>
+        <p id="invite-login-hint" class="notice" role="status" hidden></p>
         <form id="login-form" autocomplete="on">
           <label>E-mail <input id="email" type="email" autocomplete="username" required /></label>
           <label>Senha <input id="password" type="password" autocomplete="current-password" required /></label>
@@ -36,10 +37,44 @@
           </div>
         </section>
 
+        <section id="invite-accept" hidden>
+          <h2>Convite para uma sala</h2>
+          <div id="invite-accept-pending">
+            <p>Você vai aceitar com a conta <strong id="invite-account"></strong>. O convite só pode ser usado uma vez. Se esta não for a conta certa, use "Sair da conta" e entre com a outra: o convite continua nesta aba.</p>
+            <form id="invite-accept-form" autocomplete="off">
+              <label>Seu nome na sala (até 32 caracteres) <input id="invite-display" type="text" maxlength="64" spellcheck="false" required /></label>
+              <div class="buttons">
+                <button id="invite-accept-btn" type="submit">Aceitar convite</button>
+                <button id="invite-decline-btn" type="button">Recusar</button>
+              </div>
+            </form>
+          </div>
+          <p id="invite-accept-message" role="status" hidden></p>
+          <div class="buttons"><button id="invite-dismiss-btn" type="button" hidden>Fechar</button></div>
+        </section>
+
         <h2>Minhas salas</h2>
         <div class="buttons"><button id="rooms-refresh-btn" type="button">Atualizar lista</button></div>
         <div id="rooms"></div>
         <p id="rooms-error" class="error" role="alert" hidden></p>
+
+        <section id="invite-share" hidden>
+          <h3>Convite para <span id="invite-share-room"></span></h3>
+          <div id="invite-share-box" hidden>
+            <label>Link do convite (uso único) <input id="invite-link" type="text" readonly spellcheck="false" autocomplete="off" /></label>
+            <p class="muted">Válido até <strong id="invite-expiry"></strong>. Envie só para quem vai participar: quem tiver o link e uma conta pode entrar. Ao recarregar a página, o link não é mostrado de novo.</p>
+            <div class="buttons">
+              <button id="invite-copy-btn" type="button">Copiar link</button>
+              <button id="invite-native-share-btn" type="button" hidden>Compartilhar</button>
+            </div>
+          </div>
+          <p id="invite-share-status" class="muted" role="status" hidden>Gerando convite…</p>
+          <p id="invite-share-message" role="status" hidden></p>
+          <div class="buttons">
+            <button id="invite-new-btn" type="button" hidden>Gerar novo convite</button>
+            <button id="invite-close-btn" type="button">Fechar</button>
+          </div>
+        </section>
 
         <h3>Criar sala</h3>
         <!-- maxlength conta unidades UTF-16 (um emoji vale 2): fica no dobro do limite real, que é conferido em

@@ -29,3 +29,10 @@ dd { margin: 0; overflow-wrap: anywhere; }
 .rooms .buttons { margin-top: 4px; }
 button.danger { background: var(--error); }
 details summary { cursor: pointer; color: var(--muted); margin: 8px 0; }
+#invite-link, #invite-display { display: block; width: 100%; box-sizing: border-box; margin-top: 4px; }
+@media (max-width: 480px) {
+  main { padding: 8px; }
+  section { padding: 12px; }
+  input { font-size: 16px; } /* abaixo disso, o iOS amplia a página ao focar o campo */
+  button { min-height: 44px; }
+}

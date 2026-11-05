@@ -16,6 +16,10 @@ export interface LobbyViewOptions {
   activeRoomId: string | null;
   onJoin(roomId: string): void;
   onClose(roomId: string): void;
+  /** Há um convite sendo gerado: nenhum outro é pedido enquanto isso. */
+  inviteBusy?: boolean;
+  onInvite?(roomId: string): void;
+  onRevokeInvites?(roomId: string): void;
 }
 
 const ROLE: Record<RoomSummary['role'], string> = { owner: 'dono', member: 'membro' };
@@ -64,6 +68,23 @@ export function renderLobby(doc: ViewDocument, state: LobbyState, opts: LobbyVie
       join.disabled = opts.callActive || busy;
       join.addEventListener('click', () => opts.onJoin(room.room_id));
       actions.append(join);
+      if (room.role === 'owner' && room.member_count < room.max_members && opts.onInvite) {
+        const { onInvite } = opts;
+        const invite = el('button', 'Convidar') as HTMLButtonElement;
+        invite.type = 'button';
+        invite.disabled = busy || opts.inviteBusy === true; // a chamada em curso não impede: o dono pode estar esperando
+        invite.addEventListener('click', () => onInvite(room.room_id));
+        actions.append(invite);
+      }
+      // Fora do painel de propósito: depois de recarregar, o dono revoga sem precisar gerar mais um convite.
+      if (room.role === 'owner' && room.member_count < room.max_members && opts.onRevokeInvites) {
+        const { onRevokeInvites } = opts;
+        const revoke = el('button', 'Revogar convites pendentes desta sala', 'danger') as HTMLButtonElement;
+        revoke.type = 'button';
+        revoke.disabled = busy || opts.inviteBusy === true;
+        revoke.addEventListener('click', () => onRevokeInvites(room.room_id));
+        actions.append(revoke);
+      }
       if (room.role === 'owner') {
         const closing = state.busy?.kind === 'close' && state.busy.roomId === room.room_id;
         const close = el('button', closing ? 'Encerrando…' : 'Encerrar sala', 'danger') as HTMLButtonElement;

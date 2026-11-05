@@ -382,6 +382,47 @@ describe('renderLobby: só texto, estados e ações', () => {
     expect(v.joined).toEqual([id(2)]);
   });
 
+  it('"Convidar" só para o dono de sala aberta com lugar livre, e o clique passa o id', () => {
+    const invited: string[] = [];
+    const v = view(
+      { rooms: [room(1, { member_count: 1, max_members: 2 }), room(2, { member_count: 2, max_members: 2 }), room(3, { role: 'member', member_count: 1, max_members: 2 }), closedRoom(4)] },
+      { onInvite: (r) => invited.push(r) },
+    );
+    expect(v.buttons(/^Convidar$/)).toHaveLength(1);
+    v.buttons(/^Convidar$/)[0]!.click();
+    expect(invited).toEqual([id(1)]);
+  });
+
+  it('"Convidar" continua ativo durante a chamada e fica desativado enquanto gera ou há outra operação', () => {
+    const rooms = [room(1, { member_count: 1, max_members: 2 })];
+    const onInvite = () => undefined;
+    const invite = (state: Partial<LobbyState>, opts: Partial<LobbyViewOptions>) => view({ rooms, ...state }, { onInvite, ...opts }).buttons(/^Convidar$/)[0]!;
+    expect(invite({}, { callActive: true, activeRoomId: id(1) }).disabled).toBe(false);
+    expect(invite({}, { inviteBusy: true }).disabled).toBe(true);
+    expect(invite({ busy: { kind: 'refresh' } }, {}).disabled).toBe(true);
+  });
+
+  it('revogação: só o dono de sala aberta com lugar livre, com o texto pedido e o id da sala', () => {
+    const revoked: string[] = [];
+    const v = view(
+      { rooms: [room(1, { member_count: 1, max_members: 2 }), room(2, { member_count: 2, max_members: 2 }), room(3, { role: 'member', member_count: 1, max_members: 2 }), closedRoom(4)] },
+      { onRevokeInvites: (r) => revoked.push(r) },
+    );
+    const buttons = v.buttons(/^Revogar convites pendentes desta sala$/);
+    expect(buttons).toHaveLength(1);
+    buttons[0]!.click();
+    expect(revoked).toEqual([id(1)]);
+  });
+
+  it('revogação: desativada enquanto há operação em curso, e ativa durante a chamada', () => {
+    const rooms = [room(1, { member_count: 1, max_members: 2 })];
+    const onRevokeInvites = () => undefined;
+    const revoke = (state: Partial<LobbyState>, opts: Partial<LobbyViewOptions>) => view({ rooms, ...state }, { onRevokeInvites, ...opts }).buttons(/^Revogar/)[0]!;
+    expect(revoke({}, { callActive: true, activeRoomId: id(1) }).disabled).toBe(false);
+    expect(revoke({}, { inviteBusy: true }).disabled).toBe(true);
+    expect(revoke({ busy: { kind: 'refresh' } }, {}).disabled).toBe(true);
+  });
+
   it('chamada em curso: nenhuma entrada possível; a sala da chamada aparece como "Na chamada"', () => {
     const v = view({ rooms: [room(1), room(2)] }, { callActive: true, activeRoomId: id(1) });
     const joins = v.root.find('button').filter((b) => /Entrar na chamada|Na chamada/.test(b.textContent));
