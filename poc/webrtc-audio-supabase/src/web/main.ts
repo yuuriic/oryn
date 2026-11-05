@@ -5,7 +5,7 @@
 //
 // Sigilo: a senha só passa do campo para o supabase-js e o campo é limpo em seguida; a sessão de login é guardada
 // pelo mecanismo oficial do Auth (auth-session.ts; riscos no runbook §14.6) e o ID da sala, em call-return.ts;
-// o registro em tela nunca mostra token, SDP,
+// o convite de sala (invites.ts) sai da URL ao carregar e fica só em memória; o registro em tela nunca mostra token, SDP,
 // candidato ICE ou senha. A configuração aceita só a chave publicável (config.ts).
 
 import { createClient, type Session, type SupabaseClient } from '@supabase/supabase-js';
@@ -14,11 +14,16 @@ import { authOptions, createAuthStorage, logout, restoreSession, type AuthStorag
 import { PeerCall, type CallPhase, type CallStats, type PeerStates } from './call.ts';
 import { CallReturnController, ReturnRoomStore, type ReturnState } from './call-return.ts';
 import { parseWebConfig, type WebConfig } from './config.ts';
+import { InviteAcceptController, InviteShareController, buildInviteLink, inviteLoginHint, takeInviteFromLocation, type InviteAcceptState, type InviteArrival, type InviteShareState } from './invites.ts';
 import { DISCONNECT_CHECKING, LobbyController, PEER_UNREACHABLE, disconnectPhase, explainDisconnect, formatCallError, isClosingOwnCall, type Notice } from './rooms.ts';
 import { renderLobby } from './rooms-view.ts';
 import { describePair, formatCodec, formatMetric } from './stats.ts';
 import { createSupabaseBackend } from './supabase-backend.ts';
 import { DISCONNECT, DISCONNECT_MESSAGES, SupabaseSignaling } from './supabase-signaling.ts';
+
+// Primeiro passo da página: o token do convite não fica na barra de endereço.
+const takeInvite = (): InviteArrival => takeInviteFromLocation(window.location, (url) => window.history.replaceState(window.history.state, '', url));
+const arrivedInvite = takeInvite();
 
 const el = <T extends HTMLElement>(id: string): T => {
   const node = document.getElementById(id);
@@ -40,6 +45,27 @@ const ui = {
   returnRoom: el<HTMLElement>('return-room'),
   returnBtn: el<HTMLButtonElement>('return-btn'),
   returnDismissBtn: el<HTMLButtonElement>('return-dismiss-btn'),
+  inviteLoginHint: el<HTMLParagraphElement>('invite-login-hint'),
+  inviteAccept: el<HTMLElement>('invite-accept'),
+  inviteAcceptPending: el<HTMLElement>('invite-accept-pending'),
+  inviteAccount: el<HTMLElement>('invite-account'),
+  inviteAcceptForm: el<HTMLFormElement>('invite-accept-form'),
+  inviteDisplay: el<HTMLInputElement>('invite-display'),
+  inviteAcceptBtn: el<HTMLButtonElement>('invite-accept-btn'),
+  inviteDeclineBtn: el<HTMLButtonElement>('invite-decline-btn'),
+  inviteAcceptMessage: el<HTMLParagraphElement>('invite-accept-message'),
+  inviteDismissBtn: el<HTMLButtonElement>('invite-dismiss-btn'),
+  inviteShare: el<HTMLElement>('invite-share'),
+  inviteShareRoom: el<HTMLElement>('invite-share-room'),
+  inviteShareBox: el<HTMLElement>('invite-share-box'),
+  inviteLink: el<HTMLInputElement>('invite-link'),
+  inviteExpiry: el<HTMLElement>('invite-expiry'),
+  inviteCopyBtn: el<HTMLButtonElement>('invite-copy-btn'),
+  inviteNativeShareBtn: el<HTMLButtonElement>('invite-native-share-btn'),
+  inviteShareStatus: el<HTMLParagraphElement>('invite-share-status'),
+  inviteShareMessage: el<HTMLParagraphElement>('invite-share-message'),
+  inviteNewBtn: el<HTMLButtonElement>('invite-new-btn'),
+  inviteCloseBtn: el<HTMLButtonElement>('invite-close-btn'),
   rooms: el<HTMLDivElement>('rooms'),
   roomsError: el<HTMLParagraphElement>('rooms-error'),
   refreshBtn: el<HTMLButtonElement>('rooms-refresh-btn'),
@@ -84,6 +110,8 @@ let callRoomId: string | null = null;
 let callActive = false;
 let lobby: LobbyController;
 let callReturn: CallReturnController;
+let inviteShare: InviteShareController;
+let inviteAccept: InviteAcceptController;
 /** Muda a cada chamada nova, logout e desconexão explicada: uma explicação de 4403 antiga não sobrescreve nada. */
 let disconnectTicket = 0;
 /** JWT atual, lido de forma síncrona no pagehide. Fica só em memória, como a sessão de login. */
@@ -315,6 +343,9 @@ function renderRooms(): void {
       activeRoomId: callActive ? callRoomId : null,
       onJoin: (roomId) => startCall(roomId),
       onClose: (roomId) => void lobby.close(roomId),
+      inviteBusy: inviteShare.state.busy,
+      onInvite: (roomId) => void inviteShare.open(roomId),
+      onRevokeInvites: (roomId) => void inviteShare.revoke(roomId, lobby.state.rooms.find((r) => r.room_id === roomId)?.name ?? ''),
     }),
   );
   ui.roomsError.textContent = s.actionError ?? '';
@@ -333,12 +364,72 @@ ui.createForm.addEventListener('submit', (event) => {
   });
 });
 
+// ---------- convites (MVP 02) ----------
+
+function setMessage(node: HTMLElement, message: { tone: 'info' | 'error'; text: string } | null): void {
+  node.textContent = message?.text ?? '';
+  node.hidden = message === null;
+  node.setAttribute('role', message?.tone === 'error' ? 'alert' : 'status');
+  node.className = message?.tone === 'error' ? 'error' : 'notice';
+}
+
+function renderInviteShare(s: InviteShareState): void {
+  const opening = ui.inviteShare.hidden && s.roomId !== null;
+  ui.inviteShare.hidden = s.roomId === null;
+  ui.inviteShareRoom.textContent = lobby.state.rooms.find((r) => r.room_id === s.roomId)?.name ?? '';
+  ui.inviteShareBox.hidden = s.link === null;
+  ui.inviteLink.value = s.link ?? '';
+  ui.inviteExpiry.textContent = s.expiresAt === null ? '' : new Date(s.expiresAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  ui.inviteNativeShareBtn.hidden = typeof navigator.share !== 'function';
+  ui.inviteShareStatus.textContent = s.revoking ? 'Revogando convites…' : 'Gerando convite…';
+  ui.inviteShareStatus.hidden = !s.busy;
+  setMessage(ui.inviteShareMessage, s.message);
+  ui.inviteNewBtn.hidden = !s.expired;
+  ui.inviteCloseBtn.disabled = s.busy;
+  if (opening) ui.inviteShare.scrollIntoView({ block: 'nearest' });
+  renderRooms();
+}
+
+function renderInviteAccept(s: InviteAcceptState): void {
+  const hint = inviteLoginHint(s);
+  ui.inviteLoginHint.textContent = hint ?? '';
+  ui.inviteLoginHint.hidden = hint === null;
+  ui.inviteAccept.hidden = selfUserId === null || s.status === 'none';
+  ui.inviteAcceptPending.hidden = s.status !== 'pending';
+  ui.inviteAccount.textContent = ui.userLabel.textContent;
+  const busy = s.status === 'pending' && s.busy;
+  ui.inviteAcceptBtn.disabled = busy;
+  ui.inviteDeclineBtn.disabled = busy;
+  ui.inviteDisplay.disabled = busy;
+  if (s.status !== 'pending') ui.inviteDisplay.value = '';
+  if (s.status === 'result') setMessage(ui.inviteAcceptMessage, { tone: s.tone, text: s.text });
+  else setMessage(ui.inviteAcceptMessage, s.status === 'pending' && s.message ? { tone: 'error', text: s.message } : null);
+  ui.inviteDismissBtn.hidden = s.status !== 'result';
+}
+
+ui.inviteCopyBtn.addEventListener('click', () => void inviteShare.copy());
+ui.inviteNativeShareBtn.addEventListener('click', () => void inviteShare.share());
+ui.inviteNewBtn.addEventListener('click', () => {
+  const { roomId } = inviteShare.state;
+  if (roomId) void inviteShare.open(roomId);
+});
+ui.inviteCloseBtn.addEventListener('click', () => inviteShare.close());
+ui.inviteAcceptForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  void inviteAccept.accept(ui.inviteDisplay.value);
+});
+ui.inviteDeclineBtn.addEventListener('click', () => inviteAccept.decline());
+ui.inviteDismissBtn.addEventListener('click', () => inviteAccept.dismiss());
+// O link aberto numa aba que já está na página não recarrega: só o fragmento muda.
+window.addEventListener('hashchange', () => inviteAccept?.receive(takeInvite()));
+
 // ---------- login ----------
 
 function showLoggedIn(email: string | undefined): void {
   ui.login.hidden = true;
   ui.account.hidden = false;
   ui.userLabel.textContent = email ?? '(conta sem e-mail)';
+  renderInviteAccept(inviteAccept.state);
 }
 
 /** Entrada na conta, por login ou sessão restaurada. Nunca inicia chamada nem pede o microfone. */
@@ -369,7 +460,10 @@ function showLoggedOut(): void {
   disconnectTicket += 1;
   if (ui.error.textContent === DISCONNECT_CHECKING.text) showNotice(null); // a explicação pendente foi descartada
   lobby.reset();
+  inviteShare.reset();
   callReturn.reset();
+  inviteAccept.accountChanged();
+  renderInviteAccept(inviteAccept.state);
   ui.account.hidden = true;
   ui.login.hidden = false;
   ui.loginBtn.disabled = false;
@@ -416,13 +510,39 @@ try {
     notify: showNotice,
     onChange: renderReturn,
   });
+  inviteShare = new InviteShareController({
+    rpc: (fn, args) => backend.rpc(fn, args),
+    link: (token) => buildInviteLink(window.location, token),
+    copy: (link) => navigator.clipboard.writeText(link),
+    share: (link) =>
+      navigator.share({ title: 'Convite para uma sala do Oryn', url: link }).then(
+        () => true,
+        (error: unknown) => {
+          if (error instanceof DOMException && error.name === 'AbortError') return false;
+          throw error;
+        },
+      ),
+    confirm: (message) => window.confirm(message),
+    onRevoked: () => void lobby.refresh(),
+    onChange: renderInviteShare,
+  });
+  inviteAccept = new InviteAcceptController({
+    rpc: (fn, args) => backend.rpc(fn, args),
+    onMember: () => void lobby.refresh(),
+    onChange: renderInviteAccept,
+  });
+  inviteAccept.receive(arrivedInvite);
   lobby = new LobbyController({
     rpc: (fn, args) => backend.rpc(fn, args),
     confirm: (message) => window.confirm(message),
-    onChange: () => renderRooms(),
+    onChange: (state) => {
+      if (state.status === 'ready') inviteShare.syncRooms(state.rooms);
+      renderRooms();
+    },
     // O dono encerrou a sala da própria chamada: sai dela aqui, sem esperar o aviso do servidor.
     onClosed: async (roomId) => {
       callReturn.forget(roomId);
+      inviteShare.forget(roomId);
       if (callActive && callRoomId === roomId) await endCall();
     },
   });

@@ -1427,3 +1427,27 @@ cabeçalhos de requisição. Fixar o URL ali colocaria o identificador do projet
 | Limite de sessão e tempo de inatividade | **Não verificado** |
 | Proteção contra senhas vazadas | **Desligada** (aviso do Supabase). Recomendação: habilitar antes do beta, conforme a disponibilidade do plano |
 | Cadastro por e-mail | **Aberto** (`disable_signup: false`), com confirmação de e-mail. Mantido por decisão: o Oryn será um produto público |
+
+### 14.9 MVP 02: convites por link
+
+**Fluxo:** o dono usa **Convidar** na sala aberta com lugar livre e envia o link; quem recebe abre o link, entra com uma conta existente,
+confere a conta mostrada e clica em **Aceitar convite**. A sala aparece em "Minhas salas", e o microfone só é ativado em **Entrar na
+chamada**. Não há cadastro por esta tela. Sem migração nova: `create_room_invite`, `redeem_room_invite`, `revoke_room_invite` e
+`list_my_rooms` continuam decidindo autorização, uso único, validade (15 minutos pela interface), limite de 3 pendentes e lugares.
+
+**Token:** vai no fragmento (`#convite=`), que o navegador não envia ao servidor nem no `Referer`. Sai da barra de endereço ao carregar e
+fica em memória, nesta aba. No banco, só o hash. O link gerado usa a origem da página aberta pelo dono, então dono e convidado precisam
+usar o mesmo endereço, que é o autorizado em `ORYN_ALLOWED_ORIGINS`.
+
+**Revogação:** `revoke_room_invite(p_room_id)` não identifica um convite: invalida **todos** os pendentes daquela sala, inclusive links
+gerados antes de recarregar a página. Por isso o botão se chama **Revogar convites pendentes desta sala** e pede confirmação. Só o dono
+consegue, e outras salas não são afetadas. Quem já entrou continua na sala.
+
+**Riscos residuais:**
+| Risco | Situação | Mitigação |
+|---|---|---|
+| O navegador grava a URL completa, com o token, no histórico em disco antes de a página rodar. Medido no Chrome; o cliente não consegue apagar | **Aceito pelo usuário em 2026-11-04 exclusivamente para o teste fechado. Reavaliar antes de qualquer beta** | Uso único, validade de 15 minutos, login exigido e revogação |
+| O link vale para quem o tiver e tiver uma conta, até ser usado ou expirar | Inerente ao link compartilhável | Enviar por canal privado; revogar se vazar |
+| A conta errada aceita e ocupa o lugar; a interface não remove membros | Aceito no MVP 02 | A conta é mostrada antes do aceite; a saída é encerrar a sala e criar outra |
+| Depois de recarregar, o link gerado não é mostrado de novo e continua pendente | Por projeto | Revogar os pendentes e gerar outro |
+| Celular real e a passagem pelo acesso protegido da Vercel não foram testados | **Pendente** | Conferir na primeira publicação autorizada |
