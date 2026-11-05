@@ -3,6 +3,7 @@
 // aceita. Qualquer coisa com cara de chave secreta, PAT ou JWT de service_role faz a página recusar-se a
 // iniciar (falha fechada). As mensagens citam só o NOME da variável, nunca o valor.
 
+import { isSupabaseUrl } from '../csp.ts';
 import { parseIceUrl, type IceServerConfig } from './ice.ts';
 import { isUuid } from '../../supabase/functions/_shared/signal-contract.ts';
 
@@ -27,7 +28,7 @@ export function parseWebConfig(env: Record<string, string | undefined>): WebConf
     if (name.startsWith('VITE_') && value && ADMIN_LIKE.test(value)) throw new WebConfigError(`${name}: parece uma credencial administrativa; o frontend só aceita a chave publicável`);
   }
   const url = (env['VITE_SUPABASE_URL'] ?? '').trim();
-  if (!/^https:\/\/[a-z0-9]{20}\.supabase\.co$/.test(url) && !/^http:\/\/(127\.0\.0\.1|localhost):\d{2,5}$/.test(url)) {
+  if (!isSupabaseUrl(url)) {
     throw new WebConfigError('VITE_SUPABASE_URL ausente ou fora do formato https://<ref>.supabase.co');
   }
   const key = (env['VITE_SUPABASE_PUBLISHABLE_KEY'] ?? '').trim();

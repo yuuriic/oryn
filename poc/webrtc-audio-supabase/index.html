@@ -3,10 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <!-- Só a própria origem, o projeto Supabase (HTTPS e WSS), o stack local no loopback e mídia local. Sem scripts de terceiros. -->
+    <!-- Conexões só com o endpoint configurado neste build (src/csp.ts). frame-ancestors e o resto, por cabeçalho (vercel.json). -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' https://*.supabase.co wss://*.supabase.co http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:*; media-src 'self' blob: mediastream:; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'"
+      content="__ORYN_PAGE_CSP__"
     />
     <title>Oryn — voz 1:1 (POC-02C)</title>
     <link rel="stylesheet" href="/src/web/style.css" />

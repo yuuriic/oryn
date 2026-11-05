@@ -1364,16 +1364,12 @@ das etapas anteriores. Autenticação do backend, RLS e banco não mudaram.
 | Risco | Situação | Mitigação |
 |---|---|---|
 | XSS lê os tokens em `localStorage` e continua a sessão, inclusive depois de fechar a aba | **Aceito com a decisão**; antes, o token já ficava acessível a um XSS enquanto a aba estivesse aberta | CSP sem `unsafe-inline`, `unsafe-eval` ou terceiros; sem HTML dinâmico (há teste) |
-| CSP permite `https://*.supabase.co`: um XSS poderia enviar tokens a um projeto Supabase de terceiros | **Aberto** | Restringir `connect-src` ao URL exato do projeto no build |
-| CSP por `<meta>` não aceita `frame-ancestors`: a página pode ser embutida em outro site | **Aberto** | Definir CSP e `frame-ancestors` por cabeçalho HTTP na publicação |
+| Um XSS poderia enviar tokens a outro projeto Supabase | **Corrigido no SEC-01** (§14.8) | `connect-src` só com o endpoint configurado no build |
+| A página poderia ser embutida em outro site | **Configurado no SEC-01**; falta conferir na Vercel (§14.8) | `frame-ancestors 'none'` por cabeçalho HTTP |
 | Computador compartilhado: quem abre o navegador já entra na conta | **Aceito**, sem `Sair da conta` | Orientar o usuário; duração da sessão no painel do Auth |
 | Token copiado do navegador continua válido até expirar ou ser revogado | **Aceito** | JWT curto; conferir no painel a rotação de refresh token com detecção de reuso |
 
-**Bloqueadores de produção (registrados em 2026-11-04; o cliente não deve ser publicado antes de concluí-los):**
-1. Restringir o CSP (`connect-src`) ao domínio exato do projeto Supabase.
-2. Configurar `frame-ancestors` por cabeçalho HTTP.
-3. Verificar a segurança das sessões no projeto remoto, sem alterá-la: rotação de refresh token, detecção de reuso,
-   duração do JWT e limite de duração da sessão. **Ainda não verificado.**
+**Bloqueadores de produção:** ver a situação de cada um no §14.8.
 
 ### 14.7 Validação com microfones reais (2026-11-04)
 
@@ -1398,3 +1394,36 @@ de terceiros desativados.
 
 **Sem cobertura aqui:** NAT, redes diferentes e Safari/iOS. A "pequena travada no início da fala" foi relatada uma vez, sem
 perda, jitter ou áudio ocultado na medição de 1 s, e não apareceu na rodada seguinte; causa não determinada.
+
+### 14.8 SEC-01: política de segurança e auditoria de sessões
+
+**Política em duas partes, sem diretiva repetida:**
+- **`<meta>` gerado no build (`src/csp.ts`):** `default-src`, `script-src`, `style-src`, `connect-src`, `media-src` e `img-src`.
+  `connect-src` traz só `'self'` e o host de `VITE_SUPABASE_URL`, em HTTP(S) e WS(S). Sem URL, fecha em `'self'`; URL fora do
+  formato faz o build falhar. O URL real entra só em `dist/`, que não é versionado;
+- **cabeçalho HTTP (`vercel.json`):** `frame-ancestors`, `base-uri`, `object-src` e `form-action`, mais `X-Frame-Options`,
+  `X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy` e `Cross-Origin-Opener-Policy`. Os mesmos cabeçalhos valem no
+  `vite dev` e no `vite preview`.
+
+**Por que não tudo no cabeçalho:** a `vercel.json` é estática, e a documentação da Vercel só mostra expansão de variável de ambiente em
+cabeçalhos de requisição. Fixar o URL ali colocaria o identificador do projeto no código versionado.
+
+**Publicação na Vercel:** o projeto precisa de *Root Directory* `poc/webrtc-audio-supabase` para ler esta `vercel.json`, e de
+`VITE_SUPABASE_URL` e `VITE_SUPABASE_PUBLISHABLE_KEY` no ambiente de **build**. A origem publicada precisa entrar em
+`ORYN_ALLOWED_ORIGINS` da Edge Function.
+
+**Bloqueadores de produção:**
+| # | Item | Situação |
+|---|---|---|
+| 1 | CSP restrito ao endpoint exato | Feito no código; validado em navegador com o build de produção |
+| 2 | `frame-ancestors` por cabeçalho | Configurado; validado no `vite preview`. **Falta conferir na Vercel**: não há projeto nem deploy |
+| 3 | Segurança das sessões no remoto | **Pendente**: ver abaixo. O painel é o único meio de leitura disponível nesta etapa |
+
+**Auditoria das sessões no projeto remoto (2026-11-04, somente leitura):**
+| Parâmetro | Situação |
+|---|---|
+| Rotação de refresh token e detecção de reuso | **Não verificado.** Não há sessão nem token no banco para observar, e a configuração não é legível por SQL |
+| Duração do JWT | **Não confirmado.** Evidência de 2026-10-29 indica 3600 s; o `config.toml` (600 s) não é aplicado ao projeto |
+| Limite de sessão e tempo de inatividade | **Não verificado** |
+| Proteção contra senhas vazadas | **Desligada** (aviso do Supabase). Recomendação: habilitar antes do beta, conforme a disponibilidade do plano |
+| Cadastro por e-mail | **Aberto** (`disable_signup: false`), com confirmação de e-mail. Mantido por decisão: o Oryn será um produto público |
