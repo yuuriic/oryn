@@ -8,12 +8,12 @@
       http-equiv="Content-Security-Policy"
       content="__ORYN_PAGE_CSP__"
     />
-    <title>Oryn — voz 1:1 (POC-02C)</title>
+    <title>Oryn — voz em grupo (POC-02C)</title>
     <link rel="stylesheet" href="/src/web/style.css" />
   </head>
   <body>
     <main>
-      <h1>Oryn · voz 1:1 <small>POC-02C</small></h1>
+      <h1>Oryn · voz em grupo <small>POC-02C</small></h1>
       <p id="config-error" class="error" role="alert" hidden></p>
 
       <section id="login" hidden>
@@ -85,6 +85,13 @@
           </div>
         </section>
 
+        <section id="members" hidden>
+          <h3>Membros: <span id="members-room"></span></h3>
+          <p id="members-status" role="status" hidden></p>
+          <div id="members-list"></div>
+          <div class="buttons"><button id="members-close-btn" type="button">Fechar membros</button></div>
+        </section>
+
         <section id="chat" hidden>
           <h3>Chat: <span id="chat-room"></span></h3>
           <p id="chat-status" role="status" hidden></p>
@@ -103,11 +110,19 @@
         <form id="create-form" autocomplete="off">
           <label>Nome da sala (até 40 caracteres) <input id="create-name" type="text" maxlength="80" spellcheck="false" required /></label>
           <label>Seu nome na sala (até 32 caracteres) <input id="create-display" type="text" maxlength="64" spellcheck="false" required /></label>
-          <button id="create-btn" type="submit">Criar sala (2 lugares)</button>
+          <label>Lugares, com você
+            <select id="create-capacity">
+              <option value="2" selected>2</option>
+              <option value="3">3</option>
+              <option value="4">4</option>
+            </select>
+          </label>
+          <button id="create-btn" type="submit">Criar sala</button>
         </form>
 
         <h2>Chamada</h2>
         <p>Sala: <strong id="call-room">—</strong></p>
+        <div id="participants" hidden></div>
         <div class="buttons">
           <button id="mute-btn" type="button" disabled>Mutar</button>
           <button id="leave-btn" type="button" disabled>Sair da chamada</button>
@@ -127,7 +142,6 @@
         <h2>Status</h2>
         <dl>
           <dt>Fase</dt><dd data-field="phase">—</dd>
-          <dt>Papel</dt><dd data-field="role">—</dd>
           <dt>Microfone</dt><dd data-field="mic">—</dd>
           <dt>Conexão</dt><dd data-field="peer">—</dd>
           <dt>ICE</dt><dd data-field="ice">—</dd>

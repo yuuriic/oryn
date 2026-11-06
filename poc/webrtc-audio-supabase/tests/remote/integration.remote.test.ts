@@ -417,7 +417,7 @@ describe.skipIf(!hasRoomSetup)('Supabase real — C2: sala de teste (convite + O
     if (new Set([owner.uid, member.uid, stranger.uid]).size !== 3) throw new Error('dono, membro e estranho precisam ser 3 contas distintas');
     const grant = await rpc<number>(owner, 'redeem_creator_invite', { p_token: env.creatorInvite });
     if (grant.message) throw new Error(`convite de criador recusado: ${grant.message}`);
-    const created = await rpc<string>(owner, 'create_room', { p_name: `it-02c4b-${RUN}`, p_display_name: 'it-owner', p_max_members: 10 });
+    const created = await rpc<string>(owner, 'create_room', { p_name: `it-02c4b-${RUN}`, p_display_name: 'it-owner', p_max_members: 4 });
     if (!created.data) throw new Error(`create_room: ${created.message}`);
     room = created.data;
     const invite = await rpc<{ token: string }[]>(owner, 'create_room_invite', { p_room_id: room, p_ttl_minutes: 10 });

@@ -8,7 +8,11 @@
 import { hasRoomSummaryShape, isDisplayName, isRoomName, parseRoomSummary, type RoomSummary } from '../contracts.ts';
 import { shortCode, type RpcResult } from './supabase-signaling.ts';
 
-/** O cliente de voz é 1:1: toda sala criada pela interface tem 2 lugares. */
+/** Capacidades oferecidas ao criar uma sala, em contas, com o dono. O backend recusa mais de 4. */
+export const ROOM_CAPACITIES = [2, 3, 4] as const;
+export type RoomCapacity = (typeof ROOM_CAPACITIES)[number];
+export const isRoomCapacity = (v: unknown): v is RoomCapacity => ROOM_CAPACITIES.includes(v as RoomCapacity);
+/** Capacidade padrão: a sala de 2 lugares de sempre. */
 export const ROOM_MAX_MEMBERS = 2;
 /** list_my_rooms devolve no máximo 50 salas. */
 export const ROOM_LIST_LIMIT = 50;
@@ -74,6 +78,12 @@ export interface Notice {
 
 /** A conexão com o par caiu e a sessão continua: pode ser só a rede. Não é erro enquanto há como voltar. */
 export const PEER_UNREACHABLE: Notice = { tone: 'info', text: 'Conexão com o outro participante perdida. Aguardando reconexão…' };
+
+/** Falha parcial: a chamada com os demais continua. O nome é só texto, nunca HTML. */
+export const peerProblemNotice = (displayName: string, kind: 'reconnecting' | 'failed'): Notice =>
+  kind === 'reconnecting'
+    ? { tone: 'info', text: `Conexão com ${displayName} perdida. Tentando reconectar…` }
+    : { tone: 'error', text: `Não foi possível conectar com ${displayName}. A chamada com os demais continua.` };
 
 /** Fase mostrada depois de explicar um 4403: motivo confirmado é fim normal da chamada, não falha. */
 export function disconnectPhase(notice: Notice): 'ended' | 'failed' {
@@ -217,18 +227,22 @@ export class LobbyController {
     this.set({ status: 'ready', rooms: list.rooms, skipped: list.skipped, listError: null });
   }
 
-  /** Cria a sala (sempre com 2 lugares) e recarrega a lista. Devolve o id criado, ou null. */
-  async create(name: string, displayName: string): Promise<string | null> {
+  /** Cria a sala e recarrega a lista. Devolve o id criado, ou null. */
+  async create(name: string, displayName: string, capacity: number = ROOM_MAX_MEMBERS): Promise<string | null> {
     if (this.s.busy) return null;
     const v = validateNewRoom(name, displayName);
     if (!v.ok) {
       this.set({ actionError: v.message });
       return null;
     }
+    if (!isRoomCapacity(capacity)) {
+      this.set({ actionError: 'Capacidade inválida: escolha 2, 3 ou 4 lugares.' });
+      return null;
+    }
     const epoch = this.epoch;
     this.set({ busy: { kind: 'create' }, actionError: null });
     const res = await this.deps
-      .rpc<string>('create_room', { p_name: v.name, p_display_name: v.displayName, p_max_members: ROOM_MAX_MEMBERS })
+      .rpc<string>('create_room', { p_name: v.name, p_display_name: v.displayName, p_max_members: capacity })
       .catch(() => ({ data: null, error: 'erro' }));
     if (epoch !== this.epoch) return null; // logout no meio: a resposta é da sessão anterior
     const id = typeof res.data === 'string' ? res.data : null;

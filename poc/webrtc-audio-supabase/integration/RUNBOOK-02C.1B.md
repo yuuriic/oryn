@@ -1582,3 +1582,45 @@ painel mostra erro de carga; login, salas e chamada não dependem dele.
 - A exclusão é irreversível no banco; só backup recupera. Por isso, excluir a conta de um dono com sala em uso exige decisão explícita do operador.
 - Um painel aberto continua mostrando o que já carregou até recarregar: a consulta periódica traz novidades, não exclusões. Quem perde o acesso à sala tem o painel limpo na consulta seguinte.
 - A regra de produto para exclusão de conta segue aberta (ARCHITECTURE.md §7.1).
+
+### 14.13 Salas de grupo e voz multiponto (0600 + cliente; ⛔ cada passo marcado exige autorização própria)
+
+**Estado: implementado e validado só localmente. A 0600 não foi aplicada no remoto, e o cliente não foi publicado.** Contratos em README, "Salas de grupo"; aplicação no checklist de deploy, Etapa 6.
+
+**Decisões:**
+- **Contratos existentes preservados:** nenhuma RPC existente nem a função `signal` mudaram. Dois comportamentos ficaram mais restritos por gatilho: sala nova com mais de 4 lugares é recusada, e quem saiu ou foi removido só volta por convite emitido depois disso.
+- **Por que gatilho no convite:** um resgate já esperando pela trava da sala escapa da revogação, e `redeem_room_invite` reativaria a pessoa. Há teste de controle provando essa corrida (`room-membership.pg`).
+- **Motor do par:** cada par é um `PeerCall`, o mesmo do 1:1: fila SDP, candidatos, timers e estatísticas ficam isolados.
+- **Sem colisão de offer:** o iniciador é determinístico, em função dos dois `session_id`, como no 1:1.
+- **Compatibilidade:** um cliente 1:1 em cache continua funcionando numa sala de 2 contas. Numa sala com mais contas, ele só fala com a primeira, e por isso o cliente novo precisa estar publicado antes de criar salas de 3 ou 4.
+
+**Ordem de publicação ⛔:** aplicar a 0600 (Etapa 6) antes de integrar o cliente à `main`. O cliente novo usa `get_voice_participants` para a voz: **sem a 0600, ele não consegue descobrir participantes**.
+
+**Roteiro de homologação em aparelhos reais (sem evidência até aqui):**
+1. Criar salas de 2, 3 e 4 lugares. Uma quinta conta com convite é recusada numa sala de 4.
+2. Regressão 1:1: Chrome no Windows e Safari no iPhone, com voz, mudo, saída e reentrada.
+3. Três contas: cada pessoa ouve as outras duas, separadamente. Confirmar falando uma de cada vez.
+4. Quatro contas, em redes diferentes se possível: todos ouvem todos, por pelo menos 15 minutos. Observar eco, cortes e temperatura do celular.
+5. Mudo: quem está mudo deixa de ser ouvido por todos, e continua ouvindo.
+6. Saída de um: os outros seguem sem interrupção. Quem saiu volta e reconecta com todos.
+7. Troca de rede ou modo avião em um aparelho: os outros seguem; ele volta sem reiniciar a chamada dos demais.
+8. Mesma conta em dois aparelhos: o segundo fica em espera e assume quando o primeiro sair.
+9. Chat durante a chamada, e fora dela.
+10. Remoção pelo dono durante a chamada: o removido cai, recebe o aviso e perde chat e sala; os outros seguem. Convite novo permite voltar.
+11. Saída voluntária: a sala some, e o histórico continua para os outros. O dono não tem "Sair"; encerra a sala.
+12. iPhone bloqueado e Safari em segundo plano, com 3 pessoas. **Risco já registrado, sem teste real.**
+
+**Validação local (2026-11-07, Chrome real com microfone falso, stack local descartável; roteiros não versionados):** 4 contas, 75 de 75, com áudio medido em cada conexão; regressão de saída, retorno e rede, 47 de 47; chat, 58 de 58. Isso prova o transporte, não a qualidade de voz nem redes reais.
+
+**Regressão corrigida:** na primeira versão, quem voltava depois de uma queda do navegador esperava a sessão antiga vencer, até 90 s. Agora o par passa para a sessão seguinte ao perder a antiga: 18,7 s no roteiro.
+
+**Riscos e limites:**
+- **Revogação P2P:** uma conexão já estabelecida entre dois clientes MODIFICADOS não pode ter a mídia interrompida com garantia absoluta só pela revogação no banco. O cliente legítimo fecha a conexão ao perder o par. Expulsão garantida exige SFU (ARCHITECTURE.md §8.3).
+- **Sem TURN:** cada par precisa de caminho direto. Com 4 pessoas, são 6 caminhos, e uma rede restritiva pode deixar pares sem conexão, com o estado "sem conexão" só para eles.
+- **Banda e CPU sem medição real:** cada cliente envia 3 fluxos de áudio. O impacto com jogo aberto, ou em celular, não foi medido.
+- **Áudio local não é homologação:** os roteiros usam microfone falso e a mesma máquina. Eco, ruído, latência e redes reais seguem sem evidência.
+- **Limite de sinalização:** a fila do cliente segue limitada a 30 sinais em 10 s, abaixo do limite do banco, que é por sessão. Com 3 pares e muitos candidatos, a negociação pode demorar mais em redes com muitas interfaces.
+- **Nomes repetidos:** duas pessoas podem usar o mesmo nome de exibição numa sala. Aceitável em piloto fechado; rever antes de ampliar.
+- **Convites revogados na remoção:** remover um membro revoga os pendentes da sala inteira, porque eles não são nominais.
+- **Prévia da hospedagem:** não tem as variáveis do Supabase, então a homologação é em produção, depois do merge.
+

@@ -1,5 +1,5 @@
 // Página da integração 02C: login (e-mail e senha em conta EXISTENTE; sem anônimo, sem cadastro), sala,
-// chamada de voz 1:1 com o PeerCall da 02B e sinalização pelo Supabase (SupabaseSignaling).
+// chamada de voz em grupo (MeshCall: até 4 contas, uma conexão por par) e sinalização pelo Supabase (MeshSignaling).
 // MVP 01: lobby com as salas da conta (listar, criar com 2 lugares, entrar e encerrar), em rooms.ts e
 // rooms-view.ts; o campo de UUID ficou em "Diagnóstico". Chat por sala, em chat.ts e chat-view.ts, sem nenhuma
 // ligação com a chamada.
@@ -12,19 +12,23 @@
 import { createClient, type Session, type SupabaseClient } from '@supabase/supabase-js';
 import { isUuid } from '../../supabase/functions/_shared/signal-contract.ts';
 import { authOptions, createAuthStorage, logout, restoreSession, type AuthStorage } from './auth-session.ts';
-import { PeerCall, type CallPhase, type CallStats, type PeerStates } from './call.ts';
+import type { CallPhase, CallStats, PeerStates } from './call.ts';
 import { ChatController, type ChatState } from './chat.ts';
 import { chatStatusText, renderChatMessages } from './chat-view.ts';
 import { CallReturnController, ReturnRoomStore, type ReturnState } from './call-return.ts';
 import { parseWebConfig, type WebConfig } from './config.ts';
 import { ENTRY_CHECKING, ENTRY_RELEASED, ENTRY_STILL_BLOCKED, EntryGate, blockedMessage, entryErrorMessage, type EntryState } from './entry-gate.ts';
 import { InviteAcceptController, InviteShareController, buildInviteLink, inviteLoginHint, takeInviteFromLocation, type InviteAcceptState, type InviteArrival, type InviteShareState } from './invites.ts';
-import { DISCONNECT_CHECKING, LobbyController, PEER_UNREACHABLE, disconnectPhase, explainDisconnect, formatCallError, isClosingOwnCall, type Notice } from './rooms.ts';
+import { MembersController, MEMBERS_LOAD_FAILED, type MembersState } from './members.ts';
+import { renderMembers, renderParticipants } from './members-view.ts';
+import { MeshCall, type ParticipantView } from './mesh-call.ts';
+import { MeshSignaling } from './mesh-signaling.ts';
+import { DISCONNECT_CHECKING, LobbyController, disconnectPhase, explainDisconnect, formatCallError, isClosingOwnCall, peerProblemNotice, type Notice } from './rooms.ts';
 import { renderLobby } from './rooms-view.ts';
 import { describePair, formatCodec, formatMetric } from './stats.ts';
 import { createBrowserLedger, type SessionLedger } from './session-ledger.ts';
 import { createSupabaseBackend } from './supabase-backend.ts';
-import { DISCONNECT, DISCONNECT_MESSAGES, JOIN_LIMIT_MESSAGE, SupabaseSignaling } from './supabase-signaling.ts';
+import { DISCONNECT, DISCONNECT_MESSAGES, JOIN_LIMIT_MESSAGE } from './supabase-signaling.ts';
 
 // Primeiro passo da página: o token do convite não fica na barra de endereço.
 const takeInvite = (): InviteArrival => takeInviteFromLocation(window.location, (url) => window.history.replaceState(window.history.state, '', url));
@@ -79,6 +83,13 @@ const ui = {
   rooms: el<HTMLDivElement>('rooms'),
   roomsError: el<HTMLParagraphElement>('rooms-error'),
   refreshBtn: el<HTMLButtonElement>('rooms-refresh-btn'),
+  members: el<HTMLElement>('members'),
+  membersRoom: el<HTMLElement>('members-room'),
+  membersStatus: el<HTMLParagraphElement>('members-status'),
+  membersList: el<HTMLDivElement>('members-list'),
+  membersCloseBtn: el<HTMLButtonElement>('members-close-btn'),
+  participants: el<HTMLDivElement>('participants'),
+  createCapacity: el<HTMLSelectElement>('create-capacity'),
   chat: el<HTMLElement>('chat'),
   chatRoom: el<HTMLElement>('chat-room'),
   chatStatus: el<HTMLParagraphElement>('chat-status'),
@@ -120,9 +131,10 @@ let authStorage: AuthStorage;
 /** O logout desta aba está em curso: o SIGNED_OUT que ele causa não é "a sessão terminou". */
 let loggingOut = false;
 let selfUserId: string | null = null;
-let call: PeerCall | null = null;
-let signaling: SupabaseSignaling | null = null;
-let remoteAudio: HTMLAudioElement | null = null;
+let call: MeshCall | null = null;
+let signaling: MeshSignaling | null = null;
+/** Um elemento de áudio por participante: separados, para volume individual e deafen no futuro. */
+const remoteAudio = new Map<string, HTMLAudioElement>();
 /** Sala da chamada atual (ou da última, até ela terminar) e se a chamada está em curso. */
 let callRoomId: string | null = null;
 let callActive = false;
@@ -134,8 +146,11 @@ let sweepTimer: ReturnType<typeof setTimeout> | null = null;
 let inviteShare: InviteShareController;
 let inviteAccept: InviteAcceptController;
 let chat: ChatController;
+let members: MembersController;
 /** Muda a cada chamada nova, logout e desconexão explicada: uma explicação de 4403 antiga não sobrescreve nada. */
 let disconnectTicket = 0;
+/** Último aviso de reconexão de um par: some quando o par volta ou a chamada termina. */
+let lastPeerNotice: string | null = null;
 /** JWT atual, lido de forma síncrona no pagehide. Fica só em memória, como a sessão de login. */
 let accessToken: string | null = null;
 
@@ -173,28 +188,32 @@ const authCode = (code: unknown): string => (typeof code === 'string' && /^[a-z0
 
 // ---------- áudio remoto ----------
 
-function setRemote(stream: MediaStream | null): void {
-  if (remoteAudio) {
-    remoteAudio.pause();
-    remoteAudio.srcObject = null;
-    remoteAudio.remove();
-    remoteAudio = null;
+function setRemote(session: string, stream: MediaStream | null): void {
+  const current = remoteAudio.get(session);
+  if (current) {
+    current.pause();
+    current.srcObject = null;
+    current.remove();
+    remoteAudio.delete(session);
   }
-  ui.listenBtn.hidden = true;
-  if (!stream) return;
-  const audio = document.createElement('audio');
-  audio.autoplay = true;
-  audio.srcObject = stream;
-  ui.audioContainer.replaceChildren(audio);
-  remoteAudio = audio;
-  audio.play().catch(() => {
-    ui.listenBtn.hidden = false; // autoplay bloqueado: o usuário libera com um clique
-    log('Reprodução do áudio remoto bloqueada pelo navegador: clique em "Ouvir".');
-  });
+  if (stream) {
+    const audio = document.createElement('audio');
+    audio.autoplay = true;
+    audio.srcObject = stream;
+    ui.audioContainer.append(audio);
+    remoteAudio.set(session, audio);
+    audio.play().catch(() => {
+      ui.listenBtn.hidden = false; // autoplay bloqueado: o usuário libera com um clique
+      log('Reprodução do áudio remoto bloqueada pelo navegador: clique em "Ouvir".');
+    });
+  }
+  if (remoteAudio.size === 0) ui.listenBtn.hidden = true;
 }
 
 ui.listenBtn.addEventListener('click', () => {
-  void remoteAudio?.play().then(() => (ui.listenBtn.hidden = true)).catch(() => undefined);
+  void Promise.all([...remoteAudio.values()].map((a) => a.play()))
+    .then(() => (ui.listenBtn.hidden = true))
+    .catch(() => undefined);
 });
 
 // ---------- renderização ----------
@@ -207,11 +226,8 @@ function renderPhase(phase: CallPhase, error?: string): void {
   ui.room.disabled = active;
   ui.muteBtn.disabled = !active;
   ui.leaveBtn.disabled = !active;
-  if (!active) {
-    ui.muteBtn.textContent = 'Mutar';
-    setField('role', '—');
-  }
-  if ((phase === 'connected' || phase === 'ended') && ui.error.textContent === PEER_UNREACHABLE.text) showNotice(null);
+  if (!active) ui.muteBtn.textContent = 'Mutar';
+  if (phase === 'ended' && ui.error.className === 'notice' && lastPeerNotice === ui.error.textContent) showNotice(null);
   // A entrada na sala foi aceita: é a sala para a qual a aba pode voltar depois de recarregar.
   if ((phase === 'waiting-peer' || phase === 'negotiating' || phase === 'connected') && callRoomId) callReturn.remember(callRoomId);
   // O dono encerrou a sala desta chamada por aqui: a queda que isso causa não é erro para quem encerrou.
@@ -247,9 +263,20 @@ function renderPhase(phase: CallPhase, error?: string): void {
   if (phase === 'ended' || phase === 'failed') {
     sessionLedger.releaseEntry(); // saiu antes de registrar a sessão, inclusive por recusa do microfone
     signaling = null;
+    ui.participants.hidden = true;
     if (lobby.state.status !== 'idle') void lobby.refresh(); // contagens e estado das salas mudaram
   }
   renderRooms();
+}
+
+function renderCallParticipants(list: readonly ParticipantView[], standby: boolean): void {
+  ui.participants.hidden = !callActive;
+  ui.participants.replaceChildren(renderParticipants(document, list, standby));
+  // O par voltou: o aviso de reconexão deixa de valer.
+  if (lastPeerNotice !== null && ui.error.textContent === lastPeerNotice && list.every((p) => p.state === 'connected')) {
+    showNotice(null);
+    lastPeerNotice = null;
+  }
 }
 
 function renderPeer(states: PeerStates | null): void {
@@ -295,37 +322,41 @@ function beginCall(roomId: string, userId: string): void {
   ui.status.hidden = false;
   ui.log.replaceChildren();
 
-  const current: PeerCall = new PeerCall(
+  const current: MeshCall = new MeshCall(
     {
       getUserMedia: (c) => navigator.mediaDevices.getUserMedia(c),
       createPeerConnection: (c) => new RTCPeerConnection(c),
-      createSignaling: (handlers) => {
-        signaling = new SupabaseSignaling({ backend, roomId, selfUserId: userId, handlers, iceServers: cfg.iceServers, tracker: sessionLedger.tracker(userId, roomId), log: (m) => call === current && log(m), onPeerUnreachable: () => call === current && showNotice(PEER_UNREACHABLE) });
+      createRoom: (events, onDisconnected) => {
+        signaling = new MeshSignaling({ backend, roomId, selfUserId: userId, events, onDisconnected, iceServers: cfg.iceServers, tracker: sessionLedger.tracker(userId, roomId), log: (m) => call === current && log(m) });
         return signaling;
       },
+      iceServers: cfg.iceServers,
       audioCodecs: () => RTCRtpReceiver.getCapabilities?.('audio')?.codecs ?? null,
       iceMode: 'direct', // só STUN nesta etapa
     },
     {
       onPhase: (phase, error) => call === current && renderPhase(phase, error),
-      onSession: () => undefined,
-      onInvite: () => undefined,
-      onPeerStates: (s) => {
-        if (call !== current) return;
-        renderPeer(s);
-        setField('role', current.currentRole === 'host' ? 'iniciador (cria a offer)' : current.currentRole === 'guest' ? 'responde à offer' : '—');
+      onParticipants: (list, standby) => {
+        if (call === current) renderCallParticipants(list, standby);
       },
+      onRemoteAudio: (session, stream) => call === current && setRemote(session, stream),
+      onPeerStates: (s) => call === current && renderPeer(s),
       onLocalStream: (s) => call === current && setField('mic', s ? (current.muted ? 'capturando (mutado)' : 'capturando') : 'liberado'),
-      onRemoteStream: (s) => call === current && setRemote(s),
       onStats: (s) => call === current && renderStats(s),
       onLog: (m) => call === current && log(m),
       onIce: (info) => call === current && log(info ? `ICE: ${info.summary}.` : 'ICE: configuração descartada.'),
+      onPeerProblem: (name, kind) => {
+        if (call !== current) return;
+        const notice = peerProblemNotice(name, kind);
+        lastPeerNotice = notice.text;
+        showNotice(notice);
+      },
     },
   );
   call = current;
   callActive = true; // antes da primeira fase: um segundo clique não abre outra chamada
   renderRooms();
-  void current.start({ kind: 'room' });
+  void current.start();
 }
 
 /** Encerra a chamada e espera a saída da sala (leave_room precisa do JWT ainda válido). */
@@ -438,6 +469,8 @@ function renderRooms(): void {
       onRevokeInvites: (roomId) => void inviteShare.revoke(roomId, lobby.state.rooms.find((r) => r.room_id === roomId)?.name ?? ''),
       chatRoomId: chat?.state.roomId ?? null,
       onChat: openChat,
+      membersRoomId: members?.state.roomId ?? null,
+      onMembers: openMembers,
     }),
   );
   ui.roomsError.textContent = s.actionError ?? '';
@@ -446,15 +479,46 @@ function renderRooms(): void {
   ui.createBtn.disabled = busy;
   ui.createName.disabled = busy;
   ui.createDisplay.disabled = busy;
+  ui.createCapacity.disabled = busy;
 }
 
 ui.refreshBtn.addEventListener('click', () => void lobby.refresh());
 ui.createForm.addEventListener('submit', (event) => {
   event.preventDefault();
-  void lobby.create(ui.createName.value, ui.createDisplay.value).then((id) => {
+  void lobby.create(ui.createName.value, ui.createDisplay.value, Number(ui.createCapacity.value)).then((id) => {
     if (id) ui.createName.value = '';
   });
 });
+
+// ---------- membros da sala ----------
+
+function openMembers(roomId: string): void {
+  const room = lobby.state.rooms.find((r) => r.room_id === roomId);
+  if (!room) return;
+  members.open(roomId, room.name, !room.is_open);
+  ui.members.scrollIntoView({ block: 'nearest' });
+}
+
+let membersRenderedRoom: string | null = null;
+
+function renderMembersPanel(s: MembersState): void {
+  ui.members.hidden = s.status === 'closed';
+  ui.membersRoom.textContent = s.roomName;
+  setMessage(ui.membersStatus, s.status === 'error' ? { tone: 'error', text: MEMBERS_LOAD_FAILED } : s.message);
+  ui.membersList.replaceChildren(
+    renderMembers(document, s, {
+      canManage: members.canManage,
+      onLeave: () => void members.leave(),
+      onRemove: (ref) => void members.remove(ref),
+    }),
+  );
+  if (membersRenderedRoom !== s.roomId) {
+    membersRenderedRoom = s.roomId;
+    renderRooms(); // o botão "Membros abertos": sem redesenhar o lobby a cada consulta
+  }
+}
+
+ui.membersCloseBtn.addEventListener('click', () => members.close());
 
 // ---------- chat por sala ----------
 
@@ -466,6 +530,7 @@ function openChat(roomId: string): void {
 }
 
 let chatRenderedRoom: string | null = null;
+let chatDeniedRefreshed = false;
 
 function renderChat(s: ChatState): void {
   ui.chat.hidden = s.status === 'closed';
@@ -493,6 +558,12 @@ function renderChat(s: ChatState): void {
   ui.chatForm.hidden = s.readOnly || s.status === 'denied';
   ui.chatSendBtn.disabled = s.status !== 'ready';
   if (roomChanged) renderRooms(); // o botão "Chat aberto": sem redesenhar o lobby a cada mensagem
+  // Recusa do servidor: a pertença acabou. A lista de salas deixa de mostrar esta.
+  if (s.status === 'denied' && !chatDeniedRefreshed) {
+    chatDeniedRefreshed = true;
+    void lobby.refresh();
+  }
+  if (s.status !== 'denied') chatDeniedRefreshed = false;
 }
 
 function submitChat(): void {
@@ -612,6 +683,7 @@ function showLoggedOut(): void {
   sweepTimer = null;
   entryGate.reset();
   chat.close();
+  members.close();
   ui.chatInput.value = '';
   lobby.reset();
   inviteShare.reset();
@@ -712,6 +784,26 @@ try {
       inviteShare.forget(roomId);
       if (callActive && callRoomId === roomId) await endCall();
     },
+  });
+  members = new MembersController({
+    rpc: (fn, args) => backend.rpc(fn, args),
+    confirm: (message) => window.confirm(message),
+    isHidden: () => document.hidden,
+    setTimer: (fn, ms) => setTimeout(fn, ms),
+    clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+    onChange: renderMembersPanel,
+    // A sessão ainda vale aqui: leave_room e o aviso aos outros saem antes de a pertença acabar.
+    beforeLeave: async (roomId) => {
+      callReturn.forget(roomId);
+      if (callActive && callRoomId === roomId) await endCall();
+    },
+    onLeft: (roomId) => {
+      if (chat.state.roomId === roomId) chat.close();
+      inviteShare.forget(roomId);
+      void lobby.refresh();
+    },
+    onDenied: () => void lobby.refresh(),
+    onChanged: () => void lobby.refresh(),
   });
   chat = new ChatController({
     rpc: (fn, args) => backend.rpc(fn, args),

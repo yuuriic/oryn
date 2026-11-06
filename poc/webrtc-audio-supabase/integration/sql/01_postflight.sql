@@ -18,10 +18,13 @@ user_rpcs(sig) as (values
   ('public.leave_room(uuid)'), ('public.get_roster(uuid)'),
   ('public.authorize_signal(uuid,uuid,uuid,text,integer,integer)'), ('public.ack_signals(uuid,uuid[])'),
   ('public.list_my_rooms()'), ('public.close_room(uuid)'),
-  ('public.send_room_message(uuid,uuid,text)'), ('public.list_room_messages(uuid,bigint,bigint,integer)')),
+  ('public.send_room_message(uuid,uuid,text)'), ('public.list_room_messages(uuid,bigint,bigint,integer)'),
+  ('public.list_room_members(uuid)'), ('public.get_voice_participants(uuid)'),
+  ('public.leave_room_membership(uuid)'), ('public.remove_room_member(uuid,text)')),
 internal_fns(sig) as (values
   ('oryn.admin_issue_creator_invite(integer,integer)'), ('oryn.publish_control(uuid,uuid,text,jsonb)'),
-  ('oryn.new_token()'), ('oryn.token_hash(text)'), ('oryn.is_active_member(uuid,uuid)'), ('oryn.require_uid()')),
+  ('oryn.new_token()'), ('oryn.token_hash(text)'), ('oryn.is_active_member(uuid,uuid)'), ('oryn.require_uid()'),
+  ('oryn.member_ref(uuid,uuid)'), ('oryn.enforce_room_capacity()'), ('oryn.guard_member_reactivation()'), ('oryn.end_membership(uuid,uuid,text)')),
 client_roles(role) as (values ('anon'), ('authenticated'), ('service_role')),
 table_privs(priv) as (values ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE'), ('TRUNCATE'), ('REFERENCES'), ('TRIGGER')),
 domain_tables(t) as (
@@ -99,8 +102,8 @@ checks(item, expected, actual) as (
   union all
   -- Auditoria 02C.1B.0A: o conjunto exposto em public é EXATAMENTE o contrato (num projeto novo, public
   -- começa vazio; qualquer função a mais precisa de revisão antes de seguir).
-  select 'public contém só as 16 RPCs do contrato', true,
-         (select pg_catalog.count(*) = 16 from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+  select 'public contém só as 20 RPCs do contrato', true,
+         (select pg_catalog.count(*) = 20 from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid = p.pronamespace
            where n.nspname = 'public')
          and not exists (select 1 from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid = p.pronamespace
                           where n.nspname = 'public' and not p.prosecdef)

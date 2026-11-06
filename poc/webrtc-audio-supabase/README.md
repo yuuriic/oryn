@@ -113,6 +113,7 @@ Requisitos: Node 24+ e pnpm 12+. Não há serviço a instalar: o PGlite e o Post
 | `supabase/migrations/…0200_oryn_functions.sql` | RPCs `SECURITY DEFINER` (`search_path = ''`) e `EXECUTE` explícito |
 | `supabase/migrations/…0300_oryn_realtime.sql` | Políticas de `realtime.messages`: receber só no próprio tópico; **nenhum envio de cliente** em `oryn:*` |
 | `supabase/migrations/…0400_oryn_room_management.sql` | MVP 01: `list_my_rooms` e `close_room` (aditiva; aplicada no remoto em 2026-10-28) |
+| `supabase/migrations/…0600_oryn_room_membership.sql` | Salas de grupo: capacidade de até 4 contas, lista de membros, saída, remoção e identidade de participante (aditiva; **não aplicada no remoto**) |
 | `supabase/migrations/…0500_oryn_room_messages.sql` | Chat por sala: `oryn.room_messages`, `oryn.room_message_counters`, `send_room_message` e `list_room_messages` (aditiva; aplicada no remoto em 2026-11-06) |
 | `supabase/functions/_shared/` | Contrato da sinalização e núcleo da Edge Function (puros e testados) |
 | `supabase/functions/_shared/edge-config.ts`, `supabase-http.ts`, `signal-http.ts` | Credenciais, chamadas HTTP com headers separados por operação e camada HTTP/CORS (puros e testados) |
@@ -186,7 +187,7 @@ um túnel HTTPS temporário:
 - **NAT e operadoras:** o WAN cobre um único cenário (uma rede Wi-Fi e uma operadora móvel). NAT restritivo
   (simétrico, CGNAT) e redes corporativas não foram testados.
 - **TURN:** não existe; sem ele, redes restritivas podem não conectar.
-- **Grupo:** o cliente é só 1:1.
+- **Grupo:** até 4 contas por sala, em mesh, na seção "Salas de grupo"; **ainda não publicado**.
 
 ## MVP 01 — gerenciamento de salas pela interface
 
@@ -226,6 +227,18 @@ cenários sem evidência em aparelho e riscos: runbook §14.12. Implantação: c
 - **Sala encerrada:** somente leitura, em "Ver mensagens". Enviar devolve `room-closed`.
 - **Texto puro:** só `textContent`, sem HTML. O texto não vai para registro nenhum nem para `realtime.messages`.
 - **Fora do escopo:** edição e exclusão de mensagens, anexos, indicador de digitação, entrega instantânea, espaços e canais.
+
+## Salas de grupo e voz multiponto
+
+**Estado: implementado e validado localmente. A migração 0600 não foi aplicada no remoto, e o cliente publicado segue 1:1.**
+Implantação: checklist de deploy, Etapa 6 ⛔. Operação, homologação e riscos: runbook §14.13.
+
+- **Capacidade:** 2, 3 ou 4 contas por sala, com o dono. O backend recusa sala nova acima de 4 e o resgate que ultrapassaria a capacidade.
+- **Membros:** `list_room_members`, `leave_room_membership` e `remove_room_member`. A referência de um membro é opaca, por sala, e não revela a conta.
+- **Voz:** uma `RTCPeerConnection` por participante remoto: até 3 por cliente e 6 no total. Uma única captura de microfone. Cada áudio remoto fica separado.
+- **Identidade:** `get_voice_participants` distingue contas de sessões. De cada conta, só a sessão mais antiga entra no mesh; a outra fica em espera e assume quando a primeira sair, ou quando um par a chamar por ter perdido a primeira (navegador que caiu sem avisar).
+- **Isolamento:** a falha de um par não derruba os demais. Sem SFU e sem servidor de mídia.
+- **Fora do escopo:** espaços, canais, soundboard, TURN, deafen, volume individual e transferência de propriedade.
 
 ## Modelo de segurança
 

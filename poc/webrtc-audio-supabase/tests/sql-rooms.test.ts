@@ -100,7 +100,7 @@ describe('convites de sala', () => {
 
   it('só o dono emite e revoga convites; no máximo 3 pendentes', async () => {
     const owner = await makeCreator(db);
-    const room = await createRoom(db, owner, 10);
+    const room = await createRoom(db, owner, 4);
     const member = await joinWithInvite(db, room, owner);
     expect(await db.rpcError(member, 'public.create_room_invite', { p_room_id: room, p_ttl_minutes: 10 })).toBe('unauthorized');
     expect(await db.rpcError(member, 'public.revoke_room_invite', { p_room_id: room })).toBe('unauthorized');

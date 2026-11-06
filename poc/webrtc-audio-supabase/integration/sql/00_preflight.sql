@@ -27,7 +27,8 @@ select p.oid::regprocedure as existing
    and p.proname in ('redeem_creator_invite', 'create_room', 'create_room_invite', 'revoke_room_invite',
                      'redeem_room_invite', 'join_room', 'touch_session', 'leave_room', 'get_roster',
                      'authorize_signal', 'set_signal_state', 'ack_signals', 'list_my_rooms', 'close_room',
-                     'send_room_message', 'list_room_messages');
+                     'send_room_message', 'list_room_messages', 'list_room_members', 'get_voice_participants',
+                     'leave_room_membership', 'remove_room_member');
 
 -- P4. Dependências do Supabase usadas pelas migrações. Esperado: todas true.
 select pg_catalog.to_regprocedure('auth.uid()') is not null                                   as has_auth_uid,

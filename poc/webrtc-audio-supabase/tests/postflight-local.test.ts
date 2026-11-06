@@ -112,7 +112,7 @@ describe('verificação entre migrações (05_step_checks.sql)', () => {
 });
 
 describe('reversão (90_rollback.sql) depois de cada etapa', () => {
-  it.each([1, 2, 3, 4, 5])('depois de aplicar %i migração(ões): volta ao estado vazio e a reaplicação é limpa', async (n) => {
+  it.each([1, 2, 3, 4, 5, 6])('depois de aplicar %i migração(ões): volta ao estado vazio e a reaplicação é limpa', async (n) => {
     const db = await TestDb.createBare();
     try {
       const files = migrationFiles();
@@ -218,7 +218,7 @@ describe('MVP 01: 08_scope_entries.sql e 91_rollback_0400.sql', () => {
   const beforeStep4 = async () => {
     const db = await TestDb.createBare();
     const files = migrationFiles();
-    expect(files.map(([f]) => f.split('_')[0])).toEqual(['20261023000100', '20261023000200', '20261023000300', '20261028000400', '20261106000500']);
+    expect(files.map(([f]) => f.split('_')[0])).toEqual(['20261023000100', '20261023000200', '20261023000300', '20261028000400', '20261106000500', '20261107000600']);
     for (const [, m] of files.slice(0, 3)) await db.migrate(m);
     // Histórico com o mesmo dono das migrações (no projeto, o `postgres` cria e roda o 91).
     await db.migrate(`create schema supabase_migrations; create table supabase_migrations.schema_migrations (version text primary key);
@@ -466,6 +466,115 @@ describe('Chat por sala: 05_step_checks.sql e 92_rollback_0500.sql', () => {
     expect(text).not.toMatch(/\b(truncate|alter|cascade)\b/i);
     expect(text.match(/\bdelete\s+from\s+[\w.]+/gi)).toEqual(['delete from supabase_migrations.schema_migrations']);
     expect(text).toContain(`version = '20261106000500'`);
+  });
+});
+
+describe('Salas de grupo: 05_step_checks.sql e 93_rollback_0600.sql', () => {
+  const entries = async (db: TestDb) => {
+    const res = await db.pg.exec(sql('08_scope_entries.sql'));
+    const rows = res.find((r) => r.fields.some((f) => f.name === 'entrada'))!.rows as { n: number | null; entrada: string }[];
+    return rows.filter((r) => r.n !== null).map((r) => r.entrada);
+  };
+  const history = async (db: TestDb) => (await db.admin<{ v: string }>('select version as v from supabase_migrations.schema_migrations order by 1')).map((r) => r.v);
+  const before0600 = async () => {
+    const db = await TestDb.createBare();
+    const files = migrationFiles();
+    for (const [, m] of files.slice(0, 5)) await db.migrate(m);
+    await db.migrate(`create schema supabase_migrations; create table supabase_migrations.schema_migrations (version text primary key);
+                      insert into supabase_migrations.schema_migrations values ('20261023000100'), ('20261023000200'), ('20261023000300'), ('20261028000400'), ('20261106000500')`);
+    return { db, apply: async () => {
+      await db.migrate(files[5]![1]);
+      await db.admin(`insert into supabase_migrations.schema_migrations values ('20261107000600')`);
+    } };
+  };
+  const steps = async (db: TestDb) => {
+    await db.pg.exec('set role migration_owner');
+    try {
+      const res = await db.pg.exec(sql('05_step_checks.sql'));
+      return res.find((r) => r.fields.some((f) => f.name === 'status'))!.rows as { step: number; item: string; status: string }[];
+    } finally {
+      await db.pg.exec('reset role');
+    }
+  };
+
+  it('08: a 0600 acrescenta exatamente as 8 funções; nenhuma entrada anterior muda, nem o corpo das RPCs existentes', async () => {
+    const { db, apply } = await before0600();
+    try {
+      const before = await entries(db);
+      await apply();
+      const after = await entries(db);
+      expect(before.filter((x) => !after.includes(x))).toEqual([]);
+      expect(after.filter((x) => !before.includes(x)).map((x) => x.replace(/:[0-9a-f]{32}$/, '')).sort()).toEqual([
+        'fn:get_voice_participants(uuid)',
+        'fn:leave_room_membership(uuid)',
+        'fn:list_room_members(uuid)',
+        'fn:oryn.end_membership(uuid,uuid,text)',
+        'fn:oryn.enforce_room_capacity()',
+        'fn:oryn.guard_member_reactivation()',
+        'fn:oryn.member_ref(uuid,uuid)',
+        'fn:remove_room_member(uuid,text)',
+      ]);
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('05: passo 6 PENDING antes da 0600 e PASS depois, sem nenhum FAIL', async () => {
+    const { db, apply } = await before0600();
+    try {
+      const before = await steps(db);
+      expect(before.filter((r) => r.status === 'FAIL')).toEqual([]);
+      expect(before.filter((r) => r.step === 6).every((r) => r.status === 'PENDING')).toBe(true);
+      await apply();
+      const after = await steps(db);
+      expect(after.filter((r) => r.status === 'FAIL')).toEqual([]);
+      expect(after.filter((r) => r.step === 6).map((r) => r.status)).toEqual(Array(10).fill('PASS'));
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('93: volta o 08 ao estado de antes, preserva dados e é idempotente; a 0600 reaplica limpa', async () => {
+    const { db, apply } = await before0600();
+    try {
+      const s = await scenario(db);
+      const before = await entries(db);
+      await apply();
+      await db.migrate(sql('93_rollback_0600.sql'));
+      expect(await entries(db)).toEqual(before);
+      expect(await history(db)).not.toContain('20261107000600');
+      expect((await db.admin<{ n: number }>(`select count(*)::int as n from pg_trigger where tgname in ('oryn_room_capacity', 'oryn_member_reactivation')`))[0]!.n).toBe(0);
+      expect((await db.rpc(s.owner, 'public.list_my_rooms'))[0]).toMatchObject({ room_id: s.room, is_open: true });
+      await db.migrate(sql('93_rollback_0600.sql'));
+      expect(await entries(db)).toEqual(before);
+      await apply();
+      expect(await db.rpc(s.owner, 'public.list_room_members', { p_room_id: s.room })).toHaveLength(2);
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('93 falha fechada: com uma função estranha em public, nada é revertido', async () => {
+    const { db, apply } = await before0600();
+    try {
+      await apply();
+      await db.migrate('create function public.estranha() returns int language sql as $$ select 1 $$');
+      await db.pg.exec('set role migration_owner');
+      await expect(db.pg.exec(sql('93_rollback_0600.sql'))).rejects.toThrow(/oryn-93: public não ficou com as 16 RPCs/);
+      await db.pg.exec('rollback; reset role');
+      expect(await history(db)).toContain('20261107000600');
+      expect((await db.admin<{ ok: boolean }>(`select to_regprocedure('public.remove_room_member(uuid,text)') is not null as ok`))[0]!.ok).toBe(true);
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('93 só remove a 0600: nenhum comando sobre tabela, schema ou outra migração', () => {
+    const text = sql('93_rollback_0600.sql').replace(/--.*$/gm, '');
+    expect(text.match(/\bdrop\s+table\b/gi)).toBeNull();
+    expect(text).not.toMatch(/\b(truncate|alter|cascade)\b/i);
+    expect(text.match(/\bdelete\s+from\s+[\w.]+/gi)).toEqual(['delete from supabase_migrations.schema_migrations']);
+    expect(text).toContain(`version = '20261107000600'`);
   });
 });
 

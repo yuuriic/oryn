@@ -72,7 +72,7 @@ async function simulateC2(db: TestDb, acc: Accounts): Promise<void> {
     authSessions.push(sid);
   }
   await db.rpc(acc.owner, 'public.redeem_creator_invite', { p_token: await creatorToken(db, 10, 1) });
-  const room = (await db.rpc<{ create_room: string }>(acc.owner, 'public.create_room', { p_name: 'it-02c4b-abcd1234', p_display_name: 'it-owner', p_max_members: 10 }))[0]!.create_room;
+  const room = (await db.rpc<{ create_room: string }>(acc.owner, 'public.create_room', { p_name: 'it-02c4b-abcd1234', p_display_name: 'it-owner', p_max_members: 4 }))[0]!.create_room;
   await db.rpc(acc.member, 'public.redeem_room_invite', { p_token: await roomInvite(db, acc.owner, room), p_display_name: 'it-member' });
   const ownerSession = await openSession(db, acc.owner, room);
   const memberSession = await openSession(db, acc.member, room);
@@ -127,7 +127,7 @@ describe('12_c2_preflight.sql (02C.7P-A, G2/G3)', () => {
     try {
       if (mutation) await db.admin(mutation);
       else await db.rpc(acc.owner, 'public.redeem_creator_invite', { p_token: await creatorToken(db, 10, 1) }).then(() =>
-        db.rpc(acc.owner, 'public.create_room', { p_name: 'it-02c4b-anterior', p_display_name: 'x', p_max_members: 10 }));
+        db.rpc(acc.owner, 'public.create_room', { p_name: 'it-02c4b-anterior', p_display_name: 'x', p_max_members: 4 }));
       const r = await preflight(db);
       expect(statusOf(r, items)).toEqual(items.map((i) => `${i}=FAIL`));
     } finally {
@@ -180,7 +180,7 @@ describe('13_c2_postflight.sql (02C.7P-A, G2)', () => {
     try {
       // Execução ANTERIOR (fora da janela), já limpa de sala aberta: sala fechada, sessão revogada, hello/bye antigos.
       await db.rpc(acc.owner, 'public.redeem_creator_invite', { p_token: await creatorToken(db, 10, 1) });
-      const old = (await db.rpc<{ create_room: string }>(acc.owner, 'public.create_room', { p_name: 'it-02c4b-anterior', p_display_name: 'x', p_max_members: 10 }))[0]!.create_room;
+      const old = (await db.rpc<{ create_room: string }>(acc.owner, 'public.create_room', { p_name: 'it-02c4b-anterior', p_display_name: 'x', p_max_members: 4 }))[0]!.create_room;
       await db.rpc(acc.owner, 'public.leave_room', { p_session_id: await openSession(db, acc.owner, old) });
       await db.admin(`update oryn.rooms set created_at = now() - interval '1 day', closed_at = now() where id = $1`, [old]);
       await db.admin(`update oryn.room_sessions set created_at = now() - interval '1 day' where room_id = $1`, [old]);

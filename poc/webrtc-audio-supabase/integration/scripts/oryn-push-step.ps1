@@ -33,7 +33,7 @@
 #>
 [CmdletBinding()]
 param(
-  [Parameter(Mandatory)] [ValidateRange(1, 5)] [int] $Step,
+  [Parameter(Mandatory)] [ValidateRange(1, 6)] [int] $Step,
   [switch] $Apply,
   # Para testes locais com uma CLI falsa: executável e argumentos fixos antes dos da CLI.
   [string] $SupabaseCli = 'supabase',
@@ -53,7 +53,7 @@ $RequiredCliVersion = '2.122.0'
 $poc = (Resolve-Path (Join-Path $PSScriptRoot '..' '..')).Path
 $migrationsDir = Join-Path $poc 'supabase' 'migrations'
 $expected = @(Get-ChildItem -Path $migrationsDir -Filter '*.sql' | Sort-Object Name)
-if ($expected.Count -ne 5) { throw "esperadas 5 migrações em supabase/migrations; encontradas $($expected.Count)" }
+if ($expected.Count -ne 6) { throw "esperadas 6 migrações em supabase/migrations; encontradas $($expected.Count)" }
 $selected = @($expected | Select-Object -First $Step)
 $target = $selected[-1]
 $targetVersion = $target.Name.Split('_')[0]

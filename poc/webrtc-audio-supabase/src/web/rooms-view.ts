@@ -24,6 +24,10 @@ export interface LobbyViewOptions {
   onChat?(roomId: string): void;
   /** Sala com o chat aberto, se houver. */
   chatRoomId?: string | null;
+  /** Abre o painel de membros. */
+  onMembers?(roomId: string): void;
+  /** Sala com o painel de membros aberto, se houver. */
+  membersRoomId?: string | null;
 }
 
 const ROLE: Record<RoomSummary['role'], string> = { owner: 'dono', member: 'membro' };
@@ -66,6 +70,15 @@ export function renderLobby(doc: ViewDocument, state: LobbyState, opts: LobbyVie
     return button;
   };
 
+  const membersButton = (roomId: string, onMembers: (roomId: string) => void): HTMLElement => {
+    const opened = opts.membersRoomId === roomId;
+    const button = el('button', opened ? 'Membros abertos' : 'Membros') as HTMLButtonElement;
+    button.type = 'button';
+    button.disabled = opened;
+    button.addEventListener('click', () => onMembers(roomId));
+    return button;
+  };
+
   const { open, closed } = splitRooms(state.status === 'ready' ? state.rooms : []);
   const busy = state.busy !== null;
 
@@ -82,6 +95,7 @@ export function renderLobby(doc: ViewDocument, state: LobbyState, opts: LobbyVie
       join.addEventListener('click', () => opts.onJoin(room.room_id));
       actions.append(join);
       if (opts.onChat) actions.append(chatButton(room.room_id, 'Abrir chat', opts.onChat));
+      if (opts.onMembers) actions.append(membersButton(room.room_id, opts.onMembers));
       if (room.role === 'owner' && room.member_count < room.max_members && opts.onInvite) {
         const { onInvite } = opts;
         const invite = el('button', 'Convidar') as HTMLButtonElement;
@@ -124,6 +138,7 @@ export function renderLobby(doc: ViewDocument, state: LobbyState, opts: LobbyVie
       if (opts.onChat) {
         const actions = el('div', undefined, 'buttons');
         actions.append(chatButton(room.room_id, 'Ver mensagens', opts.onChat));
+        if (opts.onMembers) actions.append(membersButton(room.room_id, opts.onMembers));
         item.append(actions);
       }
       list.append(item);

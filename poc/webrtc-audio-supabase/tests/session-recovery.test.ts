@@ -804,10 +804,10 @@ describe('estático: a página', () => {
   it('só cria a chamada, e portanto o microfone, depois do veredito `go`', () => {
     const start = /function startCall\(roomInput: string\): void \{([\s\S]*?)\n\}/.exec(main)?.[1] ?? '';
     expect(start).toMatch(/entryGate\.check\(roomId\)\.then\(\(verdict\) => \{\s*if \(verdict !== 'go'\) return;\s*if \(!callActive && selfUserId === userId\) beginCall\(roomId, userId\);\s*else sessionLedger\.releaseEntry\(\);/);
-    expect(start).not.toMatch(/new PeerCall|getUserMedia/);
+    expect(start).not.toMatch(/new MeshCall|getUserMedia/);
     expect(main.match(/beginCall\(/g)).toHaveLength(2); // a definição e a única chamada
-    expect(main.match(/new PeerCall/g)).toHaveLength(1);
-    expect(main.indexOf('function beginCall')).toBeLessThan(main.indexOf('new PeerCall'));
+    expect(main.match(/new MeshCall/g)).toHaveLength(1);
+    expect(main.indexOf('function beginCall')).toBeLessThan(main.indexOf('new MeshCall'));
   });
 
   it('a reserva é solta se a chamada termina antes de registrar a sessão', () => {

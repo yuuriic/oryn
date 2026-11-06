@@ -26,6 +26,10 @@ const USER_RPCS: Record<string, string> = {
   close_room: 'public.close_room(uuid)',
   send_room_message: 'public.send_room_message(uuid,uuid,text)',
   list_room_messages: 'public.list_room_messages(uuid,bigint,bigint,integer)',
+  list_room_members: 'public.list_room_members(uuid)',
+  get_voice_participants: 'public.get_voice_participants(uuid)',
+  leave_room_membership: 'public.leave_room_membership(uuid)',
+  remove_room_member: 'public.remove_room_member(uuid,text)',
 };
 const SERVICE_RPCS: Record<string, string> = { set_signal_state: 'public.set_signal_state(uuid,text)' };
 
@@ -92,6 +96,17 @@ function matrix(s: Scenario, stranger: { uid: string }, inviteToken: string): Ca
     { label: 'anon: envia mensagem', actor: 'anon', fn: 'send_room_message', args: { p_room_id: s.room, p_client_nonce: rnd(), p_body: 'x' }, error: /permission denied/ },
     { label: 'estranho: lê mensagens', actor: stranger, fn: 'list_room_messages', args: { p_room_id: s.room }, error: /unauthorized/ },
     { label: 'anon: lê mensagens', actor: 'anon', fn: 'list_room_messages', args: { p_room_id: s.room }, error: /permission denied/ },
+    { label: 'estranho: lista membros', actor: stranger, fn: 'list_room_members', args: { p_room_id: s.room }, error: /unauthorized/ },
+    { label: 'anon: lista membros', actor: 'anon', fn: 'list_room_members', args: { p_room_id: s.room }, error: /permission denied/ },
+    { label: 'estranho: lista participantes', actor: stranger, fn: 'get_voice_participants', args: { p_room_id: s.room }, error: /not-member/ },
+    { label: 'anon: lista participantes', actor: 'anon', fn: 'get_voice_participants', args: { p_room_id: s.room }, error: /permission denied/ },
+    { label: 'estranho: sai da sala', actor: stranger, fn: 'leave_room_membership', args: { p_room_id: s.room }, error: /unauthorized/ },
+    { label: 'dono: abandona a sala', actor: s.owner, fn: 'leave_room_membership', args: { p_room_id: s.room }, error: /owner-cannot-leave/ },
+    { label: 'anon: sai da sala', actor: 'anon', fn: 'leave_room_membership', args: { p_room_id: s.room }, error: /permission denied/ },
+    { label: 'membro: remove outro', actor: s.member, fn: 'remove_room_member', args: { p_room_id: s.room, p_member_ref: 'x' }, error: /unauthorized/ },
+    { label: 'estranho: remove membro', actor: stranger, fn: 'remove_room_member', args: { p_room_id: s.room, p_member_ref: 'x' }, error: /unauthorized/ },
+    { label: 'dono: referência inexistente', actor: s.owner, fn: 'remove_room_member', args: { p_room_id: s.room, p_member_ref: 'x' }, error: /unauthorized/ },
+    { label: 'anon: remove membro', actor: 'anon', fn: 'remove_room_member', args: { p_room_id: s.room, p_member_ref: 'x' }, error: /permission denied/ },
   ];
 }
 

@@ -19,7 +19,7 @@
 // e-mails; os logs citam códigos curtos. O remetente de um sinal vem do servidor (envelope), nunca do cliente.
 
 import { isUuid, parseSignalRequest, type SignalEnvelope, type SignalRequest } from '../../supabase/functions/_shared/signal-contract.ts';
-import { parseControlEvent, parseRosterEntry, type RosterEntry } from '../contracts.ts';
+import { parseControlEvent, parseRosterEntry, type ControlEvent, type RosterEntry } from '../contracts.ts';
 import { SignalReceiver } from '../signal-receiver.ts';
 import { sendSignal, type SendOptions, type TransportResponse } from '../signal-sender.ts';
 import type { SignalingLike } from './call.ts';
@@ -213,18 +213,18 @@ type State ='new' | 'connecting' | 'open' | 'closed';
 
 export class SupabaseSignaling implements SignalingLike {
   private state: State = 'new';
-  private sessionId: string | null = null;
+  protected sessionId: string | null = null;
   private peer: string | null = null;
   /**
    * Pares dados como inalcançáveis, que ainda constam vivos no roster (até 90 s sem batimento, sem como saber antes).
    * Não são adotados pelo roster: só voltam com prova de vida (sinal recebido, autenticado pelo servidor).
    */
-  private readonly suspects = new Set<string>();
+  protected readonly suspects = new Set<string>();
   /** Sessões cujos sinais foram ignorados por haver outro par: se forem adotadas, a offer delas se perdeu. */
-  private readonly ignoredFrom = new Set<string>();
+  protected readonly ignoredFrom = new Set<string>();
   private readonly recoveries = new Map<string, { count: number; last: number }>();
   private channel: ChannelHandle | null = null;
-  private receiver: SignalReceiver | null = null;
+  protected receiver: SignalReceiver | null = null;
   private timers: ReturnType<typeof setInterval>[] = [];
   private queue: Outgoing[] = [];
   private pumping = false;
@@ -234,7 +234,7 @@ export class SupabaseSignaling implements SignalingLike {
    * Eventos recebidos antes de a descoberta inicial emitir `session`: guardados e reaplicados depois, para o
    * PeerCall nunca ver `peer-joined`/`signal` antes de `session`.
    */
-  private early: { event: string; payload: unknown }[] | null = [];
+  protected early: { event: string; payload: unknown }[] | null = [];
   /** Esperas em curso (limite de taxa e backoff das retentativas): canceladas em close(), sem timer pendente. */
   private readonly waits = new Set<{ timer: ReturnType<typeof setTimeout>; resolve: () => void }>();
   private readonly sleep = (ms: number): Promise<void> =>
@@ -250,7 +250,7 @@ export class SupabaseSignaling implements SignalingLike {
       this.waits.add(entry);
     });
   private readonly rate: RateWindow;
-  private readonly o: Required<Omit<SupabaseSignalingOptions, 'sendOptions'>> & { sendOptions: SendOptions };
+  protected readonly o: Required<Omit<SupabaseSignalingOptions, 'sendOptions'>> & { sendOptions: SendOptions };
   /** Resolvida quando close() terminou (leave_room e remoção do canal). */
   closed: Promise<void> = Promise.resolve();
   /** Ids entregues que ainda esperam `ackDelayMs` para entrar num lote: msg_id → quando. */
@@ -386,7 +386,7 @@ export class SupabaseSignaling implements SignalingLike {
     return true;
   }
 
-  private spendRecovery(peer: string): boolean {
+  protected spendRecovery(peer: string): boolean {
     const now = this.o.now();
     const entry = this.recoveries.get(peer);
     const count = entry && now - entry.last <= RECOVERY_WINDOW_MS ? entry.count : 0;
@@ -395,14 +395,14 @@ export class SupabaseSignaling implements SignalingLike {
     return true;
   }
 
-  private dropQueued(peer: string): void {
+  protected dropQueued(peer: string): void {
     const before = this.queue.length;
     this.queue = this.queue.filter((q) => q.peer !== peer);
     this.counters.dropped += before - this.queue.length;
   }
 
   /** `ice-failed` pede que o par refaça a conexão; `renegotiate` responde e nunca gera resposta: não há como virar loop. */
-  private sendRestart(peer: string, reason: 'ice-failed' | 'renegotiate'): void {
+  protected sendRestart(peer: string, reason: 'ice-failed' | 'renegotiate'): void {
     const sid = this.sessionId;
     if (!sid) return;
     const request: SignalRequest = { session_id: sid, to_session_id: peer, client_msg_id: this.o.randomUUID(), pair_epoch: pairEpoch(sid, peer), kind: 'restart-request', payload: { reason } };
@@ -474,11 +474,11 @@ export class SupabaseSignaling implements SignalingLike {
   // ---- descoberta do par ----
 
   /** Serializada: hello e o roster inicial nunca adotam dois pares ao mesmo tempo. */
-  private discover(initial: boolean): void {
+  protected discover(initial: boolean): void {
     this.discovery = this.discovery.then(() => this.discoverNow(initial)).catch(() => undefined);
   }
 
-  private async discoverNow(initial: boolean): Promise<void> {
+  protected async discoverNow(initial: boolean): Promise<void> {
     if (this.isClosed() || !this.sessionId) return;
     const res = await this.o.backend.rpc<unknown[]>('get_roster', { p_room_id: this.o.roomId });
     if (this.isClosed()) return;
@@ -522,7 +522,7 @@ export class SupabaseSignaling implements SignalingLike {
     this.emit({ type: 'peer-joined', epoch: pairEpoch(this.sessionId, peer), role: this.roleWith(peer) });
   }
 
-  private forgetSuspect(session: string): void {
+  protected forgetSuspect(session: string): void {
     this.suspects.delete(session);
     this.ignoredFrom.delete(session);
     this.receiver?.forgetPeer(session);
@@ -547,7 +547,7 @@ export class SupabaseSignaling implements SignalingLike {
 
   // ---- recepção ----
 
-  private onBroadcast(event: string, payload: unknown): void {
+  protected onBroadcast(event: string, payload: unknown): void {
     if (this.isClosed()) return;
     if (this.early !== null) {
       if (this.early.length < 64) this.early.push({ event, payload });
@@ -562,6 +562,10 @@ export class SupabaseSignaling implements SignalingLike {
     if (event !== 'hello' && event !== 'bye') return;
     const ctl = parseControlEvent(event, payload);
     if (!ctl) return this.o.log(`Evento "${event}" inválido descartado.`);
+    this.onControl(ctl);
+  }
+
+  protected onControl(ctl: ControlEvent): void {
     if (ctl.session_id === this.sessionId) return;
     if (ctl.event === 'bye') {
       if (ctl.session_id === this.peer) this.dropPeer('bye');
@@ -576,7 +580,7 @@ export class SupabaseSignaling implements SignalingLike {
     else if (ctl.session_id !== this.peer) this.o.log('Terceira sessão na sala ignorada (1:1).');
   }
 
-  private onDeliver(env: SignalEnvelope): void {
+  protected onDeliver(env: SignalEnvelope): void {
     // O envelope é montado pelo servidor: remetente = sessão viva da mesma sala, de from_user.
     if (env.from_user === this.o.selfUserId) {
       this.counters.ignored += 1;
@@ -600,7 +604,11 @@ export class SupabaseSignaling implements SignalingLike {
 
   private enqueue(epoch: number, payload: SignalPayload): boolean {
     const peer = this.peer;
-    if (!peer || !this.sessionId) return false;
+    return peer ? this.enqueueTo(peer, epoch, payload) : false;
+  }
+
+  protected enqueueTo(peer: string, epoch: number, payload: SignalPayload): boolean {
+    if (!this.sessionId) return false;
     if (epoch !== pairEpoch(this.sessionId, peer)) {
       this.o.log('Sinal de negociação anterior não enviado.');
       return false;
@@ -622,6 +630,10 @@ export class SupabaseSignaling implements SignalingLike {
     return true;
   }
 
+  protected isActivePeer(peer: string): boolean {
+    return peer === this.peer;
+  }
+
   private async pump(): Promise<void> {
     if (this.pumping) return;
     this.pumping = true;
@@ -633,7 +645,7 @@ export class SupabaseSignaling implements SignalingLike {
           continue;
         }
         const item = this.queue.shift()!;
-        if (!item.control && item.peer !== this.peer) {
+        if (!item.control && !this.isActivePeer(item.peer)) {
           this.counters.dropped += 1;
           continue;
         }
@@ -657,7 +669,7 @@ export class SupabaseSignaling implements SignalingLike {
 
   // ---- manutenção ----
 
-  private async heartbeat(): Promise<void> {
+  protected async heartbeat(): Promise<void> {
     if (this.isClosed() || !this.sessionId) return;
     const res = await this.o.backend.rpc<null>('touch_session', { p_session_id: this.sessionId });
     if (this.isClosed()) return;
@@ -671,6 +683,10 @@ export class SupabaseSignaling implements SignalingLike {
     }
     this.heartbeatFailures = 0;
     this.o.tracker.beat(this.sessionId);
+    await this.afterBeat();
+  }
+
+  protected async afterBeat(): Promise<void> {
     // Par que caiu sem bye (aba fechada, rede): some do roster em até 90 s.
     if (this.peer !== null) {
       const roster = await this.o.backend.rpc<unknown[]>('get_roster', { p_room_id: this.o.roomId });
@@ -764,7 +780,7 @@ export class SupabaseSignaling implements SignalingLike {
    * JWT vencido vira `unauthorized` ou mensagem do PostgREST, e falha de rede vira outra mensagem. Encerra com
    * 4403, como a sessão inválida no batimento.
    */
-  private memberGone(error: string | null): boolean {
+  protected memberGone(error: string | null): boolean {
     if (shortCode(error) !== 'not-member') return false;
     this.fatal(DISCONNECT.session);
     return true;
@@ -794,7 +810,7 @@ export class SupabaseSignaling implements SignalingLike {
     if (!this.isClosed()) this.o.handlers.onMessage(message);
   }
 
-  private isClosed(): boolean {
+  protected isClosed(): boolean {
     return this.state === 'closed';
   }
 }

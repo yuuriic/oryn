@@ -5,7 +5,8 @@
 -- integration/evidence/ (fora do Git). Critério depois da aplicação: as entradas de antes continuam
 -- TODAS iguais e há exatamente 2 entradas novas, `fn:list_my_rooms()…` e `fn:close_room(uuid)…`. Qualquer
 -- outra diferença = interromper. Depois do 91_rollback_0400.sql: igual à lista de antes.
--- Uso na 0500: mesmo critério, com exatamente 8 entradas novas: as 2 tabelas, seus 4 índices e as 2 funções do chat. Depois do 92_rollback_0500.sql: igual à lista de antes.
+-- Uso na 0500: mesmo critério, com exatamente 8 entradas novas: as 2 tabelas, seus 4 índices e as 2 funções do chat.
+-- Uso na 0600: mesmo critério, com exatamente 8 entradas novas: as 8 funções. Os gatilhos não aparecem no escopo: confira no 05. Depois do 92_rollback_0500.sql: igual à lista de antes.
 -- A linha final (total e md5) usa a MESMA fórmula do 07, 11, 12 e 13: é o valor do S2 MEDIDO.
 -- Sem dados de usuário: só nomes de objetos, ACL e md5 do código das funções.
 -- A definição de oryn_scope é idêntica à do 07, 11, 12 e 13 (manter em sincronia; há teste).
