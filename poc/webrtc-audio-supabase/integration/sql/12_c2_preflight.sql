@@ -12,9 +12,12 @@
 -- primeiros caracteres do id e uma impressão do e-mail (md5, 8 hex) para comparar entre leituras.
 -- Sessão de Auth "ativa": linha em auth.sessions não vencida (not_after) com refresh token não revogado. Linhas
 -- encerradas podem continuar na tabela: a contagem não pressupõe que o logout apague nada.
--- Baselines (MVP 01, pós-0400; medidos no projeto em 2026-10-28 22:48 UTC pelo 08_scope_entries.sql):
---   oryn_scope 60 objetos, md5 787129706368d4c3ed93a8d5a07429af; platform md5 4ce6437364c259fec6b5ea9646ac1359;
---   migrações 0100–0400. Antes da 0400 (02C.3H/02C.5D): oryn_scope 58 / 1a5a563de28e1e1cf2a670e5731af5a7.
+-- Baselines (pós-0500; medidos no projeto em 2026-11-06 18:48 UTC):
+--   oryn_scope 68 objetos, md5 c71c2d4d350a733ef0a98fcfede55a12; platform md5 381dbf0a5071c15b7fa4e4239110c9f0;
+--   migrações 0100–0500. O platform difere do registrado até 2026-10-29 (4ce64373…1359) por causa DESCONHECIDA,
+--   aceita pelo responsável só para o piloto fechado (checklist de deploy, Etapa 5). Baseline novo não explica a
+--   mudança: qualquer outro valor continua sendo FAIL e investigação.
+--   Histórico: pós-0400, 60 / 787129706368d4c3ed93a8d5a07429af; antes da 0400, 58 / 1a5a563de28e1e1cf2a670e5731af5a7.
 
 begin;
 set transaction read only;
@@ -138,19 +141,19 @@ checks(item, expected, actual, ok) as (
          (select c.relrowsecurity from pg_catalog.pg_class c where c.oid = 'realtime.messages'::regclass)
            and (select pg_catalog.count(*) from pg_catalog.pg_policies where schemaname = 'realtime' and tablename = 'messages' and policyname like 'oryn\_%') = 4
   union all
-  select 'S2 oryn_scope: objetos / md5 (baseline pós-0400)', '60 / 787129706368d4c3ed93a8d5a07429af',
+  select 'S2 oryn_scope: objetos / md5 (baseline pós-0500)', '68 / c71c2d4d350a733ef0a98fcfede55a12',
          (select pg_catalog.count(*)::text from oryn_scope) || ' / ' || (select pg_catalog.md5(coalesce(pg_catalog.string_agg(o, '|' order by o), '')) from oryn_scope),
-         (select pg_catalog.count(*) from oryn_scope) = 60
-           and (select pg_catalog.md5(coalesce(pg_catalog.string_agg(o, '|' order by o), '')) from oryn_scope) = '787129706368d4c3ed93a8d5a07429af'
+         (select pg_catalog.count(*) from oryn_scope) = 68
+           and (select pg_catalog.md5(coalesce(pg_catalog.string_agg(o, '|' order by o), '')) from oryn_scope) = 'c71c2d4d350a733ef0a98fcfede55a12'
   union all
-  select 'S3 platform: md5 (sem partições e seus índices)', '4ce6437364c259fec6b5ea9646ac1359',
+  select 'S3 platform: md5 (sem partições e seus índices)', '381dbf0a5071c15b7fa4e4239110c9f0',
          (select pg_catalog.md5(coalesce(pg_catalog.string_agg(o, '|' order by o), '')) from platform),
-         (select pg_catalog.md5(coalesce(pg_catalog.string_agg(o, '|' order by o), '')) from platform) = '4ce6437364c259fec6b5ea9646ac1359'
+         (select pg_catalog.md5(coalesce(pg_catalog.string_agg(o, '|' order by o), '')) from platform) = '381dbf0a5071c15b7fa4e4239110c9f0'
   union all
-  select 'S4 migrações (supabase_migrations.schema_migrations)', '20261023000100,20261023000200,20261023000300,20261028000400',
+  select 'S4 migrações (supabase_migrations.schema_migrations)', '20261023000100,20261023000200,20261023000300,20261028000400,20261106000500',
          (select coalesce(pg_catalog.string_agg(version, ',' order by version), '') from supabase_migrations.schema_migrations),
          (select coalesce(pg_catalog.string_agg(version, ',' order by version), '') from supabase_migrations.schema_migrations)
-           = '20261023000100,20261023000200,20261023000300,20261028000400'
+           = '20261023000100,20261023000200,20261023000300,20261028000400,20261106000500'
   union all
   select 'S5 papéis cli_login_*', '(nenhum)',
          coalesce((select pg_catalog.string_agg(rolname, ',' order by rolname) from pg_catalog.pg_roles where rolname like 'cli\_login\_%'), '(nenhum)'),

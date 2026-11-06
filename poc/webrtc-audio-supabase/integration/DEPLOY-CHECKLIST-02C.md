@@ -73,6 +73,11 @@ O que o script garante (testado em `tests/push-step-script.test.ts` com uma CLI 
 - argumentos exatos: `--workdir <tmp> db push --project-ref <ref> --skip-vault [--dry-run]`;
 - no dry-run, interrompe se a saída **não** citar a versão-alvo ou citar **outra** migração;
 - no `-Apply`, exige a confirmação digitada `APLICAR <versão>` e roda a CLI no terminal, **sem `--yes`**, para o prompt dela aparecer;
+- no `-Apply`, decide o resultado por dry-runs capturados, nunca só pelo código 0 da CLI:
+  - **banco em dia antes do push:** `NADA APLICADO`, sem chamar o push;
+  - **aplicada:** depois do push, o dry-run informa banco em dia, e só então sai `APLICADO`;
+  - **recusada no prompt:** `NÃO APLICADO`, com erro;
+  - **falha no push ou na conferência:** erro de resultado não confirmado; conferir com o `06`;
 - **`finally`:** remove `SUPABASE_DB_PASSWORD`, as variáveis da senha e o workdir, **inclusive se a CLI falhar**.
 
 **⚠ O prompt da própria CLI não é trava.** Na 2.122.0, `Do you want to push these migrations to the remote database? [Y/n]` tem padrão **Sim**:
@@ -302,28 +307,35 @@ voltou a PASS. Validação manual no runbook §14.
 
 ### Etapa 5 — `20261106000500_oryn_room_messages.sql` ⛔ (chat por sala)
 
-**Estado: não aplicada no remoto.** Exige autorização explícita própria, com o estado anterior lido e o commit publicado na branch, em PR aberto contra a `main`, com CI aprovado e **sem merge**. O merge publica o cliente sozinho e vem depois da migração. Nesta etapa, essa condição substitui o `HEAD` igual ao `origin/main` da seção 1.
+**Estado: aplicada em 2026-11-06 às 18:29:23 UTC** pelo responsável, com `oryn-push-step.ps1 -Step 5 -Apply`, antes do merge do PR #17. O procedimento abaixo fica como registro e vale para uma reaplicação depois do `92`, com autorização própria. A condição usada foi: estado anterior lido, commit publicado em PR aberto, CI aprovado e **sem merge**. O merge publica o cliente sozinho e vem depois da migração. Nesta etapa, essa condição substitui o `HEAD` igual ao `origin/main` da seção 1.
 
-**Divergências conhecidas antes da 0500 (leitura de 2026-11-06).** S2 e S3 dos scripts `11`, `12` e `13` já dão FAIL por causa delas. Os baselines **não foram atualizados de propósito**: só mudam depois da aplicação, com valores medidos e commit próprio.
+**Medido depois da aplicação** (2026-11-06, leitura às 18:36 e às 18:48 UTC):
+- `05`, passos 1–5: 29 de 29 PASS. `01`: 371 PASS, 0 FAIL e 2 NOT VERIFIED (Data API e "Allow public access").
+- `08`: `68 / c71c2d4d350a733ef0a98fcfede55a12`. Sem as 8 entradas novas, o md5 volta a `072de35b…`, então nenhuma das 60 anteriores mudou.
+- `06`: 5 versões e nenhum `cli_login_*`. Advisors: sem ERROR, WARN `0029` = 15 e INFO `0008` = 10.
+- Todos os objetos e a linha do histórico têm o mesmo `xmin`: nasceram na mesma transação.
 
-| Item | Registrado até 2026-10-29 | Lido em 2026-11-06 |
-|---|---|---|
-| `oryn_scope` (`08`) | `60 / 787129706368d4c3ed93a8d5a07429af` | `60 / 072de35bce90077d1e9873dba39b6e29` |
-| `platform_fingerprint` (`07`) | `4ce6437364c259fec6b5ea9646ac1359` | `381dbf0a5071c15b7fa4e4239110c9f0` |
+**Divergências conhecidas, medidas antes da 0500.** Os baselines de `11`, `12` e `13` passaram aos valores medidos em commit próprio, depois da aplicação. Isso não explica as diferenças abaixo, e elas seguem registradas:
+
+| Item | Registrado até 2026-10-29 | Lido em 2026-11-06, antes da 0500 | Baseline atual |
+|---|---|---|---|
+| `oryn_scope` (`08`) | `60 / 787129706368d4c3ed93a8d5a07429af` | `60 / 072de35bce90077d1e9873dba39b6e29` | `68 / c71c2d4d350a733ef0a98fcfede55a12` |
+| `platform_fingerprint` (`07`) | `4ce6437364c259fec6b5ea9646ac1359` | `381dbf0a5071c15b7fa4e4239110c9f0` | `381dbf0a5071c15b7fa4e4239110c9f0` |
 
 Fatos comprovados:
-- **ACLs de `public`:** só 3 entradas `defacl:public` diferem, as dos objetos criados por `postgres` (tabelas, funções e sequências). Trocá-las de volta pelo acesso padrão completo de `anon`, `authenticated` e `service_role` reproduz exatamente o md5 registrado, então as outras 57 entradas não mudaram.
-- **Funções:** as 24 do escopo têm o corpo idêntico ao das migrações 0100–0400.
-- **Histórico:** as 4 versões, sem objetos da 0500 e sem papel `cli_login_*`.
+- **ACLs de `public`:** só 3 entradas `defacl:public` diferiam, as dos objetos criados por `postgres` (tabelas, funções e sequências). Trocá-las de volta pelo acesso padrão completo de `anon`, `authenticated` e `service_role` reproduz exatamente o md5 registrado, então as outras 57 entradas não mudaram.
+- **Funções:** as 24 do escopo tinham o corpo idêntico ao das migrações 0100–0400, e as 2 da 0500 têm o corpo idêntico ao do arquivo versionado.
 - **Plataforma:** o Postgres segue em 17.11; `auth.uid`, `auth.users`, `realtime.send` e o RLS de `realtime.messages` seguem presentes; as 4 políticas `oryn_*` continuam.
 
-Hipóteses, sem comprovação:
+Causa desconhecida:
 - **Autor da mudança nas ACLs:** não é identificável pelo banco. As migrações do Oryn não alteram as ACLs padrão de `public`.
-- **Causa do `platform_fingerprint`:** atualização de Auth e Storage pela plataforma. Não há lista de entradas anterior para comparar, então **o que mudou não está identificado**.
+- **`platform_fingerprint`:** a hipótese é atualização de Auth e Storage pela plataforma, sem comprovação. Não há lista de entradas anterior para comparar, então **o que mudou não está identificado**.
 
-Efeito esperado na 0500: nenhum. Ela faz `revoke` e `grant` explícitos, não depende das ACLs padrão e aborta se as permissões saírem erradas. **Esse cenário de ACLs não foi testado localmente.** A decisão de seguir apesar do critério de interrupção do `platform_fingerprint` (seção 1c) é do responsável pela autorização.
+**Aceitação:** o responsável aceitou o risco residual do `platform_fingerprint` para o **piloto fechado**, em 2026-11-06. Isso não vale para um beta público: antes dele, a causa precisa ser reavaliada. Qualquer mudança nova nesse valor continua sendo critério de interrupção (seção 1c).
 
-**Validação depois da aplicação:** os ambientes de prévia da hospedagem não têm as variáveis do Supabase, então a validação com aparelhos é feita em produção, depois do merge.
+**Falso `APLICADO` na aplicação:** a versão do script usada imprimiu `Remote database is up to date` seguido de `APLICADO`, porque só olhava o código de saída da CLI. A migração tinha sido aplicada uma única vez, conforme os logs. A hipótese mais provável é uma execução posterior à que aplicou, sem comprovação. O script agora decide por dry-runs antes e depois do push (seção 1a).
+
+**Homologação:** runbook §14.12.
 
 **O que faz** (aditiva; não altera tabela, política, publicação nem função existente):
 - cria as tabelas privadas `oryn.room_messages` e `oryn.room_message_counters`, com RLS ligado, nenhuma política e nenhum privilégio de
@@ -345,8 +357,7 @@ Efeito esperado na 0500: nenhum. Ela faz `revoke` e `grant` explícitos, não de
 | 🔎 Advisors | sem ERROR; WARN `0029` sobe de 13 para 15 (as 2 RPCs novas, como as demais) | Investigar |
 | 🔎 Data API | `list_room_messages` responde a um membro; `403 unauthorized` a outra conta; `401` sem login | Interromper; `92` |
 
-**Baselines S2/S4:** mesmo procedimento da Etapa 4. Medir `TOTAL <n> / md5 <md5>` no `08` (esperado `n = 68`) e atualizar S2 e S4 no `11`, no
-`12` e no `13`, num commit próprio. Até esse commit, S2 e S4 dão FAIL **esperado**: nenhuma C2, C0 ou teste remoto roda nesse intervalo.
+**Baselines S2/S3/S4:** medidos e gravados no `11`, no `12` e no `13`: `68 / c71c2d4d…`, `381dbf0a…` e as 5 versões. Numa reaplicação, o procedimento é o da Etapa 4: medir no `08`, atualizar em commit próprio e não rodar C2, C0 nem teste remoto até esse commit.
 
 **`01_postflight.sql` e a 0500:** a versão atual lista as RPCs novas e só roda com a 0500 aplicada. Sem ela, usar a versão anterior do arquivo, pelo Git.
 

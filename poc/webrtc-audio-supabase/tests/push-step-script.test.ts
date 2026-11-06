@@ -20,11 +20,20 @@ beforeAll(() => {
 });
 afterAll(() => rmSync(work, { recursive: true, force: true }));
 
+interface CliCall {
+  args: string[];
+  workdir: string;
+  migrations: string[];
+  passwordLength: number | null;
+}
+
 interface Run {
   ok: boolean;
   out: string;
   envAfter: string;
-  log: { args: string[]; workdir: string; migrations: string[]; passwordLength: number | null } | null;
+  log: CliCall | null;
+  /** Todas as chamadas à CLI, em ordem, fora `--version`. */
+  calls: CliCall[];
   /** Argumentos de cada chamada `--version` (02C.3B.1). */
   versionCalls: string[][];
 }
@@ -65,6 +74,7 @@ function run(opts: {
     FAKE_CLI_LOG: log,
     FAKE_CLI_MODE: opts.mode ?? 'ok',
     FAKE_APPLIED: opts.applied ?? '',
+    FAKE_STATE: `${log}.state`,
     FAKE_CLI_VERSION: opts.version ?? 'ok',
   };
   delete env['SUPABASE_DB_PASSWORD'];
@@ -75,6 +85,9 @@ function run(opts: {
     out,
     envAfter: /ENV_AFTER=(\w+)/.exec(out)?.[1] ?? '?',
     log: existsSync(log) ? JSON.parse(readFileSync(log, 'utf8')) : null,
+    calls: existsSync(`${log}.calls`)
+      ? readFileSync(`${log}.calls`, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as CliCall)
+      : [],
     versionCalls: existsSync(versionLog)
       ? readFileSync(versionLog, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as string[])
       : [],
@@ -151,11 +164,111 @@ describe('oryn-push-step.ps1 (CLI falsa, sem rede)', () => {
     }
   });
 
-  it('-Apply com a confirmação exata → chama a CLI SEM --dry-run e SEM --yes', () => {
-    const r = run({ step: 1, apply: true, confirmation: 'APLICAR 20261023000100' });
-    expect(r.ok, r.out).toBe(true);
-    expect(r.log!.args).toEqual(['--workdir', r.log!.workdir, 'db', 'push', '--project-ref', REF, '--skip-vault']);
-    expect(r.envAfter).toBe('False');
+  describe('-Apply: o resultado vem do estado do banco, nunca só do código 0 da CLI', () => {
+    const APPLY = { step: 1, apply: true, confirmation: 'APLICAR 20261023000100' };
+    const BASE = (r: Run) => ['--workdir', r.calls[0]!.workdir, 'db', 'push', '--project-ref', REF, '--skip-vault'];
+    const clean = (r: Run) => {
+      expect(r.envAfter).toBe('False');
+      expect(existsSync(r.calls[0]!.workdir)).toBe(false);
+      expect(r.out).not.toContain(TEST_PASSWORD);
+    };
+
+    it('migração aplicada: dry-run, push SEM --dry-run e SEM --yes, conferência; só então APLICADO', () => {
+      const r = run(APPLY);
+      expect(r.ok, r.out).toBe(true);
+      expect(r.calls.map((c) => c.args)).toEqual([[...BASE(r), '--dry-run'], BASE(r), [...BASE(r), '--dry-run']]);
+      expect(r.calls.every((c) => c.passwordLength === TEST_PASSWORD.length)).toBe(true);
+      expect(r.out).toMatch(/APLICADO: 20261023000100_oryn_schema\.sql/);
+      expect(r.out).not.toMatch(/NADA APLICADO/);
+      clean(r);
+    });
+
+    it('regressão: banco já em dia (segunda execução) → NADA APLICADO, sem push e sem o falso APLICADO', () => {
+      const r = run({ ...APPLY, applied: '20261023000100' });
+      expect(r.ok, r.out).toBe(true);
+      expect(r.calls).toHaveLength(1);
+      expect(r.calls[0]!.args).toContain('--dry-run');
+      expect(r.out).toMatch(/Remote database is up to date/);
+      expect(r.out).toMatch(/NADA APLICADO: o banco já está em dia/);
+      expect(r.out).not.toMatch(/^APLICADO/m);
+      clean(r);
+    });
+
+    it('formato real da CLI capturada (JSON): reconhece migração pendente e banco em dia', () => {
+      const applied = run({ ...APPLY, mode: 'json' });
+      expect(applied.ok, applied.out).toBe(true);
+      expect(applied.calls).toHaveLength(3);
+      expect(applied.out).toMatch(/"upToDate":true/);
+      expect(applied.out).toMatch(/^APLICADO: /m);
+      const again = run({ ...APPLY, mode: 'json', applied: '20261023000100' });
+      expect(again.ok, again.out).toBe(true);
+      expect(again.calls).toHaveLength(1);
+      expect(again.out).toMatch(/NADA APLICADO/);
+      expect(again.out).not.toMatch(/^APLICADO/m);
+      const dry = run({ step: 1, mode: 'json', applied: '20261023000100' });
+      expect(dry.ok).toBe(false);
+      expect(dry.out).toMatch(/não lista 20261023000100: interromper/);
+    });
+
+    it('etapa 5 com a 0100–0400 já aplicadas: aplica e confirma só a 0500', () => {
+      const r = run({ step: 5, apply: true, confirmation: 'APLICAR 20261106000500', applied: '20261023000100,20261023000200,20261023000300,20261028000400' });
+      expect(r.ok, r.out).toBe(true);
+      expect(r.out).toMatch(/APLICADO: 20261106000500_oryn_room_messages\.sql/);
+      expect(r.calls).toHaveLength(3);
+      clean(r);
+    });
+
+    it('falha na conexão antes de aplicar: interrompe sem chamar o push', () => {
+      const r = run({ ...APPLY, mode: 'fail' });
+      expect(r.ok).toBe(false);
+      expect(r.calls).toHaveLength(1);
+      expect(r.out).toMatch(/a CLI saiu com código 1/);
+      expect(r.out).not.toMatch(/APLICADO/);
+      clean(r);
+    });
+
+    it('falha no push: sem APLICADO e com aviso de resultado não confirmado', () => {
+      const r = run({ ...APPLY, mode: 'push-fail' });
+      expect(r.ok).toBe(false);
+      expect(r.calls).toHaveLength(2);
+      expect(r.out).toMatch(/resultado não confirmado/);
+      expect(r.out).not.toMatch(/APLICADO/);
+      clean(r);
+    });
+
+    it('recusa no prompt da CLI (código 0, nada gravado): NÃO APLICADO', () => {
+      const r = run({ ...APPLY, mode: 'decline' });
+      expect(r.ok).toBe(false);
+      expect(r.calls).toHaveLength(3);
+      expect(r.out).toMatch(/NÃO APLICADO: 20261023000100_oryn_schema\.sql continua pendente/);
+      expect(r.out).not.toMatch(/^APLICADO/m);
+      clean(r);
+    });
+
+    it('conferência falha depois do push: sem APLICADO, porque o resultado não está provado', () => {
+      const r = run({ ...APPLY, mode: 'recheck-fail' });
+      expect(r.ok).toBe(false);
+      expect(r.calls).toHaveLength(3);
+      expect(r.out).toMatch(/conferência depois da aplicação falhou/);
+      expect(r.out).not.toMatch(/APLICADO/);
+      clean(r);
+    });
+
+    it('migração fora da etapa no dry-run inicial: interrompe sem chamar o push', () => {
+      const r = run({ ...APPLY, mode: 'extra' });
+      expect(r.ok).toBe(false);
+      expect(r.calls).toHaveLength(1);
+      expect(r.out).toMatch(/fora desta etapa: interromper/);
+      clean(r);
+    });
+
+    it('saída desconhecida no dry-run inicial: interrompe sem chamar o push', () => {
+      const r = run({ ...APPLY, mode: 'unknown' });
+      expect(r.ok).toBe(false);
+      expect(r.calls).toHaveLength(1);
+      expect(r.out).toMatch(/nada foi aplicado; interromper/);
+      clean(r);
+    });
   });
 
   describe('versão da CLI (02C.3B.1): recusa ANTES de credenciais, workdir e db push', () => {
