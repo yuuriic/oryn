@@ -1623,4 +1623,3 @@ painel mostra erro de carga; login, salas e chamada não dependem dele.
 - **Nomes repetidos:** duas pessoas podem usar o mesmo nome de exibição numa sala. Aceitável em piloto fechado; rever antes de ampliar.
 - **Convites revogados na remoção:** remover um membro revoga os pendentes da sala inteira, porque eles não são nominais.
 - **Prévia da hospedagem:** não tem as variáveis do Supabase, então a homologação é em produção, depois do merge.
-
