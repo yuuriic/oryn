@@ -110,6 +110,11 @@ export interface CallDeps {
   audioCodecs?: () => RTCRtpCodec[] | null | undefined;
   statsIntervalMs?: number;
   negotiationTimeoutMs?: number;
+  /**
+   * Captura local compartilhada (voz multiponto): nenhum pedido de microfone aqui, e a faixa não é parada quando só este par
+   * termina. Mudo e fim do dispositivo são tratados por quem é dono da captura.
+   */
+  sharedMic?: MediaStream;
   /** Modo ICE desta página (padrão: auto). */
   iceMode?: IceMode;
   /** Prazo para o servidor responder ao pedido de configuração ICE (padrão 10 s). */
@@ -218,27 +223,31 @@ export class PeerCall {
   async start(mode: StartMode): Promise<void> {
     if (this.phaseValue !== 'idle') throw new Error('Chamada já iniciada.');
 
-    // 1. Microfone primeiro: a permissão é pedida no gesto do usuário.
-    this.setPhase('requesting-mic');
-    let stream: MediaStream;
-    try {
-      stream = await this.deps.getUserMedia({ audio: AUDIO_CONSTRAINTS, video: false });
-    } catch (error) {
-      return this.fail(describeMediaError(error).message);
+    if (this.deps.sharedMic) {
+      this.localStream = this.deps.sharedMic;
+    } else {
+      // 1. Microfone primeiro: a permissão é pedida no gesto do usuário.
+      this.setPhase('requesting-mic');
+      let stream: MediaStream;
+      try {
+        stream = await this.deps.getUserMedia({ audio: AUDIO_CONSTRAINTS, video: false });
+      } catch (error) {
+        return this.fail(describeMediaError(error).message);
+      }
+      if (this.disposed) {
+        stream.getTracks().forEach((t) => t.stop());
+        return;
+      }
+      const track = stream.getAudioTracks()[0];
+      if (!track) {
+        stream.getTracks().forEach((t) => t.stop());
+        return this.fail('Nenhuma faixa de áudio foi obtida do microfone.');
+      }
+      this.localStream = stream;
+      track.addEventListener('ended', this.onTrackEnded);
+      this.cb.onLocalStream(stream);
+      this.cb.onLog(`Microfone capturado: "${track.label || 'sem rótulo'}".`);
     }
-    if (this.disposed) {
-      stream.getTracks().forEach((t) => t.stop());
-      return;
-    }
-    const track = stream.getAudioTracks()[0];
-    if (!track) {
-      stream.getTracks().forEach((t) => t.stop());
-      return this.fail('Nenhuma faixa de áudio foi obtida do microfone.');
-    }
-    this.localStream = stream;
-    track.addEventListener('ended', this.onTrackEnded);
-    this.cb.onLocalStream(stream);
-    this.cb.onLog(`Microfone capturado: "${track.label || 'sem rótulo'}".`);
 
     // 2. Sinalização.
     this.setPhase('connecting-signaling');
@@ -714,7 +723,9 @@ export class PeerCall {
     }
     this.signaling?.close();
     this.signaling = null;
-    if (this.localStream) {
+    if (this.deps.sharedMic) {
+      this.localStream = null; // a captura é de quem a compartilhou
+    } else if (this.localStream) {
       for (const t of this.localStream.getTracks()) {
         t.removeEventListener('ended', this.onTrackEnded);
         t.stop();

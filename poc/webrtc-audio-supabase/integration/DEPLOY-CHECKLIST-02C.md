@@ -368,6 +368,47 @@ Causa desconhecida:
 - **falha fechada:** se `public` não ficar com exatamente 14 RPCs, levanta `oryn-92: …` e nada é revertido;
 - **sucesso:** `07` e `08` voltam **exatamente** ao registro de antes. O cliente publicado passa a mostrar erro só no painel de chat; a chamada não depende dele.
 
+### Etapa 6 — `20261107000600_oryn_room_membership.sql` ⛔ (salas de grupo)
+
+**Estado: aplicada em 2026-11-06**, com pós-voo aprovado, antes do merge do PR #19. O procedimento abaixo fica como registro e vale para uma reaplicação depois do `93`, com autorização própria, o estado anterior lido, commit publicado em PR aberto, CI aprovado e **sem merge**. O merge publica o cliente, que depende desta migração para a voz.
+
+**O que faz:**
+- cria 4 RPCs em `public` (`list_room_members`, `get_voice_participants`, `leave_room_membership`, `remove_room_member`), `SECURITY DEFINER`, com `search_path` vazio e `EXECUTE` só para `authenticated`;
+- cria 4 funções internas em `oryn`, sem `EXECUTE` de cliente;
+- cria 2 gatilhos: `oryn_room_capacity` em `oryn.rooms` e `oryn_member_reactivation` em `oryn.room_members`;
+- **não altera** tabela, política, publicação, função existente nem dados;
+- autoverificação: definição ou permissões inesperadas desfazem a migração (`oryn-0600: …`).
+
+**Efeito em comportamento existente, sem mudar assinatura nem códigos de erro:**
+- `create_room` com mais de 4 lugares passa a responder `invalid-argument`; salas antigas não são tocadas;
+- `redeem_room_invite` passa a responder `invite-invalid` para quem saiu ou foi removido, se o convite é anterior a isso.
+
+**Trava durante a aplicação:** criar gatilho toma uma trava curta em `oryn.rooms` e `oryn.room_members`, por análise e sem medição. Aplicar sem chamada em andamento.
+
+**Antes:** `07` e `08` salvos fora do Git, e `06` com as 5 versões. Dry-run: `oryn-push-step.ps1 -Step 6`, que só pode citar a 0600.
+
+**Aplicação ⛔:** `oryn-push-step.ps1 -Step 6 -Apply`, com a confirmação `APLICAR 20261107000600`.
+
+| Conferência depois de aplicar | Esperado | Se falhar |
+|---|---|---|
+| 🔎 `05_step_checks.sql` | passos 1–6 todos PASS | Interromper; `93` |
+| 🔎 `01_postflight.sql` | 0 FAIL; 10 tabelas e 20 RPCs; só "Data API" e "Allow public access" como NOT VERIFIED | Interromper; `93` |
+| 🔎 Diferença do `08` | entradas anteriores **todas iguais** e **exatamente 8** novas, as funções | Interromper; `93` |
+| 🔎 `06` | 6 versões, com `20261107000600` | Interromper |
+| 🔎 Advisors | sem ERROR; WARN `0029` sobe de 15 para 19 | Investigar |
+| 🔎 Data API | as RPCs novas respondem a um membro; `401` sem login | Interromper; `93` |
+
+**Baselines S2/S3/S4:** medidos em 2026-11-06 às 21:33 UTC e gravados no `11`, no `12` e no `13`: `76 / d8b4c3f1…`, `381dbf0a…` e as 6 versões. Numa reaplicação, S2 e S4 dão FAIL **esperado** entre o `93` e a nova aplicação: nenhuma C2, C0 ou teste remoto roda nesse intervalo.
+
+**`01_postflight.sql` e a 0600:** a versão atual lista as RPCs novas e só roda com a 0600 aplicada. Sem ela, usar a versão anterior do arquivo, pelo Git.
+
+**Recuperação: `93_rollback_0600.sql` ⛔** (SQL editor, como `postgres`, com autorização própria):
+- remove as 8 funções, os 2 gatilhos e a linha `20261107000600` do histórico; idempotente;
+- **publicar antes o cliente anterior:** sem a 0600, o cliente novo perde a voz e o painel de membros;
+- **falha fechada:** se `public` não ficar com exatamente 16 RPCs, levanta `oryn-93: …` e nada é revertido;
+- **não desfaz dados:** quem saiu ou foi removido continua fora, e salas de 3 ou 4 lugares continuam existindo;
+- **ordem:** o `93` vem antes do `92`. Com a 0600 aplicada, o `92` falha fechado e não reverte nada.
+
 ## 3. Pós-voo final (depois da Etapa 3; de novo depois da Etapa 4)
 
 - 🔎 `integration/sql/01_postflight.sql`: **zero FAIL**. Depois da Etapa 3 (sem a 0400), a versão `074de82` do
@@ -383,7 +424,7 @@ Causa desconhecida:
 
 Origem dos dados: catálogo do PGlite e do PostgreSQL 17.10 depois das migrações, mais leitura do código da `0200`
 e da `0400`. São **14** funções: 12 da `0200` e 2 da `0400` (MVP 01, aplicada no remoto em 2026-10-28).
-- **Em todas as 16 (14 sem a 0500):** `SECURITY DEFINER` e `search_path = ''`, nomes qualificados, nenhum SQL dinâmico.
+- **Em todas as 20 (16 sem a 0600 e 14 sem a 0500):** `SECURITY DEFINER` e `search_path = ''`, nomes qualificados, nenhum SQL dinâmico.
 - **EXECUTE:** só o papel indicado. Nem `anon` nem `PUBLIC`, inclusive por herança: `tests/sql-definer-audit.test.ts`.
 
 | Função | EXECUTE | Identidade do chamador | Autorização por sala/sessão | Risco entre usuários |
@@ -403,6 +444,10 @@ e da `0400`. São **14** funções: 12 da `0200` e 2 da `0400` (MVP 01, aplicada
 | `list_my_rooms` (0400) | authenticated | `require_uid()` | só salas em que o chamador é membro ativo; dos outros membros, só a contagem | nenhum |
 | `send_room_message` (0500) | authenticated | `require_uid()` | membro ativo da sala (alheia ou inexistente: mesma resposta); sala travada e pertença reconferida; autor sempre do JWT; sala encerrada recusa | o texto, de até 4.000 caracteres, fica no banco; limite de 30 por minuto por autor em cada sala |
 | `list_room_messages` (0500) | authenticated | `require_uid()` | membro ativo da sala, aberta ou encerrada; identificador da tentativa só nas mensagens do próprio chamador | revela nome de exibição e texto só a membros; sem limite de frequência no banco |
+| `list_room_members` (0600) | authenticated | `require_uid()` | membro ativo da sala, aberta ou encerrada; referência opaca, sem conta | revela nome, papel e presença só a membros |
+| `get_voice_participants` (0600) | authenticated | `require_uid()` | membro ativo de sala aberta; `not-member` como `get_roster` | revela sessões vivas e referência opaca só a membros |
+| `leave_room_membership` (0600) | authenticated | `require_uid()` | só a própria pertença; sala travada e pertença reconferida; dono recusado | nenhum |
+| `remove_room_member` (0600) | authenticated | `require_uid()` | **dono** de sala aberta; sala travada; sem autorremoção; referência desconhecida tem a mesma resposta | revoga sessões do alvo e convites pendentes da sala |
 | `close_room` (0400) | authenticated | `require_uid()` | **dono** da sala (alheia ou inexistente: mesma resposta); sala travada, depois todos os membros; convites `SKIP LOCKED`; idempotente | nenhum; sem ciclo de travas com as RPCs da 0200 (provado em `tests/pg`, com controles) |
 
 Fora de `public`:
@@ -482,6 +527,7 @@ Ordem sugerida para o dia dos testes:
   - contadores de rate limit do Auth;
   - configurações do painel e secrets alterados;
   - versões já publicadas de Edge Functions.
+- **O que o `93_rollback_0600.sql` reverte:** as 8 funções, os 2 gatilhos e a linha do histórico. Não desfaz saídas nem remoções. Detalhes: Etapa 6. Roda antes do `92`.
 - **O que o `92_rollback_0500.sql` reverte:** as 2 tabelas do chat, as 2 RPCs e a linha do histórico. Com mensagens gravadas, exige confirmação
   explícita, porque **apaga o texto de forma irreversível**. Detalhes: Etapa 5.
 - **O que o `91_rollback_0400.sql` reverte:** só as 2 RPCs da 0400 e a linha `20261028000400` do histórico. **Não**

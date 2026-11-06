@@ -88,6 +88,43 @@ export function parseControlEvent(event: string, payload: unknown): ControlEvent
 }
 
 /** Linha de list_my_rooms (MVP 01, migração 0400). */
+/** Linha de get_voice_participants: a referência distingue contas, e duas sessões da mesma conta têm a mesma. */
+export interface VoiceParticipant {
+  session_id: string;
+  participant_ref: string;
+  display_name: string;
+  is_self: boolean;
+  joined_at: string;
+}
+
+const isMemberRef = (v: unknown): v is string => typeof v === 'string' && /^[0-9a-f]{32}$/.test(v);
+
+export function parseVoiceParticipant(v: unknown): VoiceParticipant | null {
+  if (!isObj(v) || !isUuid(v['session_id']) || !isMemberRef(v['participant_ref']) || !isDisplayName(v['display_name'])) return null;
+  if (typeof v['is_self'] !== 'boolean' || typeof v['joined_at'] !== 'string') return null;
+  return { session_id: v['session_id'], participant_ref: v['participant_ref'], display_name: v['display_name'], is_self: v['is_self'], joined_at: v['joined_at'] };
+}
+
+/** Linha de list_room_members. A referência só serve para pedir a remoção; quem decide é o servidor. */
+export interface RoomMember {
+  member_ref: string;
+  display_name: string;
+  role: 'owner' | 'member';
+  is_self: boolean;
+  in_call: boolean;
+  joined_at: string;
+}
+
+const ROOM_MEMBER_KEYS = 'display_name,in_call,is_self,joined_at,member_ref,role';
+
+export const hasRoomMemberShape = (v: unknown): boolean => isObj(v) && Object.keys(v).sort().join(',') === ROOM_MEMBER_KEYS;
+
+export function parseRoomMember(v: unknown): RoomMember | null {
+  if (!isObj(v) || !hasRoomMemberShape(v) || !isMemberRef(v['member_ref']) || !isDisplayName(v['display_name'])) return null;
+  if ((v['role'] !== 'owner' && v['role'] !== 'member') || typeof v['is_self'] !== 'boolean' || typeof v['in_call'] !== 'boolean' || typeof v['joined_at'] !== 'string') return null;
+  return { member_ref: v['member_ref'], display_name: v['display_name'], role: v['role'], is_self: v['is_self'], in_call: v['in_call'], joined_at: v['joined_at'] };
+}
+
 /** Mesmas regras da migração 0500: 1–4000 pontos de código, com algo além de espaço, tabulação e quebra de linha. */
 export const MAX_CHAT_BODY = 4000;
 export const isChatBody = (v: unknown): v is string =>

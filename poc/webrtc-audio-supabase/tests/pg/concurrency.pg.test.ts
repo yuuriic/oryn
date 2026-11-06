@@ -22,7 +22,7 @@ interface Room {
   room: string;
 }
 
-async function newRoom(maxMembers = 10): Promise<Room> {
+async function newRoom(maxMembers = 4): Promise<Room> {
   const owner = await db.newUser();
   const token = (await db.admin<{ t: string }>('select oryn.admin_issue_creator_invite(60, 5) as t'))[0]!.t;
   await db.rpc(owner, 'public.redeem_creator_invite', { p_token: token });
@@ -64,10 +64,10 @@ async function legacy(fn: string, signature: string): Promise<string> {
 const codes = (results: CallResult<unknown>[]) => results.map((r) => r.error?.message ?? 'ok').sort();
 
 describe('PostgreSQL 17 real: migrações e pós-voo', () => {
-  it('as cinco migrações aplicam em PostgreSQL 17 (o mesmo major do Supabase)', async () => {
+  it('as seis migrações aplicam em PostgreSQL 17 (o mesmo major do Supabase)', async () => {
     const v = (await db.admin<{ v: string }>('select version() as v'))[0]!.v;
     expect(v).toMatch(/^PostgreSQL 17\./);
-    expect((await db.admin<{ n: number }>(`select count(*)::int as n from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public'`))[0]!.n).toBe(16);
+    expect((await db.admin<{ n: number }>(`select count(*)::int as n from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public'`))[0]!.n).toBe(20);
   });
 
   it('pós-voo em PostgreSQL 17: zero FAIL', async () => {
@@ -114,15 +114,15 @@ describe('M5 — join_room: limite de 2 sessões sob chamadas simultâneas', () 
   it('usuários diferentes na mesma sala não se bloqueiam nem se impedem (sem trava da sala inteira)', async () => {
     const r = await newRoom();
     const users: { uid: string }[] = [];
-    for (let i = 0; i < 5; i++) users.push(await addMember(r, `U${i}`)); // em série: no máximo 3 convites pendentes
+    for (let i = 0; i < 3; i++) users.push(await addMember(r, `U${i}`)); // em série: no máximo 3 convites pendentes
     const undo = await slow('oryn.room_sessions', 'after', 1);
     try {
       const t0 = Date.now();
       const results = await Promise.all(users.map((u) => db.call(u, 'public.join_room', { p_room_id: r.room })));
       const elapsed = Date.now() - t0;
-      expect(codes(results)).toEqual(['ok', 'ok', 'ok', 'ok', 'ok']);
-      // Em série seriam ≥ 5 s (5 × 1 s). Em paralelo, perto de 1 s; margem larga para runners lentos.
-      expect(elapsed).toBeLessThan(3_500);
+      expect(codes(results)).toEqual(['ok', 'ok', 'ok']);
+      // Em série seriam ≥ 3 s (3 × 1 s). Em paralelo, perto de 1 s; a margem precisa ficar abaixo de 3 s para detectar a fila.
+      expect(elapsed).toBeLessThan(2_500);
     } finally {
       await undo();
     }

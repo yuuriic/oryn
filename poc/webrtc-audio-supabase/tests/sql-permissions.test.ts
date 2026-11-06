@@ -30,6 +30,10 @@ const USER_RPCS = [
   'close_room(uuid)',
   'send_room_message(uuid,uuid,text)',
   'list_room_messages(uuid,bigint,bigint,integer)',
+  'list_room_members(uuid)',
+  'get_voice_participants(uuid)',
+  'leave_room_membership(uuid)',
+  'remove_room_member(uuid,text)',
 ];
 const DOMAIN_TABLES = ['creator_grants', 'creator_invites', 'rooms', 'room_members', 'room_invites', 'room_sessions', 'pair_counters', 'signal_log', 'room_messages', 'room_message_counters'];
 

@@ -148,6 +148,8 @@ export const USERS = {
   owner: '0a000000-0000-4000-8000-00000000000a',
   member: '0b000000-0000-4000-8000-00000000000b',
   stranger: '0c000000-0000-4000-8000-00000000000c',
+  third: '0d000000-0000-4000-8000-00000000000d',
+  fourth: '0e000000-0000-4000-8000-00000000000e',
 } as const;
 
 interface Session {
@@ -197,6 +199,14 @@ export class FakeSupabase {
   refuseChannels = false;
   /** Não entrega mais nada aos canais (eventos "perdidos"). */
   silent = false;
+  /** Guarda as entregas: `flushReversed` as solta na ordem inversa (rede fora de ordem). */
+  holdDeliveries = false;
+  private held: (() => void)[] = [];
+  flushReversed(): void {
+    const list = this.held.reverse();
+    this.held = [];
+    for (const fn of list) fn();
+  }
   /** Sala encerrada (close_room, MVP 01). */
   closed = false;
   /** Atraso entre o Broadcast e a gravação de `published` (0 = imediato, como antes). */
@@ -225,9 +235,14 @@ export class FakeSupabase {
     if (this.silent) return;
     const subs = [...(this.topics.get(topic) ?? [])];
     const raw = JSON.stringify(payload); // serializado, como pela rede
-    void Promise.resolve().then(() => {
+    const send = () => {
       for (const h of subs) h.onBroadcast(event, JSON.parse(raw));
-    });
+    };
+    if (this.holdDeliveries) {
+      this.held.push(send);
+      return;
+    }
+    void Promise.resolve().then(send);
   }
   /** publish_control: só para as OUTRAS sessões vivas da sala; o realtime.send injeta `id`. */
   private control(room: string, except: string, event: 'hello' | 'bye', payload: Record<string, unknown>): void {
@@ -280,6 +295,17 @@ export class FakeSupabase {
         const room = String(a['p_room_id']);
         if (this.closed || !this.members.has(user)) throw new Error('not-member');
         return this.live(room).map((s) => ({ session_id: s.id, display_name: this.members.get(s.user)!, is_self: s.user === user, joined_at: new Date(s.createdAt).toISOString() }));
+      }
+      case 'get_voice_participants': {
+        const room = String(a['p_room_id']);
+        if (this.closed || !this.members.has(user)) throw new Error('not-member');
+        return this.live(room).map((s) => ({
+          session_id: s.id,
+          participant_ref: s.user.replace(/-/g, ''),
+          display_name: this.members.get(s.user)!,
+          is_self: s.user === user,
+          joined_at: new Date(s.createdAt).toISOString(),
+        }));
       }
       case 'touch_session': {
         const s = this.sessions.get(String(a['p_session_id']));
@@ -360,6 +386,13 @@ export class FakeSupabase {
     for (const s of this.live(ROOM)) this.control(ROOM, s.id, 'bye', { session_id: s.id });
     for (const s of this.sessions.values()) if (s.room === ROOM) s.revoked = true;
     this.closed = true;
+  }
+
+  /** remove_room_member (0600): `bye` de cada sessão do membro para TODAS as sessões vivas, inclusive as dele; depois, revoga. */
+  removeMember(user: string): void {
+    for (const s of this.live(ROOM).filter((x) => x.user === user)) this.control(ROOM, '', 'bye', { session_id: s.id });
+    for (const s of this.sessions.values()) if (s.user === user) s.revoked = true;
+    this.members.delete(user);
   }
 
   /** Simula aba fechada sem saída: a sessão para de bater e vence. */
