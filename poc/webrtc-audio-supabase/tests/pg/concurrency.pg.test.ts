@@ -121,8 +121,8 @@ describe('M5 — join_room: limite de 2 sessões sob chamadas simultâneas', () 
       const results = await Promise.all(users.map((u) => db.call(u, 'public.join_room', { p_room_id: r.room })));
       const elapsed = Date.now() - t0;
       expect(codes(results)).toEqual(['ok', 'ok', 'ok']);
-      // Em série seriam ≥ 5 s (5 × 1 s). Em paralelo, perto de 1 s; margem larga para runners lentos.
-      expect(elapsed).toBeLessThan(3_500);
+      // Em série seriam ≥ 3 s (3 × 1 s). Em paralelo, perto de 1 s; a margem precisa ficar abaixo de 3 s para detectar a fila.
+      expect(elapsed).toBeLessThan(2_500);
     } finally {
       await undo();
     }
