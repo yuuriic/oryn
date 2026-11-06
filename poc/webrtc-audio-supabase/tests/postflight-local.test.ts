@@ -581,19 +581,19 @@ describe('Salas de grupo: 05_step_checks.sql e 93_rollback_0600.sql', () => {
 describe('baselines dos scripts 11, 12 e 13', () => {
   const scripts = ['11_c0w_postflight.sql', '12_c2_preflight.sql', '13_c2_postflight.sql'];
   const checklist = readFileSync(fileURLToPath(new URL('../integration/DEPLOY-CHECKLIST-02C.md', import.meta.url)), 'utf8');
-  const SCOPE = '68 / c71c2d4d350a733ef0a98fcfede55a12';
+  const SCOPE = '76 / d8b4c3f1298f0d69cb548f2712cbad60';
   const PLATFORM = '381dbf0a5071c15b7fa4e4239110c9f0';
-  const HISTORY = '20261023000100,20261023000200,20261023000300,20261028000400,20261106000500';
+  const HISTORY = '20261023000100,20261023000200,20261023000300,20261028000400,20261106000500,20261107000600';
 
-  it.each(scripts)('%s: os valores esperados e os comparados são os medidos depois da 0500', (name) => {
+  it.each(scripts)('%s: os valores esperados e os comparados são os medidos depois da 0600', (name) => {
     const text = sql(name);
     expect(text).toContain(`'${SCOPE}'`);
-    expect(text).toContain(`from oryn_scope) = 68`);
-    expect(text).toContain(`from oryn_scope) = 'c71c2d4d350a733ef0a98fcfede55a12'`);
+    expect(text).toContain(`from oryn_scope) = 76`);
+    expect(text).toContain(`from oryn_scope) = 'd8b4c3f1298f0d69cb548f2712cbad60'`);
     expect(text).toContain(`from platform) = '${PLATFORM}'`);
     expect(text).toContain(`= '${HISTORY}'`);
     const code = text.replace(/--.*$/gm, '');
-    expect(code).not.toMatch(/787129706368|4ce6437364|= 60\b/);
+    expect(code).not.toMatch(/787129706368|4ce6437364|c71c2d4d35|= 60\b|= 68\b/);
   });
 
   it.each(scripts)('%s: a divergência do platform continua declarada, com causa desconhecida', (name) => {
@@ -616,7 +616,7 @@ describe('11_c0w_postflight.sql (02C.6A, Z9)', () => {
                  create table auth.refresh_tokens (id bigint primary key);
                  create schema supabase_migrations;
                  create table supabase_migrations.schema_migrations (version text primary key);
-                 insert into supabase_migrations.schema_migrations values ('20261023000100'), ('20261023000200'), ('20261023000300'), ('20261028000400'), ('20261106000500')`;
+                 insert into supabase_migrations.schema_migrations values ('20261023000100'), ('20261023000200'), ('20261023000300'), ('20261028000400'), ('20261106000500'), ('20261107000600')`;
   const z9 = async (db: TestDb) => {
     const res = await db.pg.exec(sql('11_c0w_postflight.sql'));
     const rows = res.find((r) => r.fields.some((f) => f.name === 'status'))!.rows as Row[];
