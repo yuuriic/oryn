@@ -1,6 +1,7 @@
 // SEC-01: política de segurança da página. As conexões vêm do URL configurado, resolvido no build; o que não depende
 // do projeto vai por cabeçalho HTTP. Nenhum URL, ref ou chave real fica no código versionado.
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { CSP_PLACEHOLDER, applyPagePolicy, connectSources, isSupabaseUrl, pagePolicy } from '../src/csp.ts';
 import { parseWebConfig } from '../src/web/config.ts';
@@ -82,7 +83,7 @@ describe('política da página', () => {
 
   it('regressão: o build aplica a política; sem o plugin, o marcador iria para o HTML publicado', async () => {
     const { build } = await import('vite');
-    const root = new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
+    const root = fileURLToPath(new URL('..', import.meta.url));
     const previous = process.env['VITE_SUPABASE_URL'];
     process.env['VITE_SUPABASE_URL'] = URL_OK;
     try {
