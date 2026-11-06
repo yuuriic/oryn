@@ -1,7 +1,8 @@
 // Página da integração 02C: login (e-mail e senha em conta EXISTENTE; sem anônimo, sem cadastro), sala,
 // chamada de voz 1:1 com o PeerCall da 02B e sinalização pelo Supabase (SupabaseSignaling).
 // MVP 01: lobby com as salas da conta (listar, criar com 2 lugares, entrar e encerrar), em rooms.ts e
-// rooms-view.ts; o campo de UUID ficou em "Diagnóstico".
+// rooms-view.ts; o campo de UUID ficou em "Diagnóstico". Chat por sala, em chat.ts e chat-view.ts, sem nenhuma
+// ligação com a chamada.
 //
 // Sigilo: a senha só passa do campo para o supabase-js e o campo é limpo em seguida; a sessão de login é guardada
 // pelo mecanismo oficial do Auth (auth-session.ts; riscos no runbook §14.6) e o ID da sala, em call-return.ts;
@@ -12,6 +13,8 @@ import { createClient, type Session, type SupabaseClient } from '@supabase/supab
 import { isUuid } from '../../supabase/functions/_shared/signal-contract.ts';
 import { authOptions, createAuthStorage, logout, restoreSession, type AuthStorage } from './auth-session.ts';
 import { PeerCall, type CallPhase, type CallStats, type PeerStates } from './call.ts';
+import { ChatController, type ChatState } from './chat.ts';
+import { chatStatusText, renderChatMessages } from './chat-view.ts';
 import { CallReturnController, ReturnRoomStore, type ReturnState } from './call-return.ts';
 import { parseWebConfig, type WebConfig } from './config.ts';
 import { ENTRY_CHECKING, ENTRY_RELEASED, ENTRY_STILL_BLOCKED, EntryGate, blockedMessage, entryErrorMessage, type EntryState } from './entry-gate.ts';
@@ -76,6 +79,14 @@ const ui = {
   rooms: el<HTMLDivElement>('rooms'),
   roomsError: el<HTMLParagraphElement>('rooms-error'),
   refreshBtn: el<HTMLButtonElement>('rooms-refresh-btn'),
+  chat: el<HTMLElement>('chat'),
+  chatRoom: el<HTMLElement>('chat-room'),
+  chatStatus: el<HTMLParagraphElement>('chat-status'),
+  chatMessages: el<HTMLDivElement>('chat-messages'),
+  chatForm: el<HTMLFormElement>('chat-form'),
+  chatInput: el<HTMLTextAreaElement>('chat-input'),
+  chatSendBtn: el<HTMLButtonElement>('chat-send-btn'),
+  chatCloseBtn: el<HTMLButtonElement>('chat-close-btn'),
   createForm: el<HTMLFormElement>('create-form'),
   createName: el<HTMLInputElement>('create-name'),
   createDisplay: el<HTMLInputElement>('create-display'),
@@ -122,6 +133,7 @@ let entryGate: EntryGate;
 let sweepTimer: ReturnType<typeof setTimeout> | null = null;
 let inviteShare: InviteShareController;
 let inviteAccept: InviteAcceptController;
+let chat: ChatController;
 /** Muda a cada chamada nova, logout e desconexão explicada: uma explicação de 4403 antiga não sobrescreve nada. */
 let disconnectTicket = 0;
 /** JWT atual, lido de forma síncrona no pagehide. Fica só em memória, como a sessão de login. */
@@ -424,6 +436,8 @@ function renderRooms(): void {
       inviteBusy: inviteShare.state.busy,
       onInvite: (roomId) => void inviteShare.open(roomId),
       onRevokeInvites: (roomId) => void inviteShare.revoke(roomId, lobby.state.rooms.find((r) => r.room_id === roomId)?.name ?? ''),
+      chatRoomId: chat?.state.roomId ?? null,
+      onChat: openChat,
     }),
   );
   ui.roomsError.textContent = s.actionError ?? '';
@@ -441,6 +455,62 @@ ui.createForm.addEventListener('submit', (event) => {
     if (id) ui.createName.value = '';
   });
 });
+
+// ---------- chat por sala ----------
+
+function openChat(roomId: string): void {
+  const room = lobby.state.rooms.find((r) => r.room_id === roomId);
+  if (!room) return;
+  chat.open(roomId, !room.is_open);
+  ui.chat.scrollIntoView({ block: 'nearest' });
+}
+
+let chatRenderedRoom: string | null = null;
+
+function renderChat(s: ChatState): void {
+  ui.chat.hidden = s.status === 'closed';
+  ui.chatRoom.textContent = lobby.state.rooms.find((r) => r.room_id === s.roomId)?.name ?? '';
+  setMessage(ui.chatStatus, chatStatusText(s));
+  // Só desce sozinho se a pessoa já estava no fim: quem está lendo o histórico não perde o lugar.
+  const box = ui.chatMessages;
+  const atEnd = chatRenderedRoom !== s.roomId || box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+  const previousHeight = box.scrollHeight;
+  const previousTop = box.scrollTop;
+  const firstSeq = box.dataset['firstSeq'];
+  box.replaceChildren(
+    renderChatMessages(document, s, {
+      onRetry: (nonce) => chat.retry(nonce),
+      onDiscard: (nonce) => chat.discard(nonce),
+      onLoadOlder: () => void chat.loadOlder(),
+    }),
+  );
+  const newFirst = String(s.messages[0]?.seq ?? '');
+  box.dataset['firstSeq'] = newFirst;
+  if (atEnd) box.scrollTop = box.scrollHeight;
+  else if (firstSeq !== newFirst) box.scrollTop = previousTop + box.scrollHeight - previousHeight; // página anterior: mantém a posição
+  const roomChanged = chatRenderedRoom !== s.roomId;
+  chatRenderedRoom = s.roomId;
+  ui.chatForm.hidden = s.readOnly || s.status === 'denied';
+  ui.chatSendBtn.disabled = s.status !== 'ready';
+  if (roomChanged) renderRooms(); // o botão "Chat aberto": sem redesenhar o lobby a cada mensagem
+}
+
+function submitChat(): void {
+  if (chat.send(ui.chatInput.value)) ui.chatInput.value = '';
+  ui.chatInput.focus();
+}
+
+ui.chatForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  submitChat();
+});
+// Enter envia e Shift+Enter quebra a linha. Durante a composição de um acento (IME), Enter é da composição.
+ui.chatInput.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter' || event.shiftKey || event.isComposing || ui.chatSendBtn.disabled) return;
+  event.preventDefault();
+  submitChat();
+});
+ui.chatCloseBtn.addEventListener('click', () => chat.close());
 
 // ---------- convites (MVP 02) ----------
 
@@ -541,6 +611,8 @@ function showLoggedOut(): void {
   if (sweepTimer !== null) clearTimeout(sweepTimer);
   sweepTimer = null;
   entryGate.reset();
+  chat.close();
+  ui.chatInput.value = '';
   lobby.reset();
   inviteShare.reset();
   callReturn.reset();
@@ -628,7 +700,10 @@ try {
     rpc: (fn, args) => backend.rpc(fn, args),
     confirm: (message) => window.confirm(message),
     onChange: (state) => {
-      if (state.status === 'ready') inviteShare.syncRooms(state.rooms);
+      if (state.status === 'ready') {
+        inviteShare.syncRooms(state.rooms);
+        chat.syncRooms(state.rooms);
+      }
       renderRooms();
     },
     // O dono encerrou a sala da própria chamada: sai dela aqui, sem esperar o aviso do servidor.
@@ -637,6 +712,15 @@ try {
       inviteShare.forget(roomId);
       if (callActive && callRoomId === roomId) await endCall();
     },
+  });
+  chat = new ChatController({
+    rpc: (fn, args) => backend.rpc(fn, args),
+    newNonce: () => crypto.randomUUID(),
+    isHidden: () => document.hidden,
+    setTimer: (fn, ms) => setTimeout(fn, ms),
+    clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+    onChange: renderChat,
+    onRoomClosed: () => void lobby.refresh(),
   });
   client.auth.onAuthStateChange((event, session) => {
     // Sem sessão, guarda o último JWT: ainda é preciso sair da sala (ver endByAuth); showLoggedOut o descarta.

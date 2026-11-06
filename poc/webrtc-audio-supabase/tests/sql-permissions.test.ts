@@ -28,8 +28,10 @@ const USER_RPCS = [
   'ack_signals(uuid,uuid[])',
   'list_my_rooms()',
   'close_room(uuid)',
+  'send_room_message(uuid,uuid,text)',
+  'list_room_messages(uuid,bigint,bigint,integer)',
 ];
-const DOMAIN_TABLES = ['creator_grants', 'creator_invites', 'rooms', 'room_members', 'room_invites', 'room_sessions', 'pair_counters', 'signal_log'];
+const DOMAIN_TABLES = ['creator_grants', 'creator_invites', 'rooms', 'room_members', 'room_invites', 'room_sessions', 'pair_counters', 'signal_log', 'room_messages', 'room_message_counters'];
 
 const canExecute = async (role: string, signature: string): Promise<boolean> =>
   (await db.admin<{ ok: boolean }>(`select has_function_privilege($1, $2, 'execute') as ok`, [role, signature]))[0]!.ok;

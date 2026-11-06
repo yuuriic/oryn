@@ -20,6 +20,10 @@ export interface LobbyViewOptions {
   inviteBusy?: boolean;
   onInvite?(roomId: string): void;
   onRevokeInvites?(roomId: string): void;
+  /** Abre o chat da sala. A chamada em curso não impede: o chat é independente dela. */
+  onChat?(roomId: string): void;
+  /** Sala com o chat aberto, se houver. */
+  chatRoomId?: string | null;
 }
 
 const ROLE: Record<RoomSummary['role'], string> = { owner: 'dono', member: 'membro' };
@@ -53,6 +57,15 @@ export function renderLobby(doc: ViewDocument, state: LobbyState, opts: LobbyVie
     root.append(el('p', `${state.skipped} sala(s) com dados fora do padrão não exibida(s).`, 'muted'));
   }
 
+  const chatButton = (roomId: string, text: string, onChat: (roomId: string) => void): HTMLElement => {
+    const opened = opts.chatRoomId === roomId;
+    const button = el('button', opened ? 'Chat aberto' : text) as HTMLButtonElement;
+    button.type = 'button';
+    button.disabled = opened;
+    button.addEventListener('click', () => onChat(roomId));
+    return button;
+  };
+
   const { open, closed } = splitRooms(state.status === 'ready' ? state.rooms : []);
   const busy = state.busy !== null;
 
@@ -68,6 +81,7 @@ export function renderLobby(doc: ViewDocument, state: LobbyState, opts: LobbyVie
       join.disabled = opts.callActive || busy;
       join.addEventListener('click', () => opts.onJoin(room.room_id));
       actions.append(join);
+      if (opts.onChat) actions.append(chatButton(room.room_id, 'Abrir chat', opts.onChat));
       if (room.role === 'owner' && room.member_count < room.max_members && opts.onInvite) {
         const { onInvite } = opts;
         const invite = el('button', 'Convidar') as HTMLButtonElement;
@@ -107,6 +121,11 @@ export function renderLobby(doc: ViewDocument, state: LobbyState, opts: LobbyVie
     for (const room of closed) {
       const item = el('li');
       item.append(el('strong', room.name), el('span', ` ${ROLE[room.role]} · encerrada em ${formatWhen(room.closed_at ?? '')}`, 'muted'));
+      if (opts.onChat) {
+        const actions = el('div', undefined, 'buttons');
+        actions.append(chatButton(room.room_id, 'Ver mensagens', opts.onChat));
+        item.append(actions);
+      }
       list.append(item);
     }
     box.append(list);

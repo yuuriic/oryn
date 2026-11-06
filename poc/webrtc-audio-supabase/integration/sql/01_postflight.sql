@@ -17,7 +17,8 @@ user_rpcs(sig) as (values
   ('public.redeem_room_invite(text,text)'), ('public.join_room(uuid)'), ('public.touch_session(uuid)'),
   ('public.leave_room(uuid)'), ('public.get_roster(uuid)'),
   ('public.authorize_signal(uuid,uuid,uuid,text,integer,integer)'), ('public.ack_signals(uuid,uuid[])'),
-  ('public.list_my_rooms()'), ('public.close_room(uuid)')),
+  ('public.list_my_rooms()'), ('public.close_room(uuid)'),
+  ('public.send_room_message(uuid,uuid,text)'), ('public.list_room_messages(uuid,bigint,bigint,integer)')),
 internal_fns(sig) as (values
   ('oryn.admin_issue_creator_invite(integer,integer)'), ('oryn.publish_control(uuid,uuid,text,jsonb)'),
   ('oryn.new_token()'), ('oryn.token_hash(text)'), ('oryn.is_active_member(uuid,uuid)'), ('oryn.require_uid()')),
@@ -69,7 +70,7 @@ checks(item, expected, actual) as (
   select priv || ' ' || role || ' ' || t, false, pg_catalog.has_table_privilege(role, t, priv)
     from domain_tables, client_roles, table_privs
   union all
-  select 'tabelas de domínio = 8', true, (select pg_catalog.count(*) = 8 from domain_tables)
+  select 'tabelas de domínio = 10', true, (select pg_catalog.count(*) = 10 from domain_tables)
   union all
   select 'RLS ligado em ' || t, true, (select c.relrowsecurity from pg_catalog.pg_class c where c.oid = t::regclass)
     from domain_tables
@@ -98,8 +99,8 @@ checks(item, expected, actual) as (
   union all
   -- Auditoria 02C.1B.0A: o conjunto exposto em public é EXATAMENTE o contrato (num projeto novo, public
   -- começa vazio; qualquer função a mais precisa de revisão antes de seguir).
-  select 'public contém só as 14 RPCs do contrato', true,
-         (select pg_catalog.count(*) = 14 from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+  select 'public contém só as 16 RPCs do contrato', true,
+         (select pg_catalog.count(*) = 16 from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid = p.pronamespace
            where n.nspname = 'public')
          and not exists (select 1 from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid = p.pronamespace
                           where n.nspname = 'public' and not p.prosecdef)

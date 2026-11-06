@@ -300,6 +300,42 @@ acusa (FAIL), e a recuperação é o `91`, que funciona com qualquer combinaçã
 (desvio registrado na evidência local). O histórico foi preservado e a concessão do OWNER ficou livre. O D2 do `12`
 voltou a PASS. Validação manual no runbook §14.
 
+### Etapa 5 — `20261106000500_oryn_room_messages.sql` ⛔ (chat por sala)
+
+**Estado: não aplicada no remoto.** Exige autorização explícita própria, com o commit já integrado e o estado anterior lido.
+
+**O que faz** (aditiva; não altera tabela, política, publicação nem função existente):
+- cria as tabelas privadas `oryn.room_messages` e `oryn.room_message_counters`, com RLS ligado, nenhuma política e nenhum privilégio de
+  cliente, mais 4 índices;
+- cria `public.send_room_message(uuid, uuid, text)` e `public.list_room_messages(uuid, bigint, bigint, integer)`, `SECURITY DEFINER`, com
+  `search_path` vazio e `EXECUTE` só para `authenticated`;
+- autoverificação: definição ou permissões inesperadas desfazem a migração (`oryn-0500: …`).
+
+**Antes:** `07` e `08` salvos fora do Git, e `06` com as 4 versões, sem pendência. Dry-run: `oryn-push-step.ps1 -Step 5`, que só pode citar a 0500.
+
+**Aplicação ⛔:** `oryn-push-step.ps1 -Step 5 -Apply -Confirmation 'APLICAR 20261106000500'`.
+
+| Conferência depois de aplicar | Esperado | Se falhar |
+|---|---|---|
+| 🔎 `05_step_checks.sql` | passos 1–5 todos PASS | Interromper; `92` |
+| 🔎 `01_postflight.sql` | 0 FAIL; 10 tabelas e 16 RPCs; só "Data API" e "Allow public access" como NOT VERIFIED | Interromper; `92` |
+| 🔎 Diferença do `08` | entradas anteriores **todas iguais** e **exatamente 8** novas: 2 tabelas, 4 índices e 2 RPCs | Interromper; `92` |
+| 🔎 `06` | 5 versões, com `20261106000500` | Interromper |
+| 🔎 Advisors | sem ERROR; WARN `0029` sobe de 13 para 15 (as 2 RPCs novas, como as demais) | Investigar |
+| 🔎 Data API | `list_room_messages` responde a um membro; `403 unauthorized` a outra conta; `401` sem login | Interromper; `92` |
+
+**Baselines S2/S4:** mesmo procedimento da Etapa 4. Medir `TOTAL <n> / md5 <md5>` no `08` (esperado `n = 68`) e atualizar S2 e S4 no `11`, no
+`12` e no `13`, num commit próprio. Até esse commit, S2 e S4 dão FAIL **esperado**: nenhuma C2, C0 ou teste remoto roda nesse intervalo.
+
+**`01_postflight.sql` e a 0500:** a versão atual lista as RPCs novas e só roda com a 0500 aplicada. Sem ela, usar a versão anterior do arquivo, pelo Git.
+
+**Recuperação: `92_rollback_0500.sql` ⛔** (SQL editor, como `postgres`, com autorização própria):
+- apaga as 2 tabelas, as 2 RPCs e a linha `20261106000500` do histórico; idempotente; não toca em salas, sessões ou convites;
+- **com mensagens gravadas, para sem apagar nada.** Só segue com `set oryn.rollback_0500_apagar_mensagens = 'sim';` na mesma sessão, depois de exportar
+  o que precisar ser guardado: **o texto apagado não volta**;
+- **falha fechada:** se `public` não ficar com exatamente 14 RPCs, levanta `oryn-92: …` e nada é revertido;
+- **sucesso:** `07` e `08` voltam **exatamente** ao registro de antes. O cliente publicado passa a mostrar erro só no painel de chat; a chamada não depende dele.
+
 ## 3. Pós-voo final (depois da Etapa 3; de novo depois da Etapa 4)
 
 - 🔎 `integration/sql/01_postflight.sql`: **zero FAIL**. Depois da Etapa 3 (sem a 0400), a versão `074de82` do
@@ -315,7 +351,7 @@ voltou a PASS. Validação manual no runbook §14.
 
 Origem dos dados: catálogo do PGlite e do PostgreSQL 17.10 depois das migrações, mais leitura do código da `0200`
 e da `0400`. São **14** funções: 12 da `0200` e 2 da `0400` (MVP 01, aplicada no remoto em 2026-10-28).
-- **Em todas as 14:** `SECURITY DEFINER` e `search_path = ''`, nomes qualificados, nenhum SQL dinâmico.
+- **Em todas as 16 (14 sem a 0500):** `SECURITY DEFINER` e `search_path = ''`, nomes qualificados, nenhum SQL dinâmico.
 - **EXECUTE:** só o papel indicado. Nem `anon` nem `PUBLIC`, inclusive por herança: `tests/sql-definer-audit.test.ts`.
 
 | Função | EXECUTE | Identidade do chamador | Autorização por sala/sessão | Risco entre usuários |
@@ -333,6 +369,8 @@ e da `0400`. São **14** funções: 12 da `0200` e 2 da `0400` (MVP 01, aplicada
 | `ack_signals` | authenticated | `require_uid()` | **própria** sessão não revogada; só mensagens destinadas a ela e `published` | baixo: não exige batimento; dois `ack` simultâneos da mesma sessão com listas sobrepostas em ordem diferente poderiam se travar (sem efeito entre usuários) |
 | `set_signal_state` | **service_role** | não usa `auth.uid()` (servidor confiável) | só transições válidas, até 5 tentativas | nenhum para clientes (sem EXECUTE) |
 | `list_my_rooms` (0400) | authenticated | `require_uid()` | só salas em que o chamador é membro ativo; dos outros membros, só a contagem | nenhum |
+| `send_room_message` (0500) | authenticated | `require_uid()` | membro ativo da sala (alheia ou inexistente: mesma resposta); sala travada e pertença reconferida; autor sempre do JWT; sala encerrada recusa | o texto, de até 4.000 caracteres, fica no banco; limite de 30 por minuto por autor em cada sala |
+| `list_room_messages` (0500) | authenticated | `require_uid()` | membro ativo da sala, aberta ou encerrada; identificador da tentativa só nas mensagens do próprio chamador | revela nome de exibição e texto só a membros; sem limite de frequência no banco |
 | `close_room` (0400) | authenticated | `require_uid()` | **dono** da sala (alheia ou inexistente: mesma resposta); sala travada, depois todos os membros; convites `SKIP LOCKED`; idempotente | nenhum; sem ciclo de travas com as RPCs da 0200 (provado em `tests/pg`, com controles) |
 
 Fora de `public`:
@@ -412,6 +450,8 @@ Ordem sugerida para o dia dos testes:
   - contadores de rate limit do Auth;
   - configurações do painel e secrets alterados;
   - versões já publicadas de Edge Functions.
+- **O que o `92_rollback_0500.sql` reverte:** as 2 tabelas do chat, as 2 RPCs e a linha do histórico. Com mensagens gravadas, exige confirmação
+  explícita, porque **apaga o texto de forma irreversível**. Detalhes: Etapa 5.
 - **O que o `91_rollback_0400.sql` reverte:** só as 2 RPCs da 0400 e a linha `20261028000400` do histórico. **Não**
   reverte dados: salas encerradas pelo `close_room` continuam encerradas, sessões e convites revogados continuam
   revogados. Detalhes e controles: Etapa 4.

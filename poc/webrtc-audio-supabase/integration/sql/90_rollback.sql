@@ -1,10 +1,14 @@
--- POC-02C.1B — REVERSÃO das migrações 0100–0400. DESTRUTIVO: apaga o schema da Oryn e seus dados.
+-- POC-02C.1B — REVERSÃO das migrações 0100–0500. DESTRUTIVO: apaga o schema da Oryn e seus dados.
 -- Rodar SOMENTE com autorização explícita do arquiteto, no ambiente onde as migrações falharam ou precisam
 -- ser refeitas. Tudo numa transação: ou volta inteiro, ou nada muda. Não toca em auth.users.
--- Ordem inversa das migrações: 0400 (RPCs de salas) → 0300 (políticas do Realtime) → 0200 (funções) →
+-- Ordem inversa das migrações: 0500 (chat) → 0400 (RPCs de salas) → 0300 (políticas do Realtime) → 0200 (funções) →
 -- 0100 (schema). Para desfazer SÓ a 0400, preservando dados, use o 91_rollback_0400.sql.
 
 begin;
+
+-- 0500 (chat por sala): RPCs do chat. A tabela sai com o schema oryn, abaixo.
+drop function if exists public.list_room_messages(uuid, bigint, bigint, integer);
+drop function if exists public.send_room_message(uuid, uuid, text);
 
 -- 0400 (MVP 01): RPCs de gerenciamento de salas.
 drop function if exists public.close_room(uuid);
