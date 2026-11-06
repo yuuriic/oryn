@@ -98,6 +98,26 @@ describe('política da página', () => {
   }, 60_000);
 });
 
+describe('instalação na hospedagem (vercel.json)', () => {
+  // O lockfile do pnpm 12 tem dois documentos YAML, e versões mais antigas, como a 10.20, o recusam. Sem o comando fixo,
+  // a hospedagem pode escolher outra versão pelo lockfile, e o deploy falha com ERR_PNPM_BROKEN_LOCKFILE.
+  const hosting = JSON.parse(read('vercel.json')) as { installCommand: string; buildCommand: string };
+  const pinned = (JSON.parse(read('package.json')) as { packageManager: string }).packageManager;
+
+  it('instala e compila com a versão exata de packageManager', () => {
+    expect(pinned).toMatch(/^pnpm@\d+\.\d+\.\d+$/);
+    expect(hosting.installCommand).toBe(`npx --yes ${pinned} install --frozen-lockfile`);
+    expect(hosting.buildCommand).toBe(`npx --yes ${pinned} build`);
+  });
+
+  it('o lockfile continua no formato do pnpm 12: o bloco que fixa a versão, depois o das dependências', () => {
+    const docs = read('pnpm-lock.yaml').split(/^---$/m).filter((d) => d.trim());
+    expect(docs).toHaveLength(2);
+    expect(docs[0]).toContain(`version: ${pinned.slice('pnpm@'.length)}`);
+    expect(docs[1]).toMatch(/^\s*lockfileVersion: '9\.0'/);
+  });
+});
+
 describe('cabeçalhos HTTP da hospedagem (vercel.json)', () => {
   const config = JSON.parse(read('vercel.json')) as { headers: { source: string; headers: { key: string; value: string }[] }[] };
   const all = config.headers.find((h) => h.source === '/(.*)')!.headers;
