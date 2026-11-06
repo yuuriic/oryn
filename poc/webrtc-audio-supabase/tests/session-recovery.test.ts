@@ -4,7 +4,7 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EntryGate, MAX_SESSIONS_PER_ACCOUNT, blockedMessage, entryErrorMessage, type EntryGateDeps } from '../src/web/entry-gate.ts';
-import { RETIRE_GRACE_MS, SessionLedger, browserStore, type ListableStore, type LockManagerLike, type SessionLedgerDeps } from '../src/web/session-ledger.ts';
+import { RETIRE_GRACE_MS, SessionLedger, browserStore, resolveTabId, type ListableStore, type LockManagerLike, type SessionLedgerDeps } from '../src/web/session-ledger.ts';
 import { JOIN_LIMIT_MESSAGE, type RpcResult, type SessionTracker } from '../src/web/supabase-signaling.ts';
 import { createRoom, joinWithInvite, makeCreator, openSession } from './helpers/fixtures.ts';
 import { TestDb } from './helpers/db.ts';
@@ -274,6 +274,33 @@ describe('quem nunca é encerrado', () => {
     expect((await page(b, 'b', 'aba-2').reclaim(USER)).retired).toBe(1);
   });
 
+  it('regressão: a aba duplicada ganha outro identificador, e a original com trava perdida não é encerrada na hora', async () => {
+    const b = browser();
+    const idOriginal = 'aaaaaaaa-0000-4000-8000-000000000001';
+    await open(page(b, 'original', idOriginal), S1);
+    b.locks.kill('original'); // a especificação não garante a trava de uma página suspensa
+    const idCopia = resolveTabId(idOriginal, 'navigate', () => 'bbbbbbbb-0000-4000-8000-000000000002');
+    expect(idCopia).not.toBe(idOriginal);
+    expect(await page(b, 'copia', idCopia).reclaim(USER)).toEqual({ retired: 0, pending: 1 });
+    expect(b.leave).not.toHaveBeenCalled();
+  });
+
+  it('o identificador da aba só é mantido em recarga', () => {
+    const known = 'aaaaaaaa-0000-4000-8000-000000000001';
+    const create = () => 'bbbbbbbb-0000-4000-8000-000000000002';
+    expect(resolveTabId(known, 'reload', create)).toBe(known);
+    for (const type of ['navigate', 'back_forward', 'prerender', undefined]) expect(resolveTabId(known, type, create), String(type)).not.toBe(known);
+    expect(resolveTabId(null, 'reload', create)).toBe(create());
+    expect(resolveTabId('adulterado', 'reload', create)).toBe(create());
+  });
+
+  it('a carga real da página usa essa regra, já ao criar o registro e uma vez por documento', () => {
+    const src = code(read('src/web/session-ledger.ts'));
+    expect(src).toMatch(/current = resolveTabId\(tabs\.getItem\(TAB_KEY\), navigation\?\.type/);
+    expect(src).toMatch(/if \(current\) return current;/);
+    expect(src).toMatch(/try \{\s*tabId\(\);\s*\} catch/);
+  });
+
   it('congelada, com trava perdida em silêncio: batimento recente ainda protege', async () => {
     const b = browser();
     await open(page(b, 'suspensa', 'aba-1'), S1);
@@ -386,6 +413,82 @@ describe('condições de corrida', () => {
   });
 });
 
+describe('reserva de entrada: duas abas ao mesmo tempo', () => {
+  it('só uma página obtém a reserva; solta, a outra obtém', async () => {
+    const b = browser();
+    const [a, c] = [page(b, 'a'), page(b, 'c')];
+    await expect(a.reserveEntry(USER, ROOM)).resolves.toBe(true);
+    await expect(c.reserveEntry(USER, ROOM)).resolves.toBe(false);
+    await expect(c.entryHeldElsewhere(USER, ROOM)).resolves.toBe(true);
+    await expect(a.entryHeldElsewhere(USER, ROOM)).resolves.toBe(false);
+    a.releaseEntry();
+    a.releaseEntry(); // idempotente
+    await flush();
+    await expect(c.entryHeldElsewhere(USER, ROOM)).resolves.toBe(false);
+    await flush();
+    await expect(c.reserveEntry(USER, ROOM)).resolves.toBe(true);
+  });
+
+  it('a reserva vale por conta e por sala', async () => {
+    const b = browser();
+    await expect(page(b, 'a').reserveEntry(USER, ROOM)).resolves.toBe(true);
+    await expect(page(b, 'b').reserveEntry(USER, ROOM2)).resolves.toBe(true);
+    await expect(page(b, 'c').reserveEntry(OTHER_USER, ROOM)).resolves.toBe(true);
+  });
+
+  it('a reserva só é solta depois de a sessão ficar visível às outras abas', async () => {
+    const b = browser();
+    const a = page(b, 'a', 'aba-1');
+    const c = page(b, 'c', 'aba-2');
+    await a.reserveEntry(USER, ROOM);
+    await open(a, S1);
+    await expect(c.entryHeldElsewhere(USER, ROOM)).resolves.toBe(false);
+    await expect(c.heldElsewhere(USER, ROOM)).resolves.toEqual([S1]);
+  });
+
+  it('o fim da página solta a reserva', async () => {
+    const b = browser();
+    await page(b, 'a').reserveEntry(USER, ROOM);
+    b.locks.kill('a');
+    await flush();
+    await expect(page(b, 'c').reserveEntry(USER, ROOM)).resolves.toBe(true);
+  });
+
+  it('sem Web Locks ou com a API falhando: não bloqueia; o limite continua no servidor', async () => {
+    const b = browser();
+    await expect(page(b, 'a', 'x', { locks: null }).reserveEntry(USER, ROOM)).resolves.toBe(true);
+    const locks: LockManagerLike = { request: () => Promise.reject(new Error('SecurityError')) };
+    await expect(page(b, 'a', 'x', { locks }).reserveEntry(USER, ROOM)).resolves.toBe(true);
+    await expect(page(b, 'a', 'x', { locks }).entryHeldElsewhere(USER, ROOM)).resolves.toBe(false);
+  });
+
+  it('regressão: duas verificações simultâneas, só uma libera o microfone e nenhuma consulta o servidor à toa', async () => {
+    const b = browser();
+    const roster = vi.fn(async () => ({ data: [] as unknown[], error: null }));
+    const gate = (name: string) => {
+      const l = page(b, name, name);
+      return new EntryGate({
+        reclaim: () => l.reclaim(USER),
+        heldElsewhere: (r) => l.heldElsewhere(USER, r),
+        reserve: (r) => l.reserveEntry(USER, r),
+        release: () => l.releaseEntry(),
+        entryHeldElsewhere: (r) => l.entryHeldElsewhere(USER, r),
+        roster,
+        onChange: () => undefined,
+        pollMs: 60_000,
+      });
+    };
+    const [a, c] = [gate('a'), gate('c')];
+    const verdicts = await Promise.all([a.check(ROOM), c.check(ROOM)]);
+    expect(verdicts.sort()).toEqual(['blocked', 'go']);
+    expect(roster).toHaveBeenCalledTimes(1);
+    const blocked = verdicts[0] === 'blocked' ? a : c;
+    void blocked;
+    a.reset();
+    c.reset();
+  });
+});
+
 describe('sem Web Locks ou sem armazenamento: fallback seguro', () => {
   it.each([
     ['sem Web Locks', { locks: null }],
@@ -464,9 +567,15 @@ describe('verificação antes do microfone', () => {
     let held: string[] = [];
     const reclaim = vi.fn(async () => undefined);
     const roster = vi.fn(async (_r: string) => rosterAnswer);
+    const reserve = vi.fn(async (_r: string) => true);
+    const release = vi.fn();
+    const entryHeldElsewhere = vi.fn(async (_r: string) => false);
     const g = new EntryGate({
       reclaim,
       heldElsewhere: async () => held,
+      reserve,
+      release,
+      entryHeldElsewhere,
       roster,
       onChange: (s) => states.push(s.status),
       pollMs: 5000,
@@ -479,6 +588,9 @@ describe('verificação antes do microfone', () => {
       states,
       reclaim,
       roster,
+      reserve,
+      release,
+      entryHeldElsewhere,
       setRoster: (v: RpcResult<unknown[]>) => {
         rosterAnswer = v;
       },
@@ -628,6 +740,51 @@ describe('verificação antes do microfone', () => {
     expect(t.g.state).toEqual({ status: 'released', roomId: ROOM });
   });
 
+  it('reserva: quem não obtém fica bloqueado, sem consultar nem liberar microfone', async () => {
+    const t = setup();
+    t.reserve.mockResolvedValueOnce(false);
+    await expect(t.g.check(ROOM)).resolves.toBe('blocked');
+    expect(t.g.state).toEqual({ status: 'blocked', roomId: ROOM, reason: 'other-tab', polling: true });
+    expect(t.roster).not.toHaveBeenCalled();
+    t.g.reset();
+  });
+
+  it('reserva: vem antes da consulta, e fica com a página só quando libera', async () => {
+    const t = setup();
+    t.setRoster({ data: [], error: null });
+    await t.g.check(ROOM);
+    expect(t.reserve.mock.invocationCallOrder[0]).toBeLessThan(t.roster.mock.invocationCallOrder[0]!);
+    expect(t.release).not.toHaveBeenCalled();
+    t.setRoster({ data: [entry(S1, true), entry(S2, true)], error: null });
+    await t.g.check(ROOM);
+    expect(t.release).toHaveBeenCalledTimes(1);
+    t.g.reset();
+    const failing = setup();
+    failing.setRoster({ data: null, error: 'erro' });
+    await failing.g.check(ROOM);
+    expect(failing.release).toHaveBeenCalledTimes(1);
+  });
+
+  it('reserva: cancelar solta; a espera acompanha quem está entrando e não libera antes', async () => {
+    const t = setup();
+    t.reserve.mockResolvedValueOnce(false);
+    t.entryHeldElsewhere.mockResolvedValueOnce(true);
+    await t.g.check(ROOM);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(t.g.state).toMatchObject({ status: 'blocked', reason: 'other-tab' });
+    await vi.advanceTimersByTimeAsync(5000); // a outra aba terminou de entrar ou desistiu, sem sessão válida
+    expect(t.g.state).toEqual({ status: 'released', roomId: ROOM });
+    t.release.mockClear();
+    t.g.reset();
+    expect(t.release).toHaveBeenCalledTimes(1);
+  });
+
+  it('reserva: a API que rejeita não bloqueia a entrada', async () => {
+    const t = setup();
+    t.reserve.mockRejectedValueOnce(new Error('x'));
+    await expect(t.g.check(ROOM)).resolves.toBe('go');
+  });
+
   it('nova verificação substitui a anterior', async () => {
     const t = setup();
     t.setRoster({ data: [entry(S1, true), entry(S2, true)], error: null });
@@ -646,11 +803,16 @@ describe('estático: a página', () => {
 
   it('só cria a chamada, e portanto o microfone, depois do veredito `go`', () => {
     const start = /function startCall\(roomInput: string\): void \{([\s\S]*?)\n\}/.exec(main)?.[1] ?? '';
-    expect(start).toMatch(/entryGate\.check\(roomId\)\.then\(\(verdict\) => \{\s*if \(verdict === 'go'[^\n]*beginCall\(roomId, userId\)/);
+    expect(start).toMatch(/entryGate\.check\(roomId\)\.then\(\(verdict\) => \{\s*if \(verdict !== 'go'\) return;\s*if \(!callActive && selfUserId === userId\) beginCall\(roomId, userId\);\s*else sessionLedger\.releaseEntry\(\);/);
     expect(start).not.toMatch(/new PeerCall|getUserMedia/);
     expect(main.match(/beginCall\(/g)).toHaveLength(2); // a definição e a única chamada
     expect(main.match(/new PeerCall/g)).toHaveLength(1);
     expect(main.indexOf('function beginCall')).toBeLessThan(main.indexOf('new PeerCall'));
+  });
+
+  it('a reserva é solta se a chamada termina antes de registrar a sessão', () => {
+    expect(main).toMatch(/phase === 'ended' \|\| phase === 'failed'\) \{\s*sessionLedger\.releaseEntry\(\)/);
+    expect(ledger).toMatch(/closing: false \}\);\s*this\.releaseEntry\(\);/);
   });
 
   it('a liberação não inicia nada: "Entrar agora" passa pelo clique e verifica de novo', () => {
@@ -704,6 +866,9 @@ describe('contra o SQL real', () => {
     new EntryGate({
       reclaim: () => l.reclaim(actor.uid),
       heldElsewhere: (roomId) => l.heldElsewhere(actor.uid, roomId),
+      reserve: (roomId) => l.reserveEntry(actor.uid, roomId),
+      release: () => l.releaseEntry(),
+      entryHeldElsewhere: (roomId) => l.entryHeldElsewhere(actor.uid, roomId),
       roster: (roomId) => rpcAs(actor)<unknown[]>('get_roster', { p_room_id: roomId }),
       onChange: () => undefined,
       pollMs: 60_000,

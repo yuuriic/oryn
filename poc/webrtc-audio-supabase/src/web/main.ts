@@ -233,6 +233,7 @@ function renderPhase(phase: CallPhase, error?: string): void {
     }
   }
   if (phase === 'ended' || phase === 'failed') {
+    sessionLedger.releaseEntry(); // saiu antes de registrar a sessão, inclusive por recusa do microfone
     signaling = null;
     if (lobby.state.status !== 'idle') void lobby.refresh(); // contagens e estado das salas mudaram
   }
@@ -268,7 +269,9 @@ function startCall(roomInput: string): void {
   if (!selfUserId) return showError('Faça login antes de entrar na chamada.');
   const userId = selfUserId;
   void entryGate.check(roomId).then((verdict) => {
-    if (verdict === 'go' && !callActive && selfUserId === userId) beginCall(roomId, userId);
+    if (verdict !== 'go') return;
+    if (!callActive && selfUserId === userId) beginCall(roomId, userId);
+    else sessionLedger.releaseEntry();
   });
 }
 
@@ -586,6 +589,9 @@ try {
   entryGate = new EntryGate({
     reclaim: () => (selfUserId ? sweepOrphans(selfUserId) : Promise.resolve()),
     heldElsewhere: (roomId) => (selfUserId ? sessionLedger.heldElsewhere(selfUserId, roomId) : Promise.resolve([])),
+    reserve: (roomId) => (selfUserId ? sessionLedger.reserveEntry(selfUserId, roomId) : Promise.resolve(true)),
+    release: () => sessionLedger.releaseEntry(),
+    entryHeldElsewhere: (roomId) => (selfUserId ? sessionLedger.entryHeldElsewhere(selfUserId, roomId) : Promise.resolve(false)),
     roster: (roomId) => backend.rpc<unknown[]>('get_roster', { p_room_id: roomId }),
     onChange: renderEntry,
   });

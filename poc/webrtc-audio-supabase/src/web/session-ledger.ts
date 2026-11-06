@@ -5,7 +5,8 @@
 // mas a especificação não define o que acontece com a trava em bfcache ou documento congelado. Por isso, a trava livre
 // sozinha não basta: é preciso também uma destas evidências (ver `canRetire`):
 // - a própria página registrou a saída, no pagehide ou numa saída não confirmada;
-// - esta é a mesma aba (a página anterior foi substituída);
+// - esta é a mesma aba, recarregada (a página anterior foi substituída). Uma aba duplicada copia o armazenamento da
+//   aba, então o identificador só é mantido em recarga (ver `resolveTabId`);
 // - a sessão está sem batimento local há mais de um intervalo de batimento e margem.
 // Trava ocupada, inclusive de página congelada, sempre preserva a sessão.
 //
@@ -75,6 +76,8 @@ export class SessionLedger {
   /** Sessões desta página. O valor solta a trava; null enquanto a trava não foi concedida. */
   private readonly holds = new Map<string, (() => void) | null>();
   private readonly reclaiming = new Map<string, Promise<ReclaimResult>>();
+  /** Reserva de entrada desta página, mantida da verificação até a sessão ser registrada. */
+  private entry: { name: string; release: () => void } | null = null;
 
   constructor(deps: SessionLedgerDeps) {
     this.deps = deps;
@@ -152,6 +155,52 @@ export class SessionLedger {
     }
   }
 
+  private entryLock(userId: string, roomId: string): string {
+    return `${LOCK_PREFIX}:entry:${userId}:${roomId}`;
+  }
+
+  /**
+   * Reserva a entrada nesta sala para esta página: duas abas não passam juntas pela verificação e pelo pedido de
+   * microfone. Falso: outra página deste navegador está entrando. Sem Web Locks, ou se a API falhar, não bloqueia:
+   * o limite continua no join_room.
+   */
+  reserveEntry(userId: string, roomId: string): Promise<boolean> {
+    const { locks } = this.deps;
+    if (!this.supported || !locks) return Promise.resolve(true);
+    const name = this.entryLock(userId, roomId);
+    if (this.entry?.name === name) return Promise.resolve(true);
+    this.releaseEntry();
+    return new Promise((resolve) => {
+      locks
+        .request(name, { ifAvailable: true }, (lock) => {
+          if (!lock) {
+            resolve(false);
+            return undefined;
+          }
+          return new Promise<void>((release) => {
+            this.entry = { name, release };
+            resolve(true);
+          });
+        })
+        .catch(() => resolve(true));
+    });
+  }
+
+  /** Idempotente. O fim da página solta a reserva sozinho. */
+  releaseEntry(): void {
+    const entry = this.entry;
+    this.entry = null;
+    entry?.release();
+  }
+
+  /** Outra página deste navegador está entrando nesta sala. Nunca rejeita. */
+  async entryHeldElsewhere(userId: string, roomId: string): Promise<boolean> {
+    const { locks } = this.deps;
+    const name = this.entryLock(userId, roomId);
+    if (!this.supported || !locks || this.entry?.name === name) return false;
+    return locks.request(name, { ifAvailable: true }, (lock) => lock === null).catch(() => false);
+  }
+
   /** Registro de uma sessão desta página, entregue à sinalização. */
   tracker(userId: string, roomId: string): SessionTracker {
     return {
@@ -182,6 +231,7 @@ export class SessionLedger {
         if (!lock || !this.holds.has(sessionId)) return undefined;
         // Trava primeiro, registro depois: quem lê a entrada de uma página viva sempre encontra a trava ocupada.
         this.write(userId, sessionId, { room: roomId, tab: this.safeTabId(), beat: this.deps.now(), closing: false });
+        this.releaseEntry(); // a sessão já está visível às outras abas
         return new Promise<void>((resolve) => {
           if (this.holds.has(sessionId)) this.holds.set(sessionId, resolve);
           else resolve();
@@ -265,6 +315,14 @@ export interface ReclaimResult {
 
 // ---------- navegador ----------
 
+/**
+ * O identificador só sobrevive à recarga. O armazenamento da aba é copiado na duplicação e em window.open, e a cópia não
+ * pode valer como "a mesma aba": sem isso, ela poderia encerrar a sessão de uma original viva que perdesse a trava.
+ */
+export function resolveTabId(known: string | null, navigationType: string | undefined, create: () => string): string {
+  return known && isUuid(known) && navigationType === 'reload' ? known : create();
+}
+
 export function browserStore(storage: Storage | null): ListableStore | null {
   if (!storage) return null;
   return {
@@ -284,13 +342,20 @@ export function createBrowserLedger(leave: SessionLedgerDeps['leave']): SessionL
     store = null;
   }
   const locks = (navigator as unknown as { locks?: LockManagerLike }).locks ?? null;
+  let current: string | null = null;
   const tabId = (): string | null => {
+    if (current) return current;
     const tabs = window.sessionStorage;
-    const known = tabs.getItem(TAB_KEY);
-    if (known && isUuid(known)) return known;
-    const created = crypto.randomUUID();
-    tabs.setItem(TAB_KEY, created);
-    return created;
+    const navigation = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
+    current = resolveTabId(tabs.getItem(TAB_KEY), navigation?.type, () => crypto.randomUUID());
+    tabs.setItem(TAB_KEY, current);
+    return current;
   };
+  // Já na carga: uma cópia que recarregasse antes do primeiro uso herdaria o identificador da original.
+  try {
+    tabId();
+  } catch {
+    current = null; // armazenamento da aba indisponível: sem essa evidência, vale a carência
+  }
   return new SessionLedger({ store, locks, origin: window.location.origin, tabId, now: Date.now, leave });
 }

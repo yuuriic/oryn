@@ -1465,12 +1465,14 @@ pode recusar, e encerrar é sempre `leave_room`, que recusa sessão de outra con
 conta e sessão, sem JWT ou credencial. Web Locks é coordenação local, não prova de encerramento: a especificação não define trava em bfcache
 ou documento congelado. Uma sessão só é encerrada com a trava livre **e** uma destas evidências:
 - a própria página registrou a saída (`pagehide` ou saída sem confirmação);
-- é a mesma aba, com a página anterior substituída;
+- é a mesma aba, recarregada, com a página anterior substituída. O identificador só é mantido em recarga, porque a duplicação copia o
+  armazenamento da aba;
 - não há batimento local há mais de 40 s (um intervalo de batimento e margem).
 
 Trava ocupada preserva a sessão, mesmo de página suspensa.
 
-**Entrada (`entry-gate.ts`):** antes de pedir o microfone, a página recupera as órfãs e consulta o `get_roster`:
+**Entrada (`entry-gate.ts`):** antes de pedir o microfone, a página reserva a entrada na sala com uma trava, mantida até a sessão ser
+registrada ou a chamada falhar. Assim, duas abas não entram juntas neste navegador. Depois, recupera as órfãs e consulta o `get_roster`:
 - **Sessão desta sala em outra aba, ainda válida no servidor:** avisa e não entra.
 - **2 ou mais sessões da conta:** mostra o bloqueio temporário e acompanha a cada 5 s, por até 2 min.
 - **Sem resposta confiável:** não abre o microfone.
@@ -1483,6 +1485,8 @@ Ao liberar, **Entrar agora** exige novo clique, e a verificação roda de novo.
 | Outro aparelho, outro perfil ou janela privada | Nunca encerrados daqui; **continuam dependendo da expiração de 90 s** |
 | Navegador sem Web Locks (Safari anterior a 15.4) ou sem armazenamento | Sem recuperação nem aviso de outra aba; mensagem própria e expiração de 90 s |
 | Aba nova, sem evidência além do tempo | Espera a carência de 40 s para encerrar a órfã |
+| Tipo de navegação diferente de recarga, inclusive restauração da aba, se o navegador não a tratar como recarga | Sem a evidência de mesma aba; vale a carência de 40 s |
+| Reserva presa por página suspensa durante a entrada, ou pedido de microfone sem resposta | A outra aba mostra o aviso até a primeira responder ou ser fechada |
 | Trava perdida em silêncio por página suspensa por mais de 40 s | Poderia ser encerrada; ao retomar, a página recebe `session-invalid` e pede para entrar de novo. Não observado |
 | Microfone depois de verificação assíncrona | O pedido pode sair do gesto do usuário; conferir no iPhone |
 

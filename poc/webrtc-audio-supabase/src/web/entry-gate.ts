@@ -33,6 +33,11 @@ export interface EntryGateDeps {
   reclaim(): Promise<unknown>;
   /** Sessões desta sala mantidas por outra página deste navegador; nunca rejeita. */
   heldElsewhere(roomId: string): Promise<string[]>;
+  /** Reserva a entrada nesta sala para esta página. Falso: outra página está entrando. */
+  reserve(roomId: string): Promise<boolean>;
+  release(): void;
+  /** Outra página deste navegador está entrando nesta sala; nunca rejeita. */
+  entryHeldElsewhere(roomId: string): Promise<boolean>;
   roster(roomId: string): Promise<RpcResult<unknown[]>>;
   onChange(state: EntryState): void;
   pollMs?: number;
@@ -73,17 +78,34 @@ export class EntryGate {
     this.timer = null;
   }
 
-  /** Verifica uma vez e, se bloqueada, passa a acompanhar. Só `go` autoriza pedir o microfone. */
+  /**
+   * Verifica uma vez e, se bloqueada, passa a acompanhar. Só `go` autoriza pedir o microfone, e a reserva de entrada
+   * segue com a página até a sessão ser registrada ou a chamada falhar. A reserva vem antes da consulta: assim, quem a
+   * obtém depois de outra aba já enxerga a sessão dela.
+   */
   async check(roomId: string): Promise<EntryVerdict> {
     this.stopPolling();
     const epoch = ++this.epoch;
     this.set({ status: 'checking', roomId });
+    const reserved = await this.deps.reserve(roomId).catch(() => true);
+    if (epoch !== this.epoch) {
+      this.deps.release();
+      return 'cancelled';
+    }
+    if (!reserved) {
+      this.startPolling(roomId, 'other-tab', epoch);
+      return 'blocked';
+    }
     const result = await this.withTimeout(this.evaluate(roomId));
-    if (epoch !== this.epoch) return 'cancelled';
+    if (epoch !== this.epoch) {
+      this.deps.release();
+      return 'cancelled';
+    }
     if (result.kind === 'free') {
       this.set(IDLE);
       return 'go';
     }
+    this.deps.release();
     if (result.kind === 'failed') {
       this.set({ status: 'error', roomId, code: result.code });
       return 'failed';
@@ -102,6 +124,7 @@ export class EntryGate {
   reset(): void {
     this.stopPolling();
     this.epoch += 1;
+    this.deps.release();
     if (this.s.status !== 'idle') this.set(IDLE);
   }
 
@@ -112,7 +135,8 @@ export class EntryGate {
       this.timer = setTimeout(() => void poll(), this.deps.pollMs ?? POLL_MS);
     };
     const poll = async (): Promise<void> => {
-      const result = await this.withTimeout(this.evaluate(roomId));
+      const entering = await this.deps.entryHeldElsewhere(roomId).catch(() => false);
+      const result: Evaluation = entering ? { kind: 'blocked', reason: 'other-tab' } : await this.withTimeout(this.evaluate(roomId));
       if (epoch !== this.epoch) return;
       // Liberar não entra na chamada: o microfone só abre com um novo clique.
       if (result.kind === 'free') return this.set({ status: 'released', roomId });
