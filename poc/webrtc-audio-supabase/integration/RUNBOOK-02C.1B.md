@@ -1585,7 +1585,7 @@ painel mostra erro de carga; login, salas e chamada não dependem dele.
 
 ### 14.13 Salas de grupo e voz multiponto (0600 + cliente; ⛔ cada passo marcado exige autorização própria)
 
-**Estado: implementado e validado só localmente. A 0600 não foi aplicada no remoto, e o cliente não foi publicado.** Contratos em README, "Salas de grupo"; aplicação no checklist de deploy, Etapa 6.
+**Estado: a 0600 foi aplicada no remoto em 2026-11-06, com pós-voo aprovado. O cliente está na branch `feat/group-rooms-mesh` (PR #19) e só é publicado com o merge; até lá, produção segue 1:1.** Contratos em README, "Salas de grupo"; aplicação no checklist de deploy, Etapa 6.
 
 **Decisões:**
 - **Contratos existentes preservados:** nenhuma RPC existente nem a função `signal` mudaram. Dois comportamentos ficaram mais restritos por gatilho: sala nova com mais de 4 lugares é recusada, e quem saiu ou foi removido só volta por convite emitido depois disso.
@@ -1596,7 +1596,7 @@ painel mostra erro de carga; login, salas e chamada não dependem dele.
 
 **Ordem de publicação ⛔:** aplicar a 0600 (Etapa 6) antes de integrar o cliente à `main`. O cliente novo usa `get_voice_participants` para a voz: **sem a 0600, ele não consegue descobrir participantes**.
 
-**Roteiro de homologação em aparelhos reais (sem evidência até aqui):**
+**Roteiro de homologação em aparelhos reais (resultados ainda não registrados neste documento):**
 1. Criar salas de 2, 3 e 4 lugares. Uma quinta conta com convite é recusada numa sala de 4.
 2. Regressão 1:1: Chrome no Windows e Safari no iPhone, com voz, mudo, saída e reentrada.
 3. Três contas: cada pessoa ouve as outras duas, separadamente. Confirmar falando uma de cada vez.
@@ -1610,7 +1610,7 @@ painel mostra erro de carga; login, salas e chamada não dependem dele.
 11. Saída voluntária: a sala some, e o histórico continua para os outros. O dono não tem "Sair"; encerra a sala.
 12. iPhone bloqueado e Safari em segundo plano, com 3 pessoas. **Risco já registrado, sem teste real.**
 
-**Validação local (2026-11-07, Chrome real com microfone falso, stack local descartável; roteiros não versionados):** 4 contas, 75 de 75, com áudio medido em cada conexão; regressão de saída, retorno e rede, 47 de 47; chat, 58 de 58. Isso prova o transporte, não a qualidade de voz nem redes reais.
+**Validação local (2026-11-06, Chrome real com microfone falso, stack local descartável; roteiros não versionados):** 4 contas, 75 de 75, com áudio medido em cada conexão; regressão de saída, retorno e rede, 47 de 47; chat, 58 de 58. Isso prova o transporte, não a qualidade de voz nem redes reais.
 
 **Regressão corrigida:** na primeira versão, quem voltava depois de uma queda do navegador esperava a sessão antiga vencer, até 90 s. Agora o par passa para a sessão seguinte ao perder a antiga: 18,7 s no roteiro.
 

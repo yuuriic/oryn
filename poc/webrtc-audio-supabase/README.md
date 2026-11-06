@@ -113,7 +113,7 @@ Requisitos: Node 24+ e pnpm 12+. Não há serviço a instalar: o PGlite e o Post
 | `supabase/migrations/…0200_oryn_functions.sql` | RPCs `SECURITY DEFINER` (`search_path = ''`) e `EXECUTE` explícito |
 | `supabase/migrations/…0300_oryn_realtime.sql` | Políticas de `realtime.messages`: receber só no próprio tópico; **nenhum envio de cliente** em `oryn:*` |
 | `supabase/migrations/…0400_oryn_room_management.sql` | MVP 01: `list_my_rooms` e `close_room` (aditiva; aplicada no remoto em 2026-10-28) |
-| `supabase/migrations/…0600_oryn_room_membership.sql` | Salas de grupo: capacidade de até 4 contas, lista de membros, saída, remoção e identidade de participante (aditiva; **não aplicada no remoto**) |
+| `supabase/migrations/…0600_oryn_room_membership.sql` | Salas de grupo: capacidade de até 4 contas, lista de membros, saída, remoção e identidade de participante (aditiva; aplicada no remoto em 2026-11-06) |
 | `supabase/migrations/…0500_oryn_room_messages.sql` | Chat por sala: `oryn.room_messages`, `oryn.room_message_counters`, `send_room_message` e `list_room_messages` (aditiva; aplicada no remoto em 2026-11-06) |
 | `supabase/functions/_shared/` | Contrato da sinalização e núcleo da Edge Function (puros e testados) |
 | `supabase/functions/_shared/edge-config.ts`, `supabase-http.ts`, `signal-http.ts` | Credenciais, chamadas HTTP com headers separados por operação e camada HTTP/CORS (puros e testados) |
@@ -187,7 +187,7 @@ um túnel HTTPS temporário:
 - **NAT e operadoras:** o WAN cobre um único cenário (uma rede Wi-Fi e uma operadora móvel). NAT restritivo
   (simétrico, CGNAT) e redes corporativas não foram testados.
 - **TURN:** não existe; sem ele, redes restritivas podem não conectar.
-- **Grupo:** até 4 contas por sala, em mesh, na seção "Salas de grupo"; **ainda não publicado**.
+- **Grupo:** até 4 contas por sala, em mesh, na seção "Salas de grupo"; o cliente só é publicado com o merge do PR #19.
 
 ## MVP 01 — gerenciamento de salas pela interface
 
@@ -230,7 +230,7 @@ cenários sem evidência em aparelho e riscos: runbook §14.12. Implantação: c
 
 ## Salas de grupo e voz multiponto
 
-**Estado: implementado e validado localmente. A migração 0600 não foi aplicada no remoto, e o cliente publicado segue 1:1.**
+**Estado: a migração 0600 foi aplicada no remoto em 2026-11-06, com pós-voo aprovado. O cliente de grupo está na branch `feat/group-rooms-mesh` (PR #19); até o merge, o cliente publicado em produção segue 1:1.**
 Implantação: checklist de deploy, Etapa 6 ⛔. Operação, homologação e riscos: runbook §14.13.
 
 - **Capacidade:** 2, 3 ou 4 contas por sala, com o dono. O backend recusa sala nova acima de 4 e o resgate que ultrapassaria a capacidade.

@@ -370,7 +370,7 @@ Causa desconhecida:
 
 ### Etapa 6 — `20261107000600_oryn_room_membership.sql` ⛔ (salas de grupo)
 
-**Estado: não aplicada no remoto.** Exige autorização explícita própria, com o estado anterior lido, commit publicado em PR aberto, CI aprovado e **sem merge**. O merge publica o cliente, que depende desta migração para a voz.
+**Estado: aplicada em 2026-11-06**, com pós-voo aprovado, antes do merge do PR #19. O procedimento abaixo fica como registro e vale para uma reaplicação depois do `93`, com autorização própria, o estado anterior lido, commit publicado em PR aberto, CI aprovado e **sem merge**. O merge publica o cliente, que depende desta migração para a voz.
 
 **O que faz:**
 - cria 4 RPCs em `public` (`list_room_members`, `get_voice_participants`, `leave_room_membership`, `remove_room_member`), `SECURITY DEFINER`, com `search_path` vazio e `EXECUTE` só para `authenticated`;
@@ -398,7 +398,7 @@ Causa desconhecida:
 | 🔎 Advisors | sem ERROR; WARN `0029` sobe de 15 para 19 | Investigar |
 | 🔎 Data API | as RPCs novas respondem a um membro; `401` sem login | Interromper; `93` |
 
-**Baselines S2/S3/S4:** só depois da aplicação, com os valores medidos no `08` (esperado `n = 76`), em commit próprio. Até lá, S2 e S4 dão FAIL **esperado**: nenhuma C2, C0 ou teste remoto roda nesse intervalo.
+**Baselines S2/S3/S4:** medidos em 2026-11-06 às 21:33 UTC e gravados no `11`, no `12` e no `13`: `76 / d8b4c3f1…`, `381dbf0a…` e as 6 versões. Numa reaplicação, S2 e S4 dão FAIL **esperado** entre o `93` e a nova aplicação: nenhuma C2, C0 ou teste remoto roda nesse intervalo.
 
 **`01_postflight.sql` e a 0600:** a versão atual lista as RPCs novas e só roda com a 0600 aplicada. Sem ela, usar a versão anterior do arquivo, pelo Git.
 
