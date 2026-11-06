@@ -5,7 +5,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MAX_SDP_LENGTH, parseSignalRequest, type SignalEnvelope } from '../supabase/functions/_shared/signal-contract.ts';
 import type { ServerMessage, SignalPayload } from '../src/web/protocol.ts';
-import { DISCONNECT, RateWindow, SupabaseSignaling, fromEnvelope, isInitiator, pairEpoch, toRequestPayload, type SupabaseSignalingOptions } from '../src/web/supabase-signaling.ts';
+import { DISCONNECT, JOIN_LIMIT_MESSAGE, RateWindow, SupabaseSignaling, fromEnvelope, isInitiator, pairEpoch, toRequestPayload, type SupabaseSignalingOptions } from '../src/web/supabase-signaling.ts';
 import { createSupabaseBackend } from '../src/web/supabase-backend.ts';
 import { FakeSupabase, ROOM, USERS, settle } from './helpers/web-fakes.ts';
 
@@ -355,6 +355,88 @@ describe('batimento e par que cai', () => {
     expect(a.disconnects).toEqual([]);
     handlers.onStatus('CLOSED');
     expect(a.disconnects).toEqual([DISCONNECT.channel]);
+  });
+});
+
+describe('registro local da sessão (tracker): só observa, não muda a sinalização', () => {
+  const trackerSpy = () => {
+    const calls: string[] = [];
+    return {
+      calls,
+      tracker: {
+        opened: (s: string) => calls.push(`opened:${s}`),
+        beat: (s: string) => calls.push(`beat:${s}`),
+        closing: (s: string) => calls.push(`closing:${s}`),
+        left: (s: string) => calls.push(`left:${s}`),
+      },
+    };
+  };
+
+  it('abre depois do join_room aceito; saída confirmada vira left, sem closing', async () => {
+    const spy = trackerSpy();
+    const a = await joined(USERS.owner, { tracker: spy.tracker });
+    const sid = a.s.session!;
+    expect(spy.calls).toEqual([`opened:${sid}`]);
+    a.s.close();
+    await a.s.closed;
+    expect(spy.calls).toEqual([`opened:${sid}`, `left:${sid}`]);
+  });
+
+  it('join_room recusado: nada é registrado', async () => {
+    const spy = trackerSpy();
+    server.rpcFaults.set('join_room', 'limit-reached');
+    const c = client(USERS.owner, { tracker: spy.tracker });
+    await expect(c.s.connect()).rejects.toThrow(JOIN_LIMIT_MESSAGE);
+    expect(spy.calls).toEqual([]);
+  });
+
+  it('saída sem confirmação: closing, para outra página poder repetir depois', async () => {
+    const spy = trackerSpy();
+    const a = await joined(USERS.owner, { tracker: spy.tracker });
+    const sid = a.s.session!;
+    server.rpcFaults.set('leave_room', 'erro de rede');
+    a.s.close();
+    await a.s.closed;
+    expect(spy.calls).toEqual([`opened:${sid}`, `closing:${sid}`]);
+  });
+
+  it('pagehide: closing antes do envio, porque esse envio não tem confirmação', async () => {
+    const spy = trackerSpy();
+    const order: string[] = [];
+    const a = await joined(USERS.owner, {
+      tracker: { ...spy.tracker, closing: (s: string) => order.push(`closing:${s}`) },
+      backend: {
+        ...server.backend(USERS.owner),
+        leaveOnUnload: (s: string) => {
+          order.push(`envio:${s}`);
+          return true;
+        },
+      },
+    });
+    const sid = a.s.session!;
+    a.s.closeOnPageHide();
+    await a.s.closed;
+    expect(order).toEqual([`closing:${sid}`, `envio:${sid}`]);
+    expect(spy.calls).not.toContain(`left:${sid}`);
+  });
+
+  it('batimento aceito renova; batimento recusado não', async () => {
+    const spy = trackerSpy();
+    const a = await joined(USERS.owner, { tracker: spy.tracker, heartbeatMs: 1000 });
+    const sid = a.s.session!;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(spy.calls).toContain(`beat:${sid}`);
+    const beats = spy.calls.filter((c) => c.startsWith('beat')).length;
+    server.rpcFaults.set('touch_session', 'erro de rede');
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(spy.calls.filter((c) => c.startsWith('beat')).length).toBe(beats);
+  });
+
+  it('sem tracker, o comportamento é o de sempre', async () => {
+    const a = await joined(USERS.owner);
+    a.s.close();
+    await a.s.closed;
+    expect(rpcs(USERS.owner, 'leave_room')).toHaveLength(1);
   });
 });
 

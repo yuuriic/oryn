@@ -1451,3 +1451,40 @@ consegue, e outras salas não são afetadas. Quem já entrou continua na sala.
 | A conta errada aceita e ocupa o lugar; a interface não remove membros | Aceito no MVP 02 | A conta é mostrada antes do aceite; a saída é encerrar a sala e criar outra |
 | Depois de recarregar, o link gerado não é mostrado de novo e continua pendente | Por projeto | Revogar os pendentes e gerar outro |
 | Celular real e a passagem pelo acesso protegido da Vercel não foram testados | **Pendente** | Conferir na primeira publicação autorizada |
+
+### 14.10 Sessões abandonadas e entrada bloqueada (NET-01)
+
+**Problema observado em produção, no Safari do iPhone:** duas páginas da mesma conta sumiram sem `leave_room`. Como as duas continuavam
+válidas, `join_room` recusou a reentrada por `limit-reached` até elas vencerem, cerca de 95 s depois do último batimento. A causa exata da
+saída ausente não foi isolada. A correção não depende de o navegador conseguir enviar nada ao encerrar a página.
+
+**O servidor continua decidindo.** Sem migração, RLS, Edge Function ou mudança no WebRTC. `get_roster` só orienta a tela, `join_room` ainda
+pode recusar, e encerrar é sempre `leave_room`, que recusa sessão de outra conta e é idempotente.
+
+**Registro local (`session-ledger.ts`):** cada página viva mantém uma trava Web Locks por sessão e grava só ids e carimbos, por origem,
+conta e sessão, sem JWT ou credencial. Web Locks é coordenação local, não prova de encerramento: a especificação não define trava em bfcache
+ou documento congelado. Uma sessão só é encerrada com a trava livre **e** uma destas evidências:
+- a própria página registrou a saída (`pagehide` ou saída sem confirmação);
+- é a mesma aba, com a página anterior substituída;
+- não há batimento local há mais de 40 s (um intervalo de batimento e margem).
+
+Trava ocupada preserva a sessão, mesmo de página suspensa.
+
+**Entrada (`entry-gate.ts`):** antes de pedir o microfone, a página recupera as órfãs e consulta o `get_roster`:
+- **Sessão desta sala em outra aba, ainda válida no servidor:** avisa e não entra.
+- **2 ou mais sessões da conta:** mostra o bloqueio temporário e acompanha a cada 5 s, por até 2 min.
+- **Sem resposta confiável:** não abre o microfone.
+
+Ao liberar, **Entrar agora** exige novo clique, e a verificação roda de novo.
+
+**Limites:**
+| Caso | Comportamento |
+|---|---|
+| Outro aparelho, outro perfil ou janela privada | Nunca encerrados daqui; **continuam dependendo da expiração de 90 s** |
+| Navegador sem Web Locks (Safari anterior a 15.4) ou sem armazenamento | Sem recuperação nem aviso de outra aba; mensagem própria e expiração de 90 s |
+| Aba nova, sem evidência além do tempo | Espera a carência de 40 s para encerrar a órfã |
+| Trava perdida em silêncio por página suspensa por mais de 40 s | Poderia ser encerrada; ao retomar, a página recebe `session-invalid` e pede para entrar de novo. Não observado |
+| Microfone depois de verificação assíncrona | O pedido pode sair do gesto do usuário; conferir no iPhone |
+
+**O comportamento real do Safari no iPhone só se valida em aparelho:** encerramento de processo, suspensão em segundo plano e travas em
+documento suspenso não são reproduzíveis no Chrome.

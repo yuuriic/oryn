@@ -130,9 +130,12 @@ export const DISCONNECT_MESSAGES: Record<number, string> = {
   [DISCONNECT.channel]: 'o canal privado foi fechado pelo servidor',
 };
 
+/** A página reconhece este texto na falha da chamada para mostrar o estado de bloqueio temporário. */
+export const JOIN_LIMIT_MESSAGE = 'Esta conta já tem 2 sessões abertas na sala: feche a outra aba ou aguarde até 90 s.';
+
 const JOIN_ERRORS: Record<string, string> = {
   'not-member': 'Esta conta não é membro da sala informada.',
-  'limit-reached': 'Esta conta já tem 2 sessões abertas na sala: feche a outra aba ou aguarde até 90 s.',
+  'limit-reached': JOIN_LIMIT_MESSAGE,
   'invalid-argument': 'Identificador de sala inválido.',
   unauthorized: 'Login recusado pelo servidor.',
 };
@@ -155,6 +158,8 @@ export interface SupabaseSignalingOptions {
   log?: (message: string) => void;
   /** O par foi dado como inalcançável e a recuperação começou (a página avisa, sem tratar como erro). */
   onPeerUnreachable?: () => void;
+  /** Registro local da sessão, para recuperá-la se esta página acabar sem avisar (session-ledger.ts). */
+  tracker?: SessionTracker;
   now?: () => number;
   randomUUID?: () => string;
   heartbeatMs?: number;
@@ -170,6 +175,16 @@ export interface SupabaseSignalingOptions {
   rateWindowMs?: number;
   maxQueue?: number;
   sendOptions?: SendOptions;
+}
+
+/** Ciclo de vida local da sessão. Só registra: não decide nada sobre a sessão nem sobre a chamada. */
+export interface SessionTracker {
+  opened(sessionId: string): void;
+  beat(sessionId: string): void;
+  /** A saída foi tentada, sem confirmação: a sessão pode ser encerrada depois por outra página. */
+  closing(sessionId: string): void;
+  /** A saída foi confirmada pelo servidor. */
+  left(sessionId: string): void;
 }
 
 interface Outgoing {
@@ -257,6 +272,7 @@ export class SupabaseSignaling implements SignalingLike {
       now: Date.now,
       randomUUID: () => crypto.randomUUID(),
       heartbeatMs: 30_000,
+      tracker: { opened: () => undefined, beat: () => undefined, closing: () => undefined, left: () => undefined },
       tickMs: 500,
       ackMs: 1_000,
       ackDelayMs: 1_500,
@@ -296,6 +312,7 @@ export class SupabaseSignaling implements SignalingLike {
       throw new Error(JOIN_ERRORS[code] ?? `Entrada na sala recusada (${code}).`);
     }
     this.sessionId = sid;
+    this.o.tracker.opened(sid);
     this.receiver = new SignalReceiver({
       selfSession: sid,
       now: this.o.now,
@@ -424,6 +441,7 @@ export class SupabaseSignaling implements SignalingLike {
   closeOnPageHide(): void {
     if (this.isClosed()) return;
     const sid = this.sessionId;
+    if (sid) this.o.tracker.closing(sid); // na descarga, nenhum envio tem confirmação garantida
     if (sid && this.o.backend.leaveOnUnload?.(sid)) this.sessionId = null; // leave() não repete pela RPC
     this.close();
   }
@@ -652,6 +670,7 @@ export class SupabaseSignaling implements SignalingLike {
       return;
     }
     this.heartbeatFailures = 0;
+    this.o.tracker.beat(this.sessionId);
     // Par que caiu sem bye (aba fechada, rede): some do roster em até 90 s.
     if (this.peer !== null) {
       const roster = await this.o.backend.rpc<unknown[]>('get_roster', { p_room_id: this.o.roomId });
@@ -763,7 +782,12 @@ export class SupabaseSignaling implements SignalingLike {
     if (!sid) return;
     this.sessionId = null;
     const res = await this.o.backend.rpc<null>('leave_room', { p_session_id: sid }).catch(() => ({ data: null, error: 'erro' }));
-    if (res.error) this.o.log(`Saída da sala não confirmada (${shortCode(res.error)}); a sessão vence em até 90 s.`);
+    if (res.error) {
+      this.o.tracker.closing(sid);
+      this.o.log(`Saída da sala não confirmada (${shortCode(res.error)}); a sessão vence em até 90 s.`);
+    } else {
+      this.o.tracker.left(sid);
+    }
   }
 
   private emit(message: ServerMessage): void {

@@ -62,8 +62,8 @@ describe('garantias estáticas do frontend', () => {
       const c = code(t);
       if (f !== 'config.ts') expect(c, f).not.toMatch(/sb_secret_|service_role|sbp_/);
       expect(c, f).not.toMatch(/signInAnonymously|signUp\(|indexedDB|document\.cookie/);
-      if (f !== 'auth-session.ts') expect(c, f).not.toMatch(/localStorage/);
-      if (f !== 'call-return.ts') expect(c, f).not.toMatch(/sessionStorage/);
+      if (f !== 'auth-session.ts' && f !== 'session-ledger.ts') expect(c, f).not.toMatch(/localStorage/);
+      if (f !== 'call-return.ts' && f !== 'session-ledger.ts') expect(c, f).not.toMatch(/sessionStorage/);
     }
     expect(code(web['main.ts']!)).toMatch(/signInWithPassword/);
   });

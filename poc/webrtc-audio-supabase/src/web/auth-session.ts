@@ -1,8 +1,8 @@
 // Sessão de login persistida com o mecanismo oficial do Supabase Auth (persistSession + storage).
 //
-// Este é o único módulo do cliente que usa o armazenamento local do navegador, e guarda ali apenas o que o próprio
-// Auth grava, sob uma chave fixa (tests/web-config.test.ts confere). A senha nunca é gravada. Riscos residuais de
-// guardar a sessão no navegador: runbook §14.6.
+// Guarda no armazenamento local do navegador apenas o que o próprio Auth grava, sob uma chave fixa. Além deste módulo,
+// só session-ledger.ts usa esse armazenamento, sem credencial nenhuma (tests/web-config.test.ts confere). A senha nunca
+// é gravada. Riscos residuais de guardar a sessão no navegador: runbook §14.6.
 
 import { isAuthRetryableFetchError, isAuthSessionMissingError, type Session, type SupabaseClient } from '@supabase/supabase-js';
 
