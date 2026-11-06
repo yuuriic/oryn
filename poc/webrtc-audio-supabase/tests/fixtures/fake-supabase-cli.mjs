@@ -1,13 +1,20 @@
 // CLI FALSA do Supabase para testar integration/scripts/oryn-push-step.ps1 SEM rede e SEM projeto remoto.
 // Registra num arquivo JSON (FAKE_CLI_LOG) os argumentos recebidos, se SUPABASE_DB_PASSWORD chegou (só o
 // tamanho, nunca o valor) e as migrações presentes no --workdir. Comportamento por FAKE_CLI_MODE:
-//   ok    → imprime, como "dry-run", as migrações do workdir que não estão em FAKE_APPLIED (lista separada por vírgula);
-//   extra → idem, e cita também 20261023000300 (simula uma migração fora da etapa);
-//   fail  → sai com código 1 (simula erro de autenticação).
+//   ok         → lista as migrações do workdir ainda não aplicadas, ou "up to date" sem nenhuma; sem --dry-run, grava-as em
+//                FAKE_STATE, como um push real. Aplicadas = FAKE_APPLIED (lista separada por vírgula) + FAKE_STATE;
+//   extra      → idem, e cita também 20261023000300 (simula uma migração fora da etapa);
+//   fail       → sai com código 1 em qualquer chamada (simula erro de autenticação);
+//   decline    → o push não grava nada e sai com código 0 (simula a recusa no prompt da CLI);
+//   push-fail  → o dry-run funciona; o push sai com código 1;
+//   recheck-fail → o push grava; o dry-run seguinte sai com código 1;
+//   unknown    → o dry-run não cita o alvo nem informa banco em dia;
+//   json       → como ok, no formato que a CLI 2.122.0 real usa com a saída capturada (lido dela em 2026-11-06).
+// Cada chamada é acrescentada a `${FAKE_CLI_LOG}.calls`, para os testes conferirem a sequência.
 // `--version` (02C.3B.1) registra só em `${FAKE_CLI_LOG}.version` e responde conforme FAKE_CLI_VERSION:
 //   ok (padrão) → aviso de atualização no stderr (com OUTRAS versões) + `2.122.0` no stdout;
 //   old → `2.115.0`; fail → código 1; garbage → texto sem versão; two → duas linhas de versão.
-import { appendFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const args = process.argv.slice(2);
@@ -35,16 +42,48 @@ const migrations = (() => {
   }
 })();
 const pw = process.env['SUPABASE_DB_PASSWORD'];
-writeFileSync(process.env['FAKE_CLI_LOG'] ?? 'fake-cli.json', JSON.stringify({ args, workdir, migrations, passwordLength: pw === undefined ? null : pw.length }));
+const entry = JSON.stringify({ args, workdir, migrations, passwordLength: pw === undefined ? null : pw.length });
+writeFileSync(process.env['FAKE_CLI_LOG'] ?? 'fake-cli.json', entry);
+appendFileSync(`${process.env['FAKE_CLI_LOG'] ?? 'fake-cli.json'}.calls`, `${entry}\n`);
 
 const mode = process.env['FAKE_CLI_MODE'] ?? 'ok';
 if (mode === 'fail') {
   console.error('failed to connect to postgres: password authentication failed for user "postgres"');
   process.exit(1);
 }
-const applied = (process.env['FAKE_APPLIED'] ?? '').split(',').filter(Boolean);
+const statePath = process.env['FAKE_STATE'];
+const isDryRun = args.includes('--dry-run');
+const persisted = statePath && existsSync(statePath) ? readFileSync(statePath, 'utf8').split('\n').filter(Boolean) : [];
+const applied = [...(process.env['FAKE_APPLIED'] ?? '').split(',').filter(Boolean), ...persisted];
 const pending = migrations.filter((m) => !applied.some((a) => m.startsWith(a)));
-console.log(args.includes('--dry-run') ? 'DRY RUN: migrations will *not* be pushed to the database.' : 'Applying migrations...');
-console.log('Would push these migrations:');
-for (const m of pending) console.log(` • ${m}`);
+
+if (!isDryRun) {
+  if (mode === 'push-fail') {
+    console.error('failed to apply migration: statement error');
+    process.exit(1);
+  }
+  console.log('Applying migrations...');
+  if (mode !== 'decline' && statePath) appendFileSync(statePath, pending.map((m) => `${m}\n`).join(''));
+  process.exit(0);
+}
+if (mode === 'recheck-fail' && persisted.length > 0) {
+  console.error('failed to connect to postgres: connection reset');
+  process.exit(1);
+}
+if (mode === 'unknown') {
+  console.log('Connecting to remote database...');
+  process.exit(0);
+}
+console.log('DRY RUN: migrations will *not* be pushed to the database.');
+if (mode === 'json') {
+  const upToDate = pending.length === 0;
+  console.log(JSON.stringify({ upToDate, dryRun: true, migrations: pending, seeds: [], roles: [], ...(upToDate ? { message: 'Remote database is up to date.' } : {}) }));
+  process.exit(0);
+}
+if (pending.length === 0) {
+  console.log('Remote database is up to date.');
+} else {
+  console.log('Would push these migrations:');
+  for (const m of pending) console.log(` • ${m}`);
+}
 if (mode === 'extra') console.log(' • 20261023000300_oryn_realtime.sql');

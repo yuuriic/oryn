@@ -469,6 +469,37 @@ describe('Chat por sala: 05_step_checks.sql e 92_rollback_0500.sql', () => {
   });
 });
 
+describe('baselines dos scripts 11, 12 e 13', () => {
+  const scripts = ['11_c0w_postflight.sql', '12_c2_preflight.sql', '13_c2_postflight.sql'];
+  const checklist = readFileSync(fileURLToPath(new URL('../integration/DEPLOY-CHECKLIST-02C.md', import.meta.url)), 'utf8');
+  const SCOPE = '68 / c71c2d4d350a733ef0a98fcfede55a12';
+  const PLATFORM = '381dbf0a5071c15b7fa4e4239110c9f0';
+  const HISTORY = '20261023000100,20261023000200,20261023000300,20261028000400,20261106000500';
+
+  it.each(scripts)('%s: os valores esperados e os comparados são os medidos depois da 0500', (name) => {
+    const text = sql(name);
+    expect(text).toContain(`'${SCOPE}'`);
+    expect(text).toContain(`from oryn_scope) = 68`);
+    expect(text).toContain(`from oryn_scope) = 'c71c2d4d350a733ef0a98fcfede55a12'`);
+    expect(text).toContain(`from platform) = '${PLATFORM}'`);
+    expect(text).toContain(`= '${HISTORY}'`);
+    const code = text.replace(/--.*$/gm, '');
+    expect(code).not.toMatch(/787129706368|4ce6437364|= 60\b/);
+  });
+
+  it.each(scripts)('%s: a divergência do platform continua declarada, com causa desconhecida', (name) => {
+    expect(sql(name)).toMatch(/causa DESCONHECIDA/);
+  });
+
+  it('o checklist documenta a medição, a aceitação e o valor anterior, sem apagar a divergência', () => {
+    for (const value of ['c71c2d4d350a733ef0a98fcfede55a12', PLATFORM, '4ce6437364c259fec6b5ea9646ac1359', '787129706368d4c3ed93a8d5a07429af']) {
+      expect(checklist, value).toContain(value);
+    }
+    expect(checklist).toMatch(/Causa desconhecida/);
+    expect(checklist).toMatch(/piloto fechado/);
+  });
+});
+
 describe('11_c0w_postflight.sql (02C.6A, Z9)', () => {
   // O shim não tem as tabelas de sessão do Auth nem o histórico da CLI: stubs mínimos com o mesmo nome.
   const stubs = `create table auth.identities (id uuid primary key);
@@ -476,7 +507,7 @@ describe('11_c0w_postflight.sql (02C.6A, Z9)', () => {
                  create table auth.refresh_tokens (id bigint primary key);
                  create schema supabase_migrations;
                  create table supabase_migrations.schema_migrations (version text primary key);
-                 insert into supabase_migrations.schema_migrations values ('20261023000100'), ('20261023000200'), ('20261023000300'), ('20261028000400')`;
+                 insert into supabase_migrations.schema_migrations values ('20261023000100'), ('20261023000200'), ('20261023000300'), ('20261028000400'), ('20261106000500')`;
   const z9 = async (db: TestDb) => {
     const res = await db.pg.exec(sql('11_c0w_postflight.sql'));
     const rows = res.find((r) => r.fields.some((f) => f.name === 'status'))!.rows as Row[];

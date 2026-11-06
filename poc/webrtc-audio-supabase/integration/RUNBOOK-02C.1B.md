@@ -1519,8 +1519,26 @@ do caminho WebRTC não estão comprovadas.
 
 ### 14.12 Chat por sala (0500 + painel; ⛔ cada passo marcado exige autorização própria)
 
-**Estado: implementado e validado localmente. A 0500 não foi aplicada no remoto.** Contratos em README, "Chat por sala"; aplicação no checklist
-de deploy, Etapa 5.
+**Estado: em produção desde 2026-11-06.** A 0500 foi aplicada às 18:29:23 UTC, e o cliente foi publicado pelo merge do PR #17 (`fa95dd5`). Contratos em
+README, "Chat por sala"; aplicação no checklist de deploy, Etapa 5.
+
+**Homologação (2026-11-06):**
+
+| Tipo | O que cobriu | Resultado |
+|---|---|---|
+| **Manual, em produção** | Chrome no Windows e Safari no iPhone: envio nos dois sentidos, histórico depois de recarregar, áudio nos dois sentidos e chat durante a chamada | **6 de 6 PASS**, relato do responsável |
+| **Registro técnico, em produção** | Leitura às 18:48 UTC: 6 mensagens em 1 sala e 1 sessão viva. Corrobora o uso; só contagens, sem ler o conteúdo | Compatível com o relato |
+| **Leitura e papéis, em produção** | `05`, `01`, `06`, diferença do `08`, advisors e recusas de anônimo, `service_role`, estranho e sala inexistente | PASS; checklist, Etapa 5 |
+| **Automatizado, local** | `pnpm test`, `pnpm test:pg` e CI do PR #17 | Aprovado |
+| **Roteiro em Chrome real, local** | Chat com áudio medido: 58 de 58. Regressão de saída, retorno e rede: 47 de 47. Roteiros não versionados, com microfone falso | PASS |
+
+**Sem registro nesta homologação:** o relato cita quatro cenários dos 6 aprovados, sem listar os demais. Por isso, seguem sem evidência em aparelho real, a menos que o relato completo indique o contrário:
+- falha de rede com "Repetir", no passo 4;
+- HTML como texto, no passo 5;
+- iPhone bloqueado ou Safari em segundo plano, no passo 7;
+- sala encerrada, no passo 8.
+
+Áudio aprovado manualmente é validação funcional: perda, jitter, latência e duração de mídia seguem sem medição (`docs/validation/NET-01-NET-02.md`).
 
 **Decisões:**
 - **Sem Realtime:** consulta periódica a cada 3 s. Cada mensagem chega com alguns segundos de atraso, em troca de não tocar em sinalização,
@@ -1530,7 +1548,7 @@ de deploy, Etapa 5.
 - **Mensagem ligada à sala:** a sala faz o papel de espaço e canal da arquitetura. Se esses conceitos entrarem, será preciso migrar.
 - **Sem trava nem contador na leitura:** `list_room_messages` é só leitura e tem limite de linhas, mas não tem limite de frequência no banco.
 
-**Ordem de publicação ⛔:** aplicar a 0500 (Etapa 5) e só depois integrar o cliente à `main`, que publica sozinha. Com o cliente antes da migração, o
+**Ordem de publicação ⛔ (seguida em 2026-11-06):** aplicar a 0500 (Etapa 5) e só depois integrar o cliente à `main`, que publica sozinha. Com o cliente antes da migração, o
 painel mostra erro de carga; login, salas e chamada não dependem dele.
 
 **Validação manual (duas contas, membros da mesma sala):**

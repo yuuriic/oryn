@@ -20,6 +20,10 @@
   - Sem -Apply: só `--dry-run`. Com -Apply: exige a confirmação digitada `APLICAR <versão>` e mantém o
     prompt interativo da própria CLI (sem --yes). Esse prompt tem padrão SIM na CLI 2.122.0 (Enter vazio
     ou stdin sem terminal aplica): a trava é a confirmação deste script, não a da CLI.
+  - O resultado do -Apply vem de dois --dry-run capturados, porque a chamada interativa não pode ter a saída
+    capturada sem arriscar esconder o prompt. Antes: banco em dia = NADA APLICADO, sem chamar o push. Depois:
+    só o banco em dia autoriza imprimir APLICADO. Código 0 da CLI nunca basta: ele também sai quando não há nada a
+    aplicar.
 
   NÃO faz backup nem dump. NÃO roda verificações SQL (são feitas à parte, ver DEPLOY-CHECKLIST-02C.md).
 
@@ -54,6 +58,20 @@ $selected = @($expected | Select-Object -First $Step)
 $target = $selected[-1]
 $targetVersion = $target.Name.Split('_')[0]
 $others = @($expected | Where-Object { $_.Name -ne $target.Name })
+# Banco em dia na CLI 2.122.0, lido dela: com a saída capturada, que é o caso aqui, vem JSON ("upToDate":true); no
+# terminal, vem a frase. Os dois valem.
+$UpToDatePattern = '"upToDate"\s*:\s*true|Remote database is up to date'
+
+# Lê a saída de um --dry-run: 'pending' (o alvo será aplicado), 'up-to-date' (nada a aplicar) ou 'unknown'.
+# Citar outra migração interrompe em qualquer caso.
+function Get-PushPlan([string] $Text) {
+  foreach ($o in $others) {
+    if ($Text -match [regex]::Escape($o.Name.Split('_')[0])) { throw "o dry-run cita $($o.Name), fora desta etapa: interromper" }
+  }
+  if ($Text -match [regex]::Escape($targetVersion)) { return 'pending' }
+  if ($Text -match $UpToDatePattern) { return 'up-to-date' }
+  return 'unknown'
+}
 
 # 1. Pré-condições locais.
 if (Test-Path Env:SUPABASE_DB_PASSWORD) { throw 'SUPABASE_DB_PASSWORD já está definida neste processo: limpe-a antes (Remove-Item Env:SUPABASE_DB_PASSWORD).' }
@@ -108,34 +126,41 @@ try {
     if ($Confirmation -cne "APLICAR $targetVersion") { throw 'confirmação não confere: nada foi aplicado' }
   }
 
-  # 4. CLI com a senha SÓ no ambiente deste processo e só durante a chamada.
-  $cliArgs = @('--workdir', $workdir, 'db', 'push', '--project-ref', $ProjectRef, '--skip-vault')
-  if (-not $Apply) { $cliArgs += '--dry-run' }
+  # 4. CLI com a senha SÓ no ambiente deste processo, durante as chamadas; o `finally` a remove.
+  $pushArgs = @('--workdir', $workdir, 'db', 'push', '--project-ref', $ProjectRef, '--skip-vault')
+  $dryRunArgs = $pushArgs + '--dry-run'
   $plain = [System.Net.NetworkCredential]::new('', $Password).Password
   $env:SUPABASE_DB_PASSWORD = $plain
-  if ($Apply) {
-    # Direto no terminal: o prompt de confirmação da própria CLI precisa aparecer (sem --yes).
-    & $SupabaseCli @SupabaseCliPrefix @cliArgs
-    $code = $LASTEXITCODE
-    $output = @()
-  } else {
-    $output = & $SupabaseCli @SupabaseCliPrefix @cliArgs 2>&1 | ForEach-Object { "$_" }
-    $code = $LASTEXITCODE
-  }
-  Remove-Item Env:SUPABASE_DB_PASSWORD -ErrorAction SilentlyContinue
+
+  # 5. Dry-run: nunca aplica. No -Apply, também decide se há o que aplicar.
+  $output = & $SupabaseCli @SupabaseCliPrefix @dryRunArgs 2>&1 | ForEach-Object { "$_" }
+  $code = $LASTEXITCODE
   $output | ForEach-Object { Write-Host $_ }
   if ($code -ne 0) { throw "a CLI saiu com código $code (ver a saída acima); interromper e registrar" }
+  $plan = Get-PushPlan ($output -join "`n")
 
-  # 5. O dry-run tem de citar o alvo e NENHUMA outra migração. O formato exato da saída da CLI 2.122.0
-  #    não foi comprovado contra o projeto: a checagem é por nome de arquivo/versão.
-  $text = $output -join "`n"
   if (-not $Apply) {
-    if ($text -notmatch [regex]::Escape($targetVersion)) { throw "o dry-run não lista ${targetVersion}: interromper" }
-    foreach ($o in $others) {
-      if ($text -match [regex]::Escape($o.Name.Split('_')[0])) { throw "o dry-run cita $($o.Name), fora desta etapa: interromper" }
-    }
+    # Banco em dia num dry-run também interrompe: a etapa esperava aplicar o alvo.
+    if ($plan -ne 'pending') { throw "o dry-run não lista ${targetVersion}: interromper" }
     Write-Host "DRY-RUN OK: só $($target.Name). Agora rode integration/sql/06_cli_side_effects.sql (esperado: nada mudou)."
+  } elseif ($plan -eq 'up-to-date') {
+    Write-Host "NADA APLICADO: o banco já está em dia, inclusive com $($target.Name). Confira em 06_cli_side_effects.sql."
+  } elseif ($plan -ne 'pending') {
+    throw "o dry-run não lista ${targetVersion} nem informa banco em dia: nada foi aplicado; interromper"
   } else {
+    # Direto no terminal: o prompt de confirmação da própria CLI precisa aparecer (sem --yes).
+    & $SupabaseCli @SupabaseCliPrefix @pushArgs
+    $code = $LASTEXITCODE
+    if ($code -ne 0) { throw "a CLI saiu com código $code (ver a saída acima); resultado não confirmado: rode 06_cli_side_effects.sql" }
+
+    # 6. Só o banco em dia, lido depois da chamada, prova a aplicação.
+    $output = & $SupabaseCli @SupabaseCliPrefix @dryRunArgs 2>&1 | ForEach-Object { "$_" }
+    $code = $LASTEXITCODE
+    $output | ForEach-Object { Write-Host $_ }
+    if ($code -ne 0) { throw "a conferência depois da aplicação falhou (código $code); resultado não confirmado: rode 06_cli_side_effects.sql" }
+    $plan = Get-PushPlan ($output -join "`n")
+    if ($plan -eq 'pending') { throw "NÃO APLICADO: $($target.Name) continua pendente (recusada no prompt, ou a CLI não a aplicou)." }
+    if ($plan -ne 'up-to-date') { throw "resultado não confirmado: a conferência não informa banco em dia; rode 06_cli_side_effects.sql" }
     Write-Host "APLICADO: $($target.Name). Agora rode 05_step_checks.sql e 06_cli_side_effects.sql (Etapa $Step do checklist)."
   }
 }
