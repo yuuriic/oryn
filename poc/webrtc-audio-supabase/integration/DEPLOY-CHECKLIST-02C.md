@@ -302,7 +302,28 @@ voltou a PASS. Validação manual no runbook §14.
 
 ### Etapa 5 — `20261106000500_oryn_room_messages.sql` ⛔ (chat por sala)
 
-**Estado: não aplicada no remoto.** Exige autorização explícita própria, com o commit já integrado e o estado anterior lido.
+**Estado: não aplicada no remoto.** Exige autorização explícita própria, com o estado anterior lido e o commit publicado na branch, em PR aberto contra a `main`, com CI aprovado e **sem merge**. O merge publica o cliente sozinho e vem depois da migração. Nesta etapa, essa condição substitui o `HEAD` igual ao `origin/main` da seção 1.
+
+**Divergências conhecidas antes da 0500 (leitura de 2026-11-06).** S2 e S3 dos scripts `11`, `12` e `13` já dão FAIL por causa delas. Os baselines **não foram atualizados de propósito**: só mudam depois da aplicação, com valores medidos e commit próprio.
+
+| Item | Registrado até 2026-10-29 | Lido em 2026-11-06 |
+|---|---|---|
+| `oryn_scope` (`08`) | `60 / 787129706368d4c3ed93a8d5a07429af` | `60 / 072de35bce90077d1e9873dba39b6e29` |
+| `platform_fingerprint` (`07`) | `4ce6437364c259fec6b5ea9646ac1359` | `381dbf0a5071c15b7fa4e4239110c9f0` |
+
+Fatos comprovados:
+- **ACLs de `public`:** só 3 entradas `defacl:public` diferem, as dos objetos criados por `postgres` (tabelas, funções e sequências). Trocá-las de volta pelo acesso padrão completo de `anon`, `authenticated` e `service_role` reproduz exatamente o md5 registrado, então as outras 57 entradas não mudaram.
+- **Funções:** as 24 do escopo têm o corpo idêntico ao das migrações 0100–0400.
+- **Histórico:** as 4 versões, sem objetos da 0500 e sem papel `cli_login_*`.
+- **Plataforma:** o Postgres segue em 17.11; `auth.uid`, `auth.users`, `realtime.send` e o RLS de `realtime.messages` seguem presentes; as 4 políticas `oryn_*` continuam.
+
+Hipóteses, sem comprovação:
+- **Autor da mudança nas ACLs:** não é identificável pelo banco. As migrações do Oryn não alteram as ACLs padrão de `public`.
+- **Causa do `platform_fingerprint`:** atualização de Auth e Storage pela plataforma. Não há lista de entradas anterior para comparar, então **o que mudou não está identificado**.
+
+Efeito esperado na 0500: nenhum. Ela faz `revoke` e `grant` explícitos, não depende das ACLs padrão e aborta se as permissões saírem erradas. **Esse cenário de ACLs não foi testado localmente.** A decisão de seguir apesar do critério de interrupção do `platform_fingerprint` (seção 1c) é do responsável pela autorização.
+
+**Validação depois da aplicação:** os ambientes de prévia da hospedagem não têm as variáveis do Supabase, então a validação com aparelhos é feita em produção, depois do merge.
 
 **O que faz** (aditiva; não altera tabela, política, publicação nem função existente):
 - cria as tabelas privadas `oryn.room_messages` e `oryn.room_message_counters`, com RLS ligado, nenhuma política e nenhum privilégio de
