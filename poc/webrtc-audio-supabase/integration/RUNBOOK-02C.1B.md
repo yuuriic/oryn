@@ -1492,3 +1492,26 @@ Ao liberar, **Entrar agora** exige novo clique, e a verificação roda de novo.
 
 **O comportamento real do Safari no iPhone só se valida em aparelho:** encerramento de processo, suspensão em segundo plano e travas em
 documento suspenso não são reproduzíveis no Chrome.
+
+### 14.11 Validação real e comportamentos críticos
+
+**Resultado:** validação funcional manual positiva; homologação técnica integral pendente. Detalhes em
+[`docs/validation/NET-01-NET-02.md`](../../../docs/validation/NET-01-NET-02.md), com o que foi observado, o que os registros técnicos mostram e
+o que segue sem comprovação. A chamada de 15 minutos e a troca 5G → Wi-Fi → 5G são relatos manuais; a duração contínua de mídia e a migração
+do caminho WebRTC não estão comprovadas.
+
+**Preservar em toda alteração:**
+| Comportamento | Cobertura hoje |
+|---|---|
+| O microfone só abre depois de um clique e da verificação de entrada, nunca durante o bloqueio | `session-recovery`, `call-return` |
+| `join_room` e `leave_room` decidem as sessões, com limite de 2 por conta | `sql-rooms`, `session-recovery`, `concurrency.pg` |
+| Quem fica aguarda sem erro quando o outro sai; quem volta cria uma conexão nova | `web-call`, `supabase-signaling` |
+| Uma segunda aba não derruba a chamada; trava livre sozinha nunca encerra sessão | `session-recovery` |
+| O mudo não renegocia a chamada | `web-call` e validação manual |
+| Bloquear a tela ou colocar o Safari em segundo plano não encerra, por si só, uma chamada ativa; o tratamento seguro de sessões abandonadas continua possível (§14.10) | `session-recovery`, estático; bloqueio só manual; segundo plano sem teste relatado em aparelho |
+| A recuperação de ICE é limitada a 2 por par em 60 s | `peer-recovery` |
+| Batimento a cada 30 s e sessão válida por 90 s | `sql-rooms`, `supabase-signaling` |
+| O token do convite fica no fragmento e fora de registros | `web-invites` |
+| CSP e cabeçalhos de segurança | `security-headers` |
+| Instalação e build com a versão exata do pnpm declarada no projeto | `security-headers` |
+| O contador 2/2 mostra membros da sala, não participantes ativos | Sem teste; respeitar na fase visual |

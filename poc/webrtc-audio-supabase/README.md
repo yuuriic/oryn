@@ -9,10 +9,16 @@ Prova de conceito **descartável** do Oryn. Substitui o servidor Node de sinaliz
 A mídia continua WebRTC P2P, e o Cloudflare TURN entra só como relay. Contrato e decisões: relatórios
 POC-02C.0 e 02C.0A (D1 a D4).
 
-## Estado (último registro documentado: 2026-10-28)
+## Estado (último registro documentado: 2026-11-06)
 
-Fontes: `integration/RUNBOOK-02C.1B.md` (§1, §12 e §13). Esta seção não foi relida no projeto remoto: descreve o
-último estado registrado.
+**Validação real (2026-11-06):** o cliente está publicado em produção no commit `f7bae53`. Chamada entre redes diferentes,
+Chrome no Windows e Safari no iPhone, com voz, mudo, saída e reentrada relatados como funcionando. **NET-01 e NET-02: validação
+funcional manual positiva; homologação técnica integral pendente.** A duração de 15 minutos e a troca de rede são relatos manuais; a
+duração contínua de mídia e a migração do caminho WebRTC não estão comprovadas.
+Detalhes em [`docs/validation/NET-01-NET-02.md`](../../docs/validation/NET-01-NET-02.md). Comportamentos a preservar: runbook §14.11.
+
+Fontes do restante desta seção: `integration/RUNBOOK-02C.1B.md` (§1, §12 e §13). Salvo indicação, descreve o último estado
+registrado em 2026-10-28, sem nova leitura no projeto remoto.
 
 1. **Implementado neste repositório:**
    - contratos TypeScript e migrações `0100`–`0300` (schema `oryn`, RLS, RPCs, políticas do Realtime);
@@ -44,7 +50,8 @@ Fontes: `integration/RUNBOOK-02C.1B.md` (§1, §12 e §13). Esta seção não fo
    - fluxo anônimo com Turnstile (#5, janela C1) suspenso;
    - TURN, NAT restritivo (simétrico, CGNAT), redes corporativas e grupo: não testados.
 5. **Recursos remotos ainda ativos** (último estado documentado, 2026-10-28; nenhum desligamento registrado):
-   - Edge Function `signal` `ACTIVE`, `verify_jwt: true`, `ORYN_ALLOWED_ORIGINS` só com `http://127.0.0.1:5173`;
+   - Edge Function `signal` `ACTIVE`, `verify_jwt: true`. `ORYN_ALLOWED_ORIGINS` passou a incluir, além de
+     `http://127.0.0.1:5173`, a origem publicada, em 2026-11-05;
    - a sala da C2 (`93468ee8…`) aberta, com 2 membros (D2 "FAIL esperado");
    - as 3 contas de teste, com senhas de longa duração (trocar ou apagar no fim da campanha, runbook §12.4);
    - na última leitura: 0 sessões de Auth e 0 sessões de sala vivas;
