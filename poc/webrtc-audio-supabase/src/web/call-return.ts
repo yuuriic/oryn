@@ -1,8 +1,8 @@
 // "Voltar para a chamada" depois de recarregar a aba.
 //
 // O login continua só em memória: depois do F5 a pessoa entra de novo. No navegador fica apenas o ID da sala, um
-// UUID sem valor sem o login, no armazenamento da própria aba. Este é o único módulo do cliente que usa esse
-// armazenamento (tests/web-config.test.ts confere).
+// UUID sem valor sem o login, no armazenamento da própria aba. Além deste módulo, só session-ledger.ts usa esse
+// armazenamento, para identificar a aba (tests/web-config.test.ts confere).
 //
 // O servidor decide: a oferta e o aceite consultam list_my_rooms, e o join_room ainda valida a entrada. Nada aqui
 // inicia chamada ou microfone sem o clique em "Voltar para a chamada".

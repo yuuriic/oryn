@@ -14,12 +14,14 @@ import { authOptions, createAuthStorage, logout, restoreSession, type AuthStorag
 import { PeerCall, type CallPhase, type CallStats, type PeerStates } from './call.ts';
 import { CallReturnController, ReturnRoomStore, type ReturnState } from './call-return.ts';
 import { parseWebConfig, type WebConfig } from './config.ts';
+import { ENTRY_CHECKING, ENTRY_RELEASED, ENTRY_STILL_BLOCKED, EntryGate, blockedMessage, entryErrorMessage, type EntryState } from './entry-gate.ts';
 import { InviteAcceptController, InviteShareController, buildInviteLink, inviteLoginHint, takeInviteFromLocation, type InviteAcceptState, type InviteArrival, type InviteShareState } from './invites.ts';
 import { DISCONNECT_CHECKING, LobbyController, PEER_UNREACHABLE, disconnectPhase, explainDisconnect, formatCallError, isClosingOwnCall, type Notice } from './rooms.ts';
 import { renderLobby } from './rooms-view.ts';
 import { describePair, formatCodec, formatMetric } from './stats.ts';
+import { createBrowserLedger, type SessionLedger } from './session-ledger.ts';
 import { createSupabaseBackend } from './supabase-backend.ts';
-import { DISCONNECT, DISCONNECT_MESSAGES, SupabaseSignaling } from './supabase-signaling.ts';
+import { DISCONNECT, DISCONNECT_MESSAGES, JOIN_LIMIT_MESSAGE, SupabaseSignaling } from './supabase-signaling.ts';
 
 // Primeiro passo da página: o token do convite não fica na barra de endereço.
 const takeInvite = (): InviteArrival => takeInviteFromLocation(window.location, (url) => window.history.replaceState(window.history.state, '', url));
@@ -66,6 +68,11 @@ const ui = {
   inviteShareMessage: el<HTMLParagraphElement>('invite-share-message'),
   inviteNewBtn: el<HTMLButtonElement>('invite-new-btn'),
   inviteCloseBtn: el<HTMLButtonElement>('invite-close-btn'),
+  entryState: el<HTMLElement>('entry-state'),
+  entryMessage: el<HTMLParagraphElement>('entry-message'),
+  entryGoBtn: el<HTMLButtonElement>('entry-go-btn'),
+  entryRecheckBtn: el<HTMLButtonElement>('entry-recheck-btn'),
+  entryCancelBtn: el<HTMLButtonElement>('entry-cancel-btn'),
   rooms: el<HTMLDivElement>('rooms'),
   roomsError: el<HTMLParagraphElement>('rooms-error'),
   refreshBtn: el<HTMLButtonElement>('rooms-refresh-btn'),
@@ -110,6 +117,9 @@ let callRoomId: string | null = null;
 let callActive = false;
 let lobby: LobbyController;
 let callReturn: CallReturnController;
+let sessionLedger: SessionLedger;
+let entryGate: EntryGate;
+let sweepTimer: ReturnType<typeof setTimeout> | null = null;
 let inviteShare: InviteShareController;
 let inviteAccept: InviteAcceptController;
 /** Muda a cada chamada nova, logout e desconexão explicada: uma explicação de 4403 antiga não sobrescreve nada. */
@@ -194,7 +204,10 @@ function renderPhase(phase: CallPhase, error?: string): void {
   if ((phase === 'waiting-peer' || phase === 'negotiating' || phase === 'connected') && callRoomId) callReturn.remember(callRoomId);
   // O dono encerrou a sala desta chamada por aqui: a queda que isso causa não é erro para quem encerrou.
   if (phase === 'failed' && isClosingOwnCall(lobby?.state.busy ?? null, callRoomId)) setField('phase', PHASES.ended);
-  if (phase === 'failed' && error && !isClosingOwnCall(lobby?.state.busy ?? null, callRoomId)) {
+  if (phase === 'failed' && error === JOIN_LIMIT_MESSAGE && callRoomId) {
+    // O join_room recusou depois de a verificação liberar: quem decide é o servidor. O microfone já foi liberado.
+    entryGate.blockedByServer(callRoomId);
+  } else if (phase === 'failed' && error && !isClosingOwnCall(lobby?.state.busy ?? null, callRoomId)) {
     const code = Number(/código (\d{4})/.exec(error)?.[1]);
     const technical = formatCallError(error, DISCONNECT_MESSAGES[code]);
     if (code === DISCONNECT.session && callRoomId) {
@@ -220,6 +233,7 @@ function renderPhase(phase: CallPhase, error?: string): void {
     }
   }
   if (phase === 'ended' || phase === 'failed') {
+    sessionLedger.releaseEntry(); // saiu antes de registrar a sessão, inclusive por recusa do microfone
     signaling = null;
     if (lobby.state.status !== 'idle') void lobby.refresh(); // contagens e estado das salas mudaram
   }
@@ -244,8 +258,9 @@ function renderStats(s: CallStats | null): void {
 
 // ---------- chamada ----------
 
+/** Sempre por ação do usuário. O microfone só é pedido depois da verificação, e o join_room ainda decide a entrada. */
 function startCall(roomInput: string): void {
-  if (callActive) return; // uma chamada por vez
+  if (callActive || entryGate.checking) return; // uma chamada por vez
   callReturn.hide(); // entrar em qualquer chamada substitui a oferta de retorno
   disconnectTicket += 1; // explicação pendente de uma chamada anterior não aparece nesta
   showError(null);
@@ -253,6 +268,14 @@ function startCall(roomInput: string): void {
   if (!isUuid(roomId)) return showError('ID da sala inválido: informe o UUID da sala.');
   if (!selfUserId) return showError('Faça login antes de entrar na chamada.');
   const userId = selfUserId;
+  void entryGate.check(roomId).then((verdict) => {
+    if (verdict !== 'go') return;
+    if (!callActive && selfUserId === userId) beginCall(roomId, userId);
+    else sessionLedger.releaseEntry();
+  });
+}
+
+function beginCall(roomId: string, userId: string): void {
   callRoomId = roomId;
   ui.room.value = roomId;
   ui.callRoom.textContent = lobby.state.rooms.find((r) => r.room_id === roomId)?.name ?? roomId;
@@ -265,7 +288,7 @@ function startCall(roomInput: string): void {
       getUserMedia: (c) => navigator.mediaDevices.getUserMedia(c),
       createPeerConnection: (c) => new RTCPeerConnection(c),
       createSignaling: (handlers) => {
-        signaling = new SupabaseSignaling({ backend, roomId, selfUserId: userId, handlers, iceServers: cfg.iceServers, log: (m) => call === current && log(m), onPeerUnreachable: () => call === current && showNotice(PEER_UNREACHABLE) });
+        signaling = new SupabaseSignaling({ backend, roomId, selfUserId: userId, handlers, iceServers: cfg.iceServers, tracker: sessionLedger.tracker(userId, roomId), log: (m) => call === current && log(m), onPeerUnreachable: () => call === current && showNotice(PEER_UNREACHABLE) });
         return signaling;
       },
       audioCodecs: () => RTCRtpReceiver.getCapabilities?.('audio')?.codecs ?? null,
@@ -311,12 +334,67 @@ ui.leaveBtn.addEventListener('click', () => {
   callReturn.forget();
   void endCall();
 });
-// Fechar ou recarregar a aba: sai da sala por um envio que sobrevive ao descarregamento. Se ele não chegar (rede,
-// queda do navegador), a sessão vence sozinha em até 90 s.
+// Fechar ou recarregar a aba: sai da sala por um envio que sobrevive ao descarregamento. É só melhor esforço: se ele
+// não chegar, session-ledger.ts encerra a sessão quando este navegador voltar; se isso não for possível, ela vence
+// sozinha em até 90 s.
 window.addEventListener('pagehide', () => {
   signaling?.closeOnPageHide();
   call?.end();
 });
+
+// Volta do bfcache: o pagehide já encerrou a chamada desta página. Só atualiza o que pode ter mudado enquanto ela esteve
+// guardada; nada é iniciado sozinho.
+window.addEventListener('pageshow', (event) => {
+  if (!event.persisted || selfUserId === null) return;
+  void sweepOrphans(selfUserId);
+  void lobby.refresh();
+});
+
+// ---------- sessões abandonadas e entrada bloqueada ----------
+
+/** Encerra as órfãs deste navegador; as que ainda estão na carência são revistas depois, sem pedir nada à pessoa. */
+function sweepOrphans(userId: string): Promise<unknown> {
+  if (sweepTimer !== null) clearTimeout(sweepTimer);
+  sweepTimer = null;
+  return sessionLedger.reclaim(userId).then(({ pending }) => {
+    if (pending > 0 && selfUserId === userId) sweepTimer = setTimeout(() => void sweepOrphans(userId), 10_000);
+  });
+}
+
+function renderEntry(s: EntryState): void {
+  ui.entryState.hidden = s.status === 'idle';
+  ui.entryGoBtn.hidden = s.status !== 'released';
+  ui.entryRecheckBtn.hidden = !(s.status === 'error' || (s.status === 'blocked' && !s.polling));
+  ui.entryCancelBtn.hidden = s.status === 'checking';
+  const text =
+    s.status === 'checking'
+      ? ENTRY_CHECKING
+      : s.status === 'released'
+        ? ENTRY_RELEASED
+        : s.status === 'error'
+          ? entryErrorMessage(s.code)
+          : s.status === 'blocked'
+            ? `${blockedMessage(s.reason, sessionLedger.supported)}${s.polling ? '' : ` ${ENTRY_STILL_BLOCKED}`}`
+            : '';
+  ui.entryMessage.textContent = text;
+  ui.entryMessage.className = s.status === 'error' ? 'error' : 'notice';
+  ui.entryMessage.setAttribute('role', s.status === 'error' ? 'alert' : 'status');
+  renderRooms();
+}
+
+const entryRoom = (): string | null => {
+  const s = entryGate.state;
+  return s.status === 'idle' ? null : s.roomId;
+};
+ui.entryGoBtn.addEventListener('click', () => {
+  const roomId = entryRoom();
+  if (roomId) startCall(roomId);
+});
+ui.entryRecheckBtn.addEventListener('click', () => {
+  const roomId = entryRoom();
+  if (roomId) startCall(roomId);
+});
+ui.entryCancelBtn.addEventListener('click', () => entryGate.reset());
 
 // ---------- retorno à chamada depois de recarregar a aba ----------
 
@@ -339,7 +417,7 @@ function renderRooms(): void {
   const busy = s.busy !== null;
   ui.rooms.replaceChildren(
     renderLobby(document, s, {
-      callActive,
+      callActive: callActive || entryGate.checking,
       activeRoomId: callActive ? callRoomId : null,
       onJoin: (roomId) => startCall(roomId),
       onClose: (roomId) => void lobby.close(roomId),
@@ -440,6 +518,7 @@ async function enterSession(session: Session): Promise<void> {
   // Canais privados exigem o JWT do usuário no Realtime antes da inscrição.
   await client.realtime.setAuth(session.access_token);
   showLoggedIn(session.user.email);
+  void sweepOrphans(session.user.id);
   void lobby.refresh();
   void callReturn.offer();
 }
@@ -459,6 +538,9 @@ function showLoggedOut(): void {
   accessToken = null;
   disconnectTicket += 1;
   if (ui.error.textContent === DISCONNECT_CHECKING.text) showNotice(null); // a explicação pendente foi descartada
+  if (sweepTimer !== null) clearTimeout(sweepTimer);
+  sweepTimer = null;
+  entryGate.reset();
   lobby.reset();
   inviteShare.reset();
   callReturn.reset();
@@ -503,6 +585,16 @@ try {
   authStorage = createAuthStorage();
   client = createClient(cfg.supabaseUrl, cfg.publishableKey, { auth: authOptions(authStorage) });
   const backend = createSupabaseBackend(client);
+  sessionLedger = createBrowserLedger((sessionId) => backend.rpc('leave_room', { p_session_id: sessionId }));
+  entryGate = new EntryGate({
+    reclaim: () => (selfUserId ? sweepOrphans(selfUserId) : Promise.resolve()),
+    heldElsewhere: (roomId) => (selfUserId ? sessionLedger.heldElsewhere(selfUserId, roomId) : Promise.resolve([])),
+    reserve: (roomId) => (selfUserId ? sessionLedger.reserveEntry(selfUserId, roomId) : Promise.resolve(true)),
+    release: () => sessionLedger.releaseEntry(),
+    entryHeldElsewhere: (roomId) => (selfUserId ? sessionLedger.entryHeldElsewhere(selfUserId, roomId) : Promise.resolve(false)),
+    roster: (roomId) => backend.rpc<unknown[]>('get_roster', { p_room_id: roomId }),
+    onChange: renderEntry,
+  });
   callReturn = new CallReturnController({
     store: new ReturnRoomStore(),
     listRooms: () => backend.rpc<unknown[]>('list_my_rooms', {}),
