@@ -218,7 +218,7 @@ describe('MVP 01: 08_scope_entries.sql e 91_rollback_0400.sql', () => {
   const beforeStep4 = async () => {
     const db = await TestDb.createBare();
     const files = migrationFiles();
-    expect(files.map(([f]) => f.split('_')[0])).toEqual(['20261023000100', '20261023000200', '20261023000300', '20261028000400', '20261106000500', '20261107000600']);
+    expect(files.map(([f]) => f.split('_')[0])).toEqual(['20261023000100', '20261023000200', '20261023000300', '20261028000400', '20261106000500', '20261107000600', '20261108000700']);
     for (const [, m] of files.slice(0, 3)) await db.migrate(m);
     // Histórico com o mesmo dono das migrações (no projeto, o `postgres` cria e roda o 91).
     await db.migrate(`create schema supabase_migrations; create table supabase_migrations.schema_migrations (version text primary key);
@@ -466,6 +466,160 @@ describe('Chat por sala: 05_step_checks.sql e 92_rollback_0500.sql', () => {
     expect(text).not.toMatch(/\b(truncate|alter|cascade)\b/i);
     expect(text.match(/\bdelete\s+from\s+[\w.]+/gi)).toEqual(['delete from supabase_migrations.schema_migrations']);
     expect(text).toContain(`version = '20261106000500'`);
+  });
+});
+
+describe('Soundboard: 05_step_checks.sql, 08_scope_entries.sql e 94_rollback_0700.sql', () => {
+  const entries = async (db: TestDb) => {
+    const res = await db.pg.exec(sql('08_scope_entries.sql'));
+    const rows = res.find((r) => r.fields.some((f) => f.name === 'entrada'))!.rows as { n: number | null; entrada: string }[];
+    return rows.filter((r) => r.n !== null).map((r) => r.entrada);
+  };
+  const history = async (db: TestDb) => (await db.admin<{ v: string }>('select version as v from supabase_migrations.schema_migrations order by 1')).map((r) => r.v);
+  const before0700 = async () => {
+    const db = await TestDb.createBare();
+    const files = migrationFiles();
+    for (const [, m] of files.slice(0, 6)) await db.migrate(m);
+    await db.migrate(`create schema supabase_migrations; create table supabase_migrations.schema_migrations (version text primary key);
+                      insert into supabase_migrations.schema_migrations values ('20261023000100'), ('20261023000200'), ('20261023000300'), ('20261028000400'), ('20261106000500'), ('20261107000600')`);
+    return { db, apply: async () => {
+      await db.migrate(files[6]![1]);
+      await db.admin(`insert into supabase_migrations.schema_migrations values ('20261108000700')`);
+    } };
+  };
+  const steps = async (db: TestDb) => {
+    await db.pg.exec('set role migration_owner');
+    try {
+      const res = await db.pg.exec(sql('05_step_checks.sql'));
+      return res.find((r) => r.fields.some((f) => f.name === 'status'))!.rows as { step: number; item: string; status: string }[];
+    } finally {
+      await db.pg.exec('reset role');
+    }
+  };
+  const storagePolicies = async (db: TestDb) => (await db.admin<{ n: number }>(`select count(*)::int as n from pg_policies where schemaname = 'storage'`))[0]!.n;
+
+  it('08: a 0700 acrescenta exatamente tabelas, índices e funções do soundboard; nenhuma entrada anterior muda', async () => {
+    const { db, apply } = await before0700();
+    try {
+      const before = await entries(db);
+      await apply();
+      const after = await entries(db);
+      expect(before.filter((x) => !after.includes(x))).toEqual([]);
+      expect(after.filter((x) => !before.includes(x)).map((x) => x.replace(/:[0-9a-f]{32}$/, '')).sort()).toEqual([
+        'fn:claim_sound_validation(uuid)',
+        'fn:complete_sound_validation(uuid,boolean,text,integer,integer,text,text)',
+        'fn:finish_sound_cleanup(uuid[])',
+        'fn:list_sound_cleanup(uuid)',
+        'fn:list_sounds(uuid)',
+        'fn:oryn_realtime.can_read_sound(text)',
+        'fn:oryn_realtime.can_upload_sound(text)',
+        'fn:remove_sound(uuid)',
+        'fn:request_sound_upload(uuid,text,integer)',
+        'fn:sound_clock()',
+        'fn:trigger_sound(uuid,uuid)',
+        'rel:oryn.sound_assets:r',
+        'rel:oryn.sound_assets_object_key_key:i',
+        'rel:oryn.sound_assets_pkey:i',
+        'rel:oryn.sound_assets_room_state_idx:i',
+        'rel:oryn.sound_trigger_state:r',
+        'rel:oryn.sound_trigger_state_pkey:i',
+      ]);
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('05: passo 7 PENDING antes da 0700 e PASS depois, sem nenhum FAIL', async () => {
+    const { db, apply } = await before0700();
+    try {
+      const before = await steps(db);
+      expect(before.filter((r) => r.status === 'FAIL')).toEqual([]);
+      expect(before.filter((r) => r.step === 7).every((r) => r.status === 'PENDING')).toBe(true);
+      await apply();
+      const after = await steps(db);
+      expect(after.filter((r) => r.status === 'FAIL')).toEqual([]);
+      const seven = after.filter((r) => r.step === 7);
+      expect(seven.length).toBeGreaterThan(10);
+      expect(seven.every((r) => r.status === 'PASS')).toBe(true);
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('05: bucket público ou política a mais viram FAIL', async () => {
+    const { db, apply } = await before0700();
+    try {
+      await apply();
+      await db.admin(`update storage.buckets set public = true where id = 'oryn-sounds'`);
+      expect((await steps(db)).filter((r) => r.status === 'FAIL').map((r) => r.item)).toEqual([expect.stringMatching(/^bucket oryn-sounds/)]);
+      await db.admin(`update storage.buckets set public = false where id = 'oryn-sounds'`);
+      await db.admin(`create policy oryn_sounds_delete on storage.objects for delete to authenticated using (true)`);
+      expect((await steps(db)).filter((r) => r.status === 'FAIL').map((r) => r.item)).toEqual([expect.stringMatching(/^storage\.objects/)]);
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('94: volta o 08 ao estado de antes, preserva salas e é idempotente; a 0700 reaplica limpa', async () => {
+    const { db, apply } = await before0700();
+    try {
+      const s = await scenario(db);
+      const before = await entries(db);
+      await apply();
+      await db.rpc(s.owner, 'public.request_sound_upload', { p_room_id: s.room, p_name: 'x', p_size_bytes: 10 });
+      await db.migrate(sql('94_rollback_0700.sql'));
+      expect(await entries(db)).toEqual(before);
+      expect(await history(db)).not.toContain('20261108000700');
+      expect(await storagePolicies(db)).toBe(0);
+      expect((await db.rpc(s.owner, 'public.list_my_rooms'))[0]).toMatchObject({ room_id: s.room, is_open: true });
+      await db.migrate(sql('94_rollback_0700.sql'));
+      expect(await entries(db)).toEqual(before);
+      await apply();
+      expect(await storagePolicies(db)).toBe(2);
+      expect(await db.rpc(s.owner, 'public.list_sounds', { p_room_id: s.room })).toEqual([]);
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('94 falha fechada: com uma função estranha em public, nada é revertido', async () => {
+    const { db, apply } = await before0700();
+    try {
+      await apply();
+      await db.migrate('create function public.estranha() returns int language sql as $$ select 1 $$');
+      await db.pg.exec('set role migration_owner');
+      await expect(db.pg.exec(sql('94_rollback_0700.sql'))).rejects.toThrow(/oryn-94: public não ficou com as 20 RPCs/);
+      await db.pg.exec('rollback; reset role');
+      expect(await history(db)).toContain('20261108000700');
+      expect(await storagePolicies(db)).toBe(2);
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('94 só remove a 0700: não apaga objetos, bucket, sala nem histórico alheio', () => {
+    const text = sql('94_rollback_0700.sql').replace(/--.*$/gm, '');
+    expect(text.match(/\bdrop\s+table\s+if\s+exists\s+[\w.]+/gi)).toEqual(['drop table if exists oryn.sound_trigger_state', 'drop table if exists oryn.sound_assets']);
+    expect(text).not.toMatch(/\b(truncate|alter|cascade)\b/i);
+    expect(text.match(/\bdelete\s+from\s+[\w.]+/gi)).toEqual(['delete from supabase_migrations.schema_migrations']);
+    expect(text).toContain(`version = '20261108000700'`);
+  });
+
+  it('15: reconciliação é só leitura e aponta órfão, apagado com objeto e pendente', async () => {
+    const db = await TestDb.create();
+    try {
+      const s = await scenario(db);
+      const text = sql('15_sound_orphans.sql');
+      expect(text).toMatch(/set transaction read only/);
+      const reserved = (await db.rpc<{ asset_id: string; object_key: string }>(s.owner, 'public.request_sound_upload', { p_room_id: s.room, p_name: 'x', p_size_bytes: 10 }))[0]!;
+      await db.rpc(s.owner, 'public.remove_sound', { p_asset_id: reserved.asset_id });
+      await db.admin(`insert into storage.objects (bucket_id, name) values ('oryn-sounds', 'perdido/v1')`);
+      const res = await db.pg.exec(text);
+      const rows = res.find((r) => r.fields.some((f) => f.name === 'tipo'))!.rows as { tipo: string; chave: string }[];
+      expect(rows.map((r) => `${r.tipo}:${r.chave}`)).toEqual([`orfao_sem_catalogo:perdido/v1`, `pendente:${reserved.object_key}`]);
+    } finally {
+      await db.close();
+    }
   });
 });
 

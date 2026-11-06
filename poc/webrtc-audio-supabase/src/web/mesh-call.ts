@@ -59,6 +59,8 @@ export interface MeshCallCallbacks {
   onIce?(info: IceInfo | null): void;
   /** Falha com um participante; a chamada com os demais continua. */
   onPeerProblem?(displayName: string, kind: 'reconnecting' | 'failed'): void;
+  /** Evento do soundboard. A chamada só repassa: som não entra na voz. */
+  onSound?(payload: unknown): void;
 }
 
 /** A sinalização de UM par, como o PeerCall a espera. */
@@ -185,6 +187,7 @@ export class MeshCall {
         onPeerDown: (session, reason) => this.peerDown(session, reason),
         onSignal: (session, epoch, payload) => this.entries.get(session)?.link.deliver({ type: 'signal', epoch, payload }),
         onParticipants: (others, standby) => this.onParticipants(others, standby),
+        onSound: (payload) => this.cb.onSound?.(payload),
       },
       // 4403: a sessão deixou de valer, o que inclui remoção e encerramento da sala. O código fica no registro, sem rótulo de erro.
       (code) => this.fail(`Conexão com a sinalização perdida (código ${code}).`, code === 4403 ? 'Desconexão' : 'Erro'),

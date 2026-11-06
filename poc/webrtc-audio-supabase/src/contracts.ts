@@ -87,6 +87,70 @@ export function parseControlEvent(event: string, payload: unknown): ControlEvent
   return null;
 }
 
+/** Linha de list_sounds (migração 0700). */
+export interface SoundAsset {
+  asset_id: string;
+  name: string;
+  version: number;
+  sha256: string | null;
+  mime: string | null;
+  size_bytes: number | null;
+  duration_ms: number | null;
+  state: 'available' | 'quarantine';
+  created_at: string;
+}
+
+const isSha256 = (v: unknown): v is string => typeof v === 'string' && /^[0-9a-f]{64}$/.test(v);
+const isVersion = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 1;
+const SOUND_ASSET_KEYS = 'asset_id,created_at,duration_ms,mime,name,sha256,size_bytes,state,version';
+
+export function parseSoundAsset(v: unknown): SoundAsset | null {
+  if (!isObj(v) || Object.keys(v).sort().join(',') !== SOUND_ASSET_KEYS) return null;
+  if (!isUuid(v['asset_id']) || !isRoomName(v['name']) || !isVersion(v['version']) || typeof v['created_at'] !== 'string') return null;
+  if (v['state'] === 'available') {
+    if (!isSha256(v['sha256']) || typeof v['mime'] !== 'string' || !Number.isSafeInteger(v['size_bytes']) || !Number.isSafeInteger(v['duration_ms'])) return null;
+  } else if (v['state'] !== 'quarantine') {
+    return null;
+  }
+  return {
+    asset_id: v['asset_id'],
+    name: v['name'],
+    version: v['version'],
+    sha256: (v['sha256'] as string | null) ?? null,
+    mime: (v['mime'] as string | null) ?? null,
+    size_bytes: (v['size_bytes'] as number | null) ?? null,
+    duration_ms: (v['duration_ms'] as number | null) ?? null,
+    state: v['state'],
+    created_at: v['created_at'],
+  };
+}
+
+/** Evento `sound`: só metadados. Nunca áudio, nome de arquivo ou chave de objeto. */
+export interface SoundEvent {
+  event_id: string;
+  session_id: string;
+  sender_ref: string;
+  asset_id: string;
+  version: number;
+  sha256: string;
+  issued_at: string;
+  expires_at: string;
+}
+
+const SOUND_EVENT_KEYS = 'asset_id,event_id,expires_at,issued_at,sender_ref,session_id,sha256,version';
+export const SOUND_EVENT_TTL_MS = 2_000;
+
+/** Como nos eventos de controle, `id` é o UUID que o `realtime.send` acrescenta. Prazo diferente de 2 s invalida o evento. */
+export function parseSoundEvent(v: unknown): SoundEvent | null {
+  if (!isObj(v) || ('id' in v && !isUuid(v['id']))) return null;
+  if (Object.keys(v).filter((k) => k !== 'id').sort().join(',') !== SOUND_EVENT_KEYS) return null;
+  const { event_id, session_id, sender_ref, asset_id, version, sha256, issued_at, expires_at } = v;
+  if (!isUuid(event_id) || !isUuid(session_id) || !isUuid(asset_id) || !isVersion(version) || !isSha256(sha256)) return null;
+  if (typeof sender_ref !== 'string' || sender_ref.length > 64 || typeof issued_at !== 'string' || typeof expires_at !== 'string') return null;
+  if (Date.parse(expires_at) - Date.parse(issued_at) !== SOUND_EVENT_TTL_MS) return null;
+  return { event_id, session_id, sender_ref, asset_id, version, sha256, issued_at, expires_at };
+}
+
 /** Linha de list_my_rooms (MVP 01, migração 0400). */
 /** Linha de get_voice_participants: a referência distingue contas, e duas sessões da mesma conta têm a mesma. */
 export interface VoiceParticipant {

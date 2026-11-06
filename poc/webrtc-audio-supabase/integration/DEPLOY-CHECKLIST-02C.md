@@ -409,6 +409,49 @@ Causa desconhecida:
 - **não desfaz dados:** quem saiu ou foi removido continua fora, e salas de 3 ou 4 lugares continuam existindo;
 - **ordem:** o `93` vem antes do `92`. Com a 0600 aplicada, o `92` falha fechado e não reverte nada.
 
+### Etapa 7 — `20261108000700_oryn_soundboard.sql` e função `sound-media` ⛔ (soundboard)
+
+**Estado: não aplicada e não publicada.** Exige autorização explícita própria, com o estado anterior lido, commit publicado em PR aberto, CI aprovado e **sem merge**. O merge publica o cliente.
+
+**O que faz:**
+- cria `oryn.sound_assets` e `oryn.sound_trigger_state`, com RLS e sem acesso de cliente;
+- cria 7 RPCs de usuário (`sound_clock`, `list_sounds`, `request_sound_upload`, `claim_sound_validation`, `remove_sound`, `list_sound_cleanup`, `trigger_sound`) e 2 só para `service_role` (`complete_sound_validation`, `finish_sound_cleanup`);
+- cria 2 predicados em `oryn_realtime`, o bucket privado `oryn-sounds` e as políticas `oryn_sounds_read` e `oryn_sounds_upload` em `storage.objects`;
+- **não altera** tabela, política, publicação ou função existente, nem dados;
+- autoverificação: definição, permissões, bucket ou políticas inesperadas desfazem a migração (`oryn-0700: …`).
+
+**Antes:** `07` e `08` salvos fora do Git, e `06` com as 6 versões. Dry-run: `oryn-push-step.ps1 -Step 7`, que só pode citar a 0700.
+
+**Aplicação ⛔:** `oryn-push-step.ps1 -Step 7 -Apply`, com a confirmação `APLICAR 20261108000700`.
+
+| Conferência depois de aplicar | Esperado | Se falhar |
+|---|---|---|
+| 🔎 `05_step_checks.sql` | passos 1–7 todos PASS | Interromper; `94` |
+| 🔎 `01_postflight.sql` | 0 FAIL; 12 tabelas e 29 RPCs; só "Data API" e "Allow public access" como NOT VERIFIED | Interromper; `94` |
+| 🔎 Diferença do `08` | entradas anteriores **todas iguais** e **exatamente 17** novas: 2 tabelas, 4 índices e 11 funções | Interromper; `94` |
+| 🔎 `06` | 7 versões, com `20261108000700` | Interromper |
+| 🔎 Advisors | sem ERROR; WARN `0029` sobe de 19 para 26, valor esperado por análise, a medir | Investigar |
+
+**Publicação da função ⛔:** `supabase functions deploy sound-media --project-ref <PROJECT_REF> --use-api`. Usa os secrets existentes, sem secret novo. `signal` não é publicada de novo.
+
+| Conferência da função | Esperado | Se falhar |
+|---|---|---|
+| 🔎 `OPTIONS` da origem de produção | 204, com a origem na resposta | Interromper |
+| 🔎 `OPTIONS` de outra origem | 403 | Remover a função |
+| 🔎 `POST` sem login | 401 | Remover a função |
+| 🔎 Logs da função | só `outcome`, sem chave, token ou nome de som | Remover a função |
+| 🔎 **Storage com a chave do servidor** | publicar um som de teste aprova, e um arquivo falso é recusado e apagado. **Local aprovado; em produção, sem evidência** | Interromper; sem merge |
+
+**Baselines S2/S3/S4:** só depois da aplicação, com os valores medidos no `08` (esperado `n = 93`), em commit próprio. S3 não deve mudar, por análise: bucket e políticas não são relações. Se mudar, interromper e investigar. Até lá, S2 e S4 dão FAIL **esperado**: nenhuma C2, C0 ou teste remoto roda nesse intervalo.
+
+**Recuperação ⛔ (autorização própria):**
+1. publicar antes o cliente anterior: sem a 0700, o cliente novo mostra erro no painel de sons, e a voz segue;
+2. apagar os objetos do bucket pela Storage API ou pelo painel;
+3. rodar `94_rollback_0700.sql` no SQL editor, como `postgres`;
+4. remover a função `sound-media`.
+
+O `94` remove funções, políticas, as 2 tabelas e a linha do histórico, e **apaga o catálogo de sons**. É idempotente e não toca em salas, chat ou membros. **Falha fechada:** se `public` não ficar com exatamente 20 RPCs, levanta `oryn-94: …` e nada é revertido. Bucket que restar fica privado e sem política, e a 0700 pode ser reaplicada. O `94` vem antes do `93`.
+
 ## 3. Pós-voo final (depois da Etapa 3; de novo depois da Etapa 4)
 
 - 🔎 `integration/sql/01_postflight.sql`: **zero FAIL**. Depois da Etapa 3 (sem a 0400), a versão `074de82` do
@@ -424,7 +467,7 @@ Causa desconhecida:
 
 Origem dos dados: catálogo do PGlite e do PostgreSQL 17.10 depois das migrações, mais leitura do código da `0200`
 e da `0400`. São **14** funções: 12 da `0200` e 2 da `0400` (MVP 01, aplicada no remoto em 2026-10-28).
-- **Em todas as 20 (16 sem a 0600 e 14 sem a 0500):** `SECURITY DEFINER` e `search_path = ''`, nomes qualificados, nenhum SQL dinâmico.
+- **Em todas as 29 (20 sem a 0700, 16 sem a 0600 e 14 sem a 0500):** `SECURITY DEFINER` e `search_path = ''`, nomes qualificados, nenhum SQL dinâmico.
 - **EXECUTE:** só o papel indicado. Nem `anon` nem `PUBLIC`, inclusive por herança: `tests/sql-definer-audit.test.ts`.
 
 | Função | EXECUTE | Identidade do chamador | Autorização por sala/sessão | Risco entre usuários |
@@ -447,6 +490,14 @@ e da `0400`. São **14** funções: 12 da `0200` e 2 da `0400` (MVP 01, aplicada
 | `list_room_members` (0600) | authenticated | `require_uid()` | membro ativo da sala, aberta ou encerrada; referência opaca, sem conta | revela nome, papel e presença só a membros |
 | `get_voice_participants` (0600) | authenticated | `require_uid()` | membro ativo de sala aberta; `not-member` como `get_roster` | revela sessões vivas e referência opaca só a membros |
 | `leave_room_membership` (0600) | authenticated | `require_uid()` | só a própria pertença; sala travada e pertença reconferida; dono recusado | nenhum |
+| `sound_clock` (0700) | authenticated | `require_uid()` | qualquer conta com login | revela só a hora |
+| `list_sounds` (0700) | authenticated | `require_uid()` | membro ativo de sala aberta; `not-member` | sem conta nem chave de objeto; quarentena só para o dono |
+| `request_sound_upload` (0700) | authenticated | `require_uid()` | **dono** de sala aberta; sala travada; limite de 20 | nenhum |
+| `claim_sound_validation` (0700) | authenticated | `require_uid()` | **dono**; só em quarentena e no prazo | devolve a chave só ao dono |
+| `remove_sound` (0700) | authenticated | `require_uid()` | **dono**; sala travada; mesma resposta para o resto | nenhum |
+| `list_sound_cleanup` (0700) | authenticated | `require_uid()` | **dono** | chaves a apagar só ao dono |
+| `trigger_sound` (0700) | authenticated | `require_uid()` | própria sessão viva de membro ativo; som disponível na mesma sala; 2 s por conta | publica só metadados às outras sessões |
+| `complete_sound_validation`, `finish_sound_cleanup` (0700) | service_role | sem usuário: só a função `sound-media` | decisão da função, depois de o JWT provar o dono | nenhum cliente alcança |
 | `remove_room_member` (0600) | authenticated | `require_uid()` | **dono** de sala aberta; sala travada; sem autorremoção; referência desconhecida tem a mesma resposta | revoga sessões do alvo e convites pendentes da sala |
 | `close_room` (0400) | authenticated | `require_uid()` | **dono** da sala (alheia ou inexistente: mesma resposta); sala travada, depois todos os membros; convites `SKIP LOCKED`; idempotente | nenhum; sem ciclo de travas com as RPCs da 0200 (provado em `tests/pg`, com controles) |
 
@@ -527,6 +578,7 @@ Ordem sugerida para o dia dos testes:
   - contadores de rate limit do Auth;
   - configurações do painel e secrets alterados;
   - versões já publicadas de Edge Functions.
+- **O que o `94_rollback_0700.sql` reverte:** funções, políticas, as 2 tabelas e a linha do histórico. Apaga o catálogo de sons; não apaga objetos nem o bucket. Detalhes: Etapa 7. Roda antes do `93`.
 - **O que o `93_rollback_0600.sql` reverte:** as 8 funções, os 2 gatilhos e a linha do histórico. Não desfaz saídas nem remoções. Detalhes: Etapa 6. Roda antes do `92`.
 - **O que o `92_rollback_0500.sql` reverte:** as 2 tabelas do chat, as 2 RPCs e a linha do histórico. Com mensagens gravadas, exige confirmação
   explícita, porque **apaga o texto de forma irreversível**. Detalhes: Etapa 5.

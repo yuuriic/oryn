@@ -42,6 +42,8 @@ export interface MeshEvents {
   onSignal(session: string, epoch: number, payload: SignalPayload): void;
   /** Quem está na chamada, por conta, e se esta sessão está em espera, por haver outra mais antiga da mesma conta. */
   onParticipants(others: MeshParticipant[], standby: boolean): void;
+  /** Evento do soundboard no tópico privado desta sessão. Não passa pela fila de sinalização. */
+  onSound?(payload: unknown): void;
 }
 
 export interface MeshSignalingOptions extends Omit<SupabaseSignalingOptions, 'handlers'> {
@@ -88,6 +90,9 @@ export class MeshSignaling extends SupabaseSignaling {
   }
   get isStandby(): boolean {
     return this.standby;
+  }
+  get ownSession(): string | null {
+    return this.sessionId;
   }
 
   /** Envia um sinal a um par. A fila, o limite de taxa e as retentativas são os mesmos do 1:1. */
@@ -224,6 +229,11 @@ export class MeshSignaling extends SupabaseSignaling {
   }
 
   // ---- recepção ----
+
+  protected override onBroadcast(event: string, payload: unknown): void {
+    if (event !== 'sound') return super.onBroadcast(event, payload);
+    if (!this.isClosed()) this.events.onSound?.(payload);
+  }
 
   protected override onControl(ctl: ControlEvent): void {
     if (ctl.session_id === this.sessionId) {

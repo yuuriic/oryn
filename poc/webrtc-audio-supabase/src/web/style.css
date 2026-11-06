@@ -36,6 +36,12 @@ details summary { cursor: pointer; color: var(--muted); margin: 8px 0; }
 .chat-list li.chat-pending { opacity: 0.85; }
 .chat-head { font-size: 0.85em; }
 .chat-body { white-space: pre-wrap; overflow-wrap: anywhere; }
+.sound-list { list-style: none; padding: 0; margin: 8px 0; }
+.sound-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 4px 0; border-top: 1px solid var(--bg); }
+.sound-play { margin: 0; overflow-wrap: anywhere; text-align: left; }
+.sound-detail { flex: 1; font-size: 0.85em; }
+label.check { display: flex; align-items: center; gap: 8px; }
+#sound-volume { width: 100%; box-sizing: border-box; }
 @media (max-width: 480px) {
   main { padding: 8px; }
   section { padding: 12px; }

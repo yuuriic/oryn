@@ -64,10 +64,10 @@ async function legacy(fn: string, signature: string): Promise<string> {
 const codes = (results: CallResult<unknown>[]) => results.map((r) => r.error?.message ?? 'ok').sort();
 
 describe('PostgreSQL 17 real: migrações e pós-voo', () => {
-  it('as seis migrações aplicam em PostgreSQL 17 (o mesmo major do Supabase)', async () => {
+  it('as sete migrações aplicam em PostgreSQL 17 (o mesmo major do Supabase)', async () => {
     const v = (await db.admin<{ v: string }>('select version() as v'))[0]!.v;
     expect(v).toMatch(/^PostgreSQL 17\./);
-    expect((await db.admin<{ n: number }>(`select count(*)::int as n from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public'`))[0]!.n).toBe(20);
+    expect((await db.admin<{ n: number }>(`select count(*)::int as n from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public'`))[0]!.n).toBe(29);
   });
 
   it('pós-voo em PostgreSQL 17: zero FAIL', async () => {

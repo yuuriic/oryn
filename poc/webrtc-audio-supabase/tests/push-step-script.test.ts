@@ -210,6 +210,14 @@ describe('oryn-push-step.ps1 (CLI falsa, sem rede)', () => {
       expect(dry.out).toMatch(/não lista 20261023000100: interromper/);
     });
 
+    it('etapa 7 com a 0100–0600 já aplicadas: aplica e confirma só a 0700', () => {
+      const r = run({ step: 7, apply: true, confirmation: 'APLICAR 20261108000700', applied: '20261023000100,20261023000200,20261023000300,20261028000400,20261106000500,20261107000600' });
+      expect(r.ok, r.out).toBe(true);
+      expect(r.out).toMatch(/APLICADO: 20261108000700_oryn_soundboard\.sql/);
+      expect(r.calls).toHaveLength(3);
+      clean(r);
+    });
+
     it('etapa 6 com a 0100–0500 já aplicadas: aplica e confirma só a 0600', () => {
       const r = run({ step: 6, apply: true, confirmation: 'APLICAR 20261107000600', applied: '20261023000100,20261023000200,20261023000300,20261028000400,20261106000500' });
       expect(r.ok, r.out).toBe(true);

@@ -34,8 +34,15 @@ const USER_RPCS = [
   'get_voice_participants(uuid)',
   'leave_room_membership(uuid)',
   'remove_room_member(uuid,text)',
+  'sound_clock()',
+  'list_sounds(uuid)',
+  'request_sound_upload(uuid,text,integer)',
+  'claim_sound_validation(uuid)',
+  'remove_sound(uuid)',
+  'list_sound_cleanup(uuid)',
+  'trigger_sound(uuid,uuid)',
 ];
-const DOMAIN_TABLES = ['creator_grants', 'creator_invites', 'rooms', 'room_members', 'room_invites', 'room_sessions', 'pair_counters', 'signal_log', 'room_messages', 'room_message_counters'];
+const DOMAIN_TABLES = ['creator_grants', 'creator_invites', 'rooms', 'room_members', 'room_invites', 'room_sessions', 'pair_counters', 'signal_log', 'room_messages', 'room_message_counters', 'sound_assets', 'sound_trigger_state'];
 
 const canExecute = async (role: string, signature: string): Promise<boolean> =>
   (await db.admin<{ ok: boolean }>(`select has_function_privilege($1, $2, 'execute') as ok`, [role, signature]))[0]!.ok;

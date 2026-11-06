@@ -61,11 +61,24 @@ describe('garantias estáticas do frontend', () => {
     for (const [f, t] of Object.entries(web)) {
       const c = code(t);
       if (f !== 'config.ts') expect(c, f).not.toMatch(/sb_secret_|service_role|sbp_/);
-      expect(c, f).not.toMatch(/signInAnonymously|signUp\(|indexedDB|document\.cookie/);
-      if (f !== 'auth-session.ts' && f !== 'session-ledger.ts') expect(c, f).not.toMatch(/localStorage/);
+      expect(c, f).not.toMatch(/signInAnonymously|signUp\(|document\.cookie/);
+      // Só o cache de sons usa IndexedDB, e guarda só áudio; ver o teste do cache.
+      if (f !== 'sound-cache.ts') expect(c, f).not.toMatch(/indexedDB/);
+      if (f !== 'auth-session.ts' && f !== 'session-ledger.ts' && f !== 'sound-prefs.ts') expect(c, f).not.toMatch(/localStorage/);
       if (f !== 'call-return.ts' && f !== 'session-ledger.ts') expect(c, f).not.toMatch(/sessionStorage/);
     }
     expect(code(web['main.ts']!)).toMatch(/signInWithPassword/);
+  });
+
+  it('cache e preferências de som: nada de sessão, token ou cabeçalho de autorização no armazenamento', () => {
+    for (const f of ['sound-cache.ts', 'sound-prefs.ts']) {
+      const c = code(web[f]!);
+      expect(c, f).not.toMatch(/access_token|refresh_token|accessToken|authorization|getSession|auth-session|createSignedUrl|signedUrl/i);
+      expect(c, f).not.toMatch(/sessionStorage|document\.cookie/);
+    }
+    expect(code(web['sound-prefs.ts']!).match(/\blocalStorage\b/g)).toHaveLength(2);
+    expect(code(web['sound-prefs.ts']!)).not.toMatch(/indexedDB/);
+    expect(code(web['sound-cache.ts']!)).not.toMatch(/localStorage/);
   });
 
   it('sessão de login: só auth-session.ts guarda, pelo Auth, com uma chave fixa e nada além disso', () => {
