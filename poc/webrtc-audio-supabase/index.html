@@ -85,6 +85,18 @@
           </div>
         </section>
 
+        <section id="chat" hidden>
+          <h3>Chat: <span id="chat-room"></span></h3>
+          <p id="chat-status" role="status" hidden></p>
+          <div id="chat-messages" class="chat-messages" role="log" aria-live="polite" aria-label="Mensagens da sala" tabindex="0"></div>
+          <form id="chat-form" autocomplete="off">
+            <!-- maxlength conta unidades UTF-16 (um emoji vale 2): fica no dobro do limite real, conferido em pontos de código. -->
+            <label>Mensagem <textarea id="chat-input" rows="2" maxlength="8000"></textarea></label>
+            <div class="buttons"><button id="chat-send-btn" type="submit">Enviar</button></div>
+          </form>
+          <div class="buttons"><button id="chat-close-btn" type="button">Fechar chat</button></div>
+        </section>
+
         <h3>Criar sala</h3>
         <!-- maxlength conta unidades UTF-16 (um emoji vale 2): fica no dobro do limite real, que é conferido em
              pontos de código, como no banco (40 e 32), com mensagem na tela. -->

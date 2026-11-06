@@ -48,7 +48,8 @@ registrado em 2026-10-28, sem nova leitura no projeto remoto.
    - os 12 itens do harness remoto (`pnpm test:remote`) não rodam no CI;
    - a matriz `integration/EVIDENCE-02C.1B.md` está na situação de 2026-10-23 e **não** inclui as execuções acima;
    - fluxo anônimo com Turnstile (#5, janela C1) suspenso;
-   - TURN, NAT restritivo (simétrico, CGNAT), redes corporativas e grupo: não testados.
+   - TURN, NAT restritivo (simétrico, CGNAT), redes corporativas e grupo: não testados;
+   - migração `0500` (chat por sala) implementada e validada só localmente, sem aplicação no remoto.
 5. **Recursos remotos ainda ativos** (último estado documentado, 2026-10-28; nenhum desligamento registrado):
    - Edge Function `signal` `ACTIVE`, `verify_jwt: true`. `ORYN_ALLOWED_ORIGINS` passou a incluir, além de
      `http://127.0.0.1:5173`, a origem publicada, em 2026-11-05;
@@ -112,6 +113,7 @@ Requisitos: Node 24+ e pnpm 12+. Não há serviço a instalar: o PGlite e o Post
 | `supabase/migrations/…0200_oryn_functions.sql` | RPCs `SECURITY DEFINER` (`search_path = ''`) e `EXECUTE` explícito |
 | `supabase/migrations/…0300_oryn_realtime.sql` | Políticas de `realtime.messages`: receber só no próprio tópico; **nenhum envio de cliente** em `oryn:*` |
 | `supabase/migrations/…0400_oryn_room_management.sql` | MVP 01: `list_my_rooms` e `close_room` (aditiva; aplicada no remoto em 2026-10-28) |
+| `supabase/migrations/…0500_oryn_room_messages.sql` | Chat por sala: `oryn.room_messages`, `oryn.room_message_counters`, `send_room_message` e `list_room_messages` (aditiva; **ainda não aplicada no remoto**) |
 | `supabase/functions/_shared/` | Contrato da sinalização e núcleo da Edge Function (puros e testados) |
 | `supabase/functions/_shared/edge-config.ts`, `supabase-http.ts`, `signal-http.ts` | Credenciais, chamadas HTTP com headers separados por operação e camada HTTP/CORS (puros e testados) |
 | `supabase/functions/signal/index.ts` | Só a ligação Deno dos módulos de `_shared`. Publicado no projeto real (runbook §13); fora do typecheck do Node |
@@ -207,6 +209,23 @@ de deploy, Etapa 4 ⛔. Operação, validação manual e riscos: runbook §14.
 - **Queda do par e falha de ICE** não encerram mais a chamada de quem ficou: a sessão continua, aguardando reconexão, com
   no máximo 2 recuperações por par a cada 60 s (runbook §14.4).
 - **Fora do escopo:** convites pela interface, remover membro, grupo, TURN.
+
+## Chat por sala
+
+**Estado: implementado e validado localmente. A migração 0500 não foi aplicada no remoto, e o cliente publicado não tem o chat.**
+Implantação: checklist de deploy, Etapa 5 ⛔. Operação, validação manual e riscos: runbook §14.12.
+
+- **Dentro ou fora da chamada:** "Abrir chat" na lista de salas, para quem é membro ativo. Não pede microfone e não usa sessão de chamada,
+  sinalização, Realtime ou WebRTC.
+- **`send_room_message(p_room_id, p_client_nonce, p_body)`:** o autor vem do JWT. Texto de 1 a 4.000 caracteres. Repetir o mesmo
+  identificador na mesma sala e pelo mesmo autor devolve a mensagem original, sem duplicar. Até 30 mensagens por minuto, por autor, em cada sala.
+- **`list_room_messages(p_room_id, p_before_seq, p_after_seq, p_limit)`:** membro ativo, com a sala aberta ou encerrada. Sem cursor,
+  as mais recentes; `p_before_seq` pagina para trás; `p_after_seq` traz as novas. Devolve nome de exibição e `is_mine`, sem conta de ninguém.
+- **Ordem:** `seq` por sala, atribuído sob a trava da sala e nunca reutilizado. Um cursor por `seq` não perde mensagem. A exclusão de uma conta pode deixar lacunas no histórico.
+- **Atualização:** consulta a cada 3 s com o painel aberto e a página visível; depois de falhas, espaça até 30 s.
+- **Sala encerrada:** somente leitura, em "Ver mensagens". Enviar devolve `room-closed`.
+- **Texto puro:** só `textContent`, sem HTML. O texto não vai para registro nenhum nem para `realtime.messages`.
+- **Fora do escopo:** edição e exclusão de mensagens, anexos, indicador de digitação, entrega instantânea, espaços e canais.
 
 ## Modelo de segurança
 

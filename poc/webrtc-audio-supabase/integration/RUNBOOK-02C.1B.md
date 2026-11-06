@@ -1515,3 +1515,52 @@ do caminho WebRTC não estão comprovadas.
 | CSP e cabeçalhos de segurança | `security-headers` |
 | Instalação e build com a versão exata do pnpm declarada no projeto | `security-headers` |
 | O contador 2/2 mostra membros da sala, não participantes ativos | Sem teste; respeitar na fase visual |
+| O chat não usa sinalização, Realtime nem WebRTC, e nenhuma falha dele alcança a chamada | `web-chat`, `sql-room-messages` |
+
+### 14.12 Chat por sala (0500 + painel; ⛔ cada passo marcado exige autorização própria)
+
+**Estado: implementado e validado localmente. A 0500 não foi aplicada no remoto.** Contratos em README, "Chat por sala"; aplicação no checklist
+de deploy, Etapa 5.
+
+**Decisões:**
+- **Sem Realtime:** consulta periódica a cada 3 s. Cada mensagem chega com alguns segundos de atraso, em troca de não tocar em sinalização,
+  políticas do Realtime ou contrato de eventos.
+- **Trava da sala em cada envio:** torna exatos `seq`, idempotência, limite de taxa e recusa em sala encerrada. A espera só existe entre envios
+  da mesma sala e operações que já travam a sala; `join_room` não espera (`room-messages.pg`).
+- **Mensagem ligada à sala:** a sala faz o papel de espaço e canal da arquitetura. Se esses conceitos entrarem, será preciso migrar.
+- **Sem trava nem contador na leitura:** `list_room_messages` é só leitura e tem limite de linhas, mas não tem limite de frequência no banco.
+
+**Ordem de publicação ⛔:** aplicar a 0500 (Etapa 5) e só depois integrar o cliente à `main`, que publica sozinha. Com o cliente antes da migração, o
+painel mostra erro de carga; login, salas e chamada não dependem dele.
+
+**Validação manual (duas contas, membros da mesma sala):**
+1. Fora da chamada, nos dois aparelhos: "Abrir chat". Nenhum pedido de microfone.
+2. Enviar nos dois sentidos: a mensagem chega em até cerca de 5 s.
+3. Recarregar a página e abrir de novo: o histórico continua lá.
+4. Com o modo avião ligado, enviar: aparece a falha, com "Repetir" e "Descartar". Desligar e repetir: uma só mensagem nos dois lados.
+5. Enviar `<b>teste</b>`: aparece como texto.
+6. Entrar na chamada e trocar mensagens: voz e mudo continuam funcionando; fechar o painel não muda nada.
+7. Bloquear o iPhone durante a chamada: a voz segue como antes; o chat atualiza ao voltar. **Sem validação em aparelho até aqui.**
+8. Encerrar a sala: a chamada termina, e "Ver mensagens" mostra o histórico sem campo de envio.
+
+**Riscos e limites:**
+- O chat não depende de TURN nem da conexão WebRTC, mas herda o limite de 2 lugares das salas criadas pela interface.
+- Mensagens ficam no banco sem prazo; ver "Exclusão em cascata", abaixo.
+- Mensagens ficam no banco sem prazo de retenção e são legíveis por quem administra o projeto; não há criptografia de ponta a ponta.
+- Mensagens não confirmadas ficam só em memória: recarregar a página as perde da tela, mesmo que o servidor as tenha gravado (voltam no histórico, nesse caso).
+- A consulta periódica gera 20 requisições por minuto por painel aberto e visível. Medir o custo antes de ampliar o uso.
+
+**Exclusão em cascata (`sql-room-messages`):** hoje não há exclusão de conta pela interface; ela só ocorre pelo painel ou por SQL do operador.
+
+| Evento | Sala | Mensagens | Consequência |
+|---|---|---|---|
+| Excluir a conta de um **membro** | Continua | Só as dele são apagadas | O histórico perde essas mensagens e fica com lacunas de `seq`. Sem efeito na paginação, e `seq` não se repete |
+| Excluir a conta do **dono** | **Apagada** | **Todas, inclusive as do outro membro** | O outro membro perde a sala e o histórico, sem aviso. Não há transferência de propriedade (ARCHITECTURE.md §7.1) |
+| Excluir a sala por SQL | Apagada | Todas | O contador vai junto |
+| Encerrar a sala (`close_room`) | Fica encerrada | Preservadas | Somente leitura |
+| Remover membro (`removed_at`) | Continua | Preservadas | Ele perde o acesso; os demais seguem vendo as mensagens e o nome dele |
+
+**Limites:**
+- A exclusão é irreversível no banco; só backup recupera. Por isso, excluir a conta de um dono com sala em uso exige decisão explícita do operador.
+- Um painel aberto continua mostrando o que já carregou até recarregar: a consulta periódica traz novidades, não exclusões. Quem perde o acesso à sala tem o painel limpo na consulta seguinte.
+- A regra de produto para exclusão de conta segue aberta (ARCHITECTURE.md §7.1).

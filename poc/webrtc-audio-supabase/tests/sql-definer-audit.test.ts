@@ -24,6 +24,8 @@ const USER_RPCS: Record<string, string> = {
   ack_signals: 'public.ack_signals(uuid,uuid[])',
   list_my_rooms: 'public.list_my_rooms()',
   close_room: 'public.close_room(uuid)',
+  send_room_message: 'public.send_room_message(uuid,uuid,text)',
+  list_room_messages: 'public.list_room_messages(uuid,bigint,bigint,integer)',
 };
 const SERVICE_RPCS: Record<string, string> = { set_signal_state: 'public.set_signal_state(uuid,text)' };
 
@@ -86,6 +88,10 @@ function matrix(s: Scenario, stranger: { uid: string }, inviteToken: string): Ca
     { label: 'membro (não dono): encerra a sala', actor: s.member, fn: 'close_room', args: { p_room_id: s.room }, error: /unauthorized/ },
     { label: 'dono: encerra sala arbitrária', actor: s.owner, fn: 'close_room', args: { p_room_id: rnd() }, error: /unauthorized/ },
     { label: 'anon: encerra sala', actor: 'anon', fn: 'close_room', args: { p_room_id: s.room }, error: /permission denied/ },
+    { label: 'estranho: envia mensagem', actor: stranger, fn: 'send_room_message', args: { p_room_id: s.room, p_client_nonce: rnd(), p_body: 'x' }, error: /unauthorized/ },
+    { label: 'anon: envia mensagem', actor: 'anon', fn: 'send_room_message', args: { p_room_id: s.room, p_client_nonce: rnd(), p_body: 'x' }, error: /permission denied/ },
+    { label: 'estranho: lê mensagens', actor: stranger, fn: 'list_room_messages', args: { p_room_id: s.room }, error: /unauthorized/ },
+    { label: 'anon: lê mensagens', actor: 'anon', fn: 'list_room_messages', args: { p_room_id: s.room }, error: /permission denied/ },
   ];
 }
 

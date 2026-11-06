@@ -1,5 +1,5 @@
 -- POC-02C.2B — VERIFICAÇÃO ENTRE MIGRAÇÕES, SOMENTE LEITURA. Rodar depois de CADA passo da aplicação
--- (0100, depois 0200, depois 0300, depois 0400), antes do próximo. Tolera objetos que ainda não existem.
+-- (0100, depois 0200, depois 0300, depois 0400, depois 0500), antes do próximo. Tolera objetos que ainda não existem.
 -- Saída: step, item, status (PASS/FAIL/PENDING). PENDING = pertence a um passo ainda não aplicado.
 -- Critério do passo N: nenhuma linha FAIL e nenhuma linha PENDING com step <= N.
 -- O pós-voo completo (01_postflight.sql) vem depois do passo 3 e de novo depois do passo 4.
@@ -16,10 +16,13 @@ has_fns as (select pg_catalog.to_regprocedure('public.join_room(uuid)') is not n
 -- MVP 01 (0400): as 2 RPCs de gerenciamento de salas.
 fns_0400(sig) as (values ('public.list_my_rooms()'), ('public.close_room(uuid)')),
 has_0400 as (select pg_catalog.to_regprocedure('public.close_room(uuid)') is not null as ok),
+-- Chat por sala (0500): as 2 tabelas e as 2 RPCs do chat.
+fns_0500(sig) as (values ('public.send_room_message(uuid,uuid,text)'), ('public.list_room_messages(uuid,bigint,bigint,integer)')),
+has_0500 as (select pg_catalog.to_regclass('oryn.room_messages') is not null as ok),
 c(step, item, ok, present) as (
   -- Passo 1 (0100): schema, tabelas, RLS, nenhum acesso de cliente.
-  select 1, 'oryn: 8 tabelas',
-         (select pg_catalog.count(*) = 8 from pg_catalog.pg_class k join pg_catalog.pg_namespace n on n.oid = k.relnamespace
+  select 1, 'oryn: 8 tabelas (fora a da 0500)',
+         (select pg_catalog.count(*) filter (where k.relname not in ('room_messages', 'room_message_counters')) = 8 from pg_catalog.pg_class k join pg_catalog.pg_namespace n on n.oid = k.relnamespace
            where n.nspname = 'oryn' and k.relkind = 'r'), (select ok from has_oryn)
   union all
   select 1, 'oryn.' || t || ': RLS ligado e dono = ' || current_user,
@@ -43,7 +46,7 @@ c(step, item, ok, present) as (
   -- Passo 2 (0200): exatamente as 12 RPCs, EXECUTE do contrato, search_path vazio. As da 0400 (passo 4)
   -- ficam fora da contagem, para o item continuar valendo depois do passo 4.
   select 2, 'public: exatamente 12 funções (fora as da 0400), todas SECURITY DEFINER com search_path vazio',
-         (select pg_catalog.count(*) filter (where p.proname not in ('list_my_rooms', 'close_room')) = 12
+         (select pg_catalog.count(*) filter (where p.proname not in ('list_my_rooms', 'close_room', 'send_room_message', 'list_room_messages')) = 12
                  and pg_catalog.bool_and(p.prosecdef and 'search_path=""' = any (coalesce(p.proconfig, '{}')))
             from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public'),
          (select ok from has_fns)
@@ -77,9 +80,10 @@ c(step, item, ok, present) as (
          (select relrowsecurity from pg_catalog.pg_class where oid = 'realtime.messages'::regclass),
          exists (select 1 from pg_catalog.pg_policies where schemaname = 'realtime' and policyname like 'oryn_%')
   union all
-  -- Passo 4 (0400, MVP 01): 2 RPCs novas, mesmas regras; nada mais muda (14 funções em public).
-  select 4, 'public: exatamente 14 funções, todas SECURITY DEFINER com search_path vazio',
-         (select pg_catalog.count(*) = 14 and pg_catalog.bool_and(p.prosecdef and 'search_path=""' = any (coalesce(p.proconfig, '{}')))
+  -- Passo 4 (0400, MVP 01): 2 RPCs novas, mesmas regras; nada mais muda (14 funções em public, fora as da 0500).
+  select 4, 'public: exatamente 14 funções (fora as da 0500), todas SECURITY DEFINER com search_path vazio',
+         (select pg_catalog.count(*) filter (where p.proname not in ('send_room_message', 'list_room_messages')) = 14
+                 and pg_catalog.bool_and(p.prosecdef and 'search_path=""' = any (coalesce(p.proconfig, '{}')))
             from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public'),
          (select ok from has_0400)
   union all
@@ -93,6 +97,32 @@ c(step, item, ok, present) as (
          else false end,
          (select ok from has_0400)
     from fns_0400
+  union all
+  -- Passo 5 (0500, chat por sala): tabela privada, com RLS e sem privilégio de cliente, e 2 RPCs novas (16 funções em public).
+  select 5, t || ': RLS ligado e nenhum privilégio de cliente',
+         case when (select ok from has_0500) and pg_catalog.to_regclass(t) is not null then
+           (select c.relrowsecurity from pg_catalog.pg_class c where c.oid = pg_catalog.to_regclass(t))
+           and not exists (select 1 from pg_catalog.pg_class c, pg_catalog.aclexplode(coalesce(c.relacl, pg_catalog.acldefault('r', c.relowner))) a
+                            where c.oid = pg_catalog.to_regclass(t) and a.grantee <> c.relowner)
+         else false end,
+         (select ok from has_0500)
+    from (values ('oryn.room_messages'), ('oryn.room_message_counters')) as chat_tables(t)
+  union all
+  select 5, 'public: exatamente 16 funções, todas SECURITY DEFINER com search_path vazio',
+         (select pg_catalog.count(*) = 16 and pg_catalog.bool_and(p.prosecdef and 'search_path=""' = any (coalesce(p.proconfig, '{}')))
+            from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public'),
+         (select ok from has_0500)
+  union all
+  select 5, sig || ': EXECUTE só para authenticated (anon, service_role e PUBLIC não)',
+         case when pg_catalog.to_regprocedure(sig) is not null then
+           pg_catalog.has_function_privilege('authenticated', sig, 'EXECUTE')
+           and not pg_catalog.has_function_privilege('anon', sig, 'EXECUTE')
+           and not pg_catalog.has_function_privilege('service_role', sig, 'EXECUTE')
+           and not exists (select 1 from pg_catalog.pg_proc p, pg_catalog.aclexplode(coalesce(p.proacl, pg_catalog.acldefault('f', p.proowner))) a
+                            where p.oid = pg_catalog.to_regprocedure(sig) and a.grantee = 0 and a.privilege_type = 'EXECUTE')
+         else false end,
+         (select ok from has_0500)
+    from fns_0500
 )
 select step, item, case when not present then 'PENDING' when ok then 'PASS' else 'FAIL' end as status
   from c

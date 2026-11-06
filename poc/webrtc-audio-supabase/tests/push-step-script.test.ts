@@ -104,6 +104,13 @@ describe('oryn-push-step.ps1 (CLI falsa, sem rede)', () => {
     expect(r.log!.migrations).toEqual(['20261023000100_oryn_schema.sql', '20261023000200_oryn_functions.sql']);
   });
 
+  it('Etapa 5 com a 0100–0400 aplicadas: workdir com as 5 migrações e o dry-run só pode citar a 0500', () => {
+    const r = run({ step: 5, applied: '20261023000100,20261023000200,20261023000300,20261028000400' });
+    expect(r.ok, r.out).toBe(true);
+    expect(r.log!.migrations).toHaveLength(5);
+    expect(r.log!.migrations.at(-1)).toBe('20261106000500_oryn_room_messages.sql');
+  });
+
   it('erro da CLI (ex.: autenticação): o script falha e a senha e o workdir são removidos mesmo assim', () => {
     const r = run({ step: 1, mode: 'fail' });
     expect(r.ok).toBe(false);

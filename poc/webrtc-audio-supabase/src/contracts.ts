@@ -88,6 +88,36 @@ export function parseControlEvent(event: string, payload: unknown): ControlEvent
 }
 
 /** Linha de list_my_rooms (MVP 01, migração 0400). */
+/** Mesmas regras da migração 0500: 1–4000 pontos de código, com algo além de espaço, tabulação e quebra de linha. */
+export const MAX_CHAT_BODY = 4000;
+export const isChatBody = (v: unknown): v is string =>
+  typeof v === 'string' && !/[\u0000-\u0008\u000b-\u001f\u007f]/.test(v) && /[^ \n\t]/.test(v) && codePointLength(v) <= MAX_CHAT_BODY;
+
+/** Linha de send_room_message e list_room_messages. Sem conta de ninguém: só o nome na sala e `is_mine`. */
+export interface ChatMessage {
+  seq: number;
+  display_name: string;
+  is_mine: boolean;
+  /** Só nas mensagens do próprio chamador. */
+  client_nonce: string | null;
+  body: string;
+  created_at: string;
+}
+
+const CHAT_MESSAGE_KEYS = 'body,client_nonce,created_at,display_name,is_mine,seq';
+
+/** Estrutura da linha: exatamente as colunas e um `seq` válido, que é o cursor. Valor fora da regra é outra coisa. */
+export const hasChatMessageShape = (v: unknown): boolean =>
+  isObj(v) && Object.keys(v).sort().join(',') === CHAT_MESSAGE_KEYS && Number.isSafeInteger(v['seq']) && (v['seq'] as number) >= 1;
+
+export function parseChatMessage(v: unknown): ChatMessage | null {
+  if (!hasChatMessageShape(v)) return null;
+  const row = v as Record<string, unknown>;
+  if (!isDisplayName(row['display_name']) || !isChatBody(row['body']) || typeof row['created_at'] !== 'string') return null;
+  if (row['is_mine'] === true ? !isUuid(row['client_nonce']) : row['is_mine'] !== false || row['client_nonce'] !== null) return null;
+  return { seq: row['seq'] as number, display_name: row['display_name'], is_mine: row['is_mine'] as boolean, client_nonce: row['client_nonce'] as string | null, body: row['body'], created_at: row['created_at'] };
+}
+
 export interface RoomSummary {
   room_id: string;
   name: string;
