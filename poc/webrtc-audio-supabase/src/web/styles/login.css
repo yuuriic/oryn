@@ -1,0 +1,109 @@
+/* Marca e tela de login. Fora da conta (#account oculto), a página vira uma coluna centralizada, sem depender de código.
+   Navegador sem :has(): o login continua funcionando, alinhado ao topo. */
+
+.brand h1 {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.brand-tagline {
+  display: none;
+  margin: var(--space-1) 0 0;
+  color: var(--color-text-secondary);
+}
+
+main:has(> #account[hidden]) {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  width: 100%;
+  max-width: 400px;
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding: var(--space-5) var(--space-4);
+}
+
+main:has(> #account[hidden]) .brand {
+  margin-bottom: var(--space-6);
+  text-align: center;
+}
+
+main:has(> #account[hidden]) .brand h1 {
+  font-size: 2.5rem;
+}
+
+main:has(> #account[hidden]) .brand-tagline {
+  display: block;
+}
+
+/* O registro de uma chamada anterior fica fora da tela de login. */
+main:has(> #account[hidden]) #status {
+  display: none;
+}
+
+#login {
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-lg);
+  padding: var(--space-6);
+  margin: 0;
+}
+
+#login h2 {
+  margin: 0 0 var(--space-5);
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+#login-form label {
+  margin: 0 0 var(--space-4);
+  font-size: 0.875rem;
+  color: var(--color-text-secondary);
+}
+
+#login-form input {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 44px;
+  margin-top: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  font-size: 1rem;
+}
+
+#login-btn {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  margin: var(--space-5) 0 0;
+  border-radius: var(--radius-md);
+}
+
+#invite-login-hint {
+  margin: 0 0 var(--space-4);
+  padding: var(--space-3);
+  background: var(--color-elevated);
+  border-radius: var(--radius-sm);
+}
+
+#config-error,
+main:has(> #account[hidden]) #error {
+  margin: var(--space-4) 0 0;
+  padding: var(--space-3);
+  background: var(--color-surface);
+  border: 1px solid currentColor;
+  border-radius: var(--radius-sm);
+}
+
+@media (max-width: 480px) {
+  main:has(> #account[hidden]) {
+    padding: var(--space-4) var(--space-3);
+  }
+
+  #login {
+    padding: var(--space-5) var(--space-4);
+  }
+}

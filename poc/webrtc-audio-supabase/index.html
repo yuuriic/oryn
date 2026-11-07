@@ -8,16 +8,19 @@
       http-equiv="Content-Security-Policy"
       content="__ORYN_PAGE_CSP__"
     />
-    <title>Oryn — voz em grupo (POC-02C)</title>
+    <title>Oryn</title>
     <link rel="stylesheet" href="/src/web/style.css" />
   </head>
   <body>
     <main>
-      <h1>Oryn · voz em grupo <small>POC-02C</small></h1>
+      <header class="brand">
+        <h1>Oryn</h1>
+        <p class="brand-tagline" lang="en">Stay close. Play on.</p>
+      </header>
       <p id="config-error" class="error" role="alert" hidden></p>
 
-      <section id="login" hidden>
-        <h2>Login</h2>
+      <section id="login" aria-labelledby="login-title" hidden>
+        <h2 id="login-title">Entrar na sua conta</h2>
         <p id="invite-login-hint" class="notice" role="status" hidden></p>
         <form id="login-form" autocomplete="on">
           <label>E-mail <input id="email" type="email" autocomplete="username" required /></label>
