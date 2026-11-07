@@ -1585,7 +1585,7 @@ painel mostra erro de carga; login, salas e chamada não dependem dele.
 
 ### 14.13 Salas de grupo e voz multiponto (0600 + cliente; ⛔ cada passo marcado exige autorização própria)
 
-**Estado: a 0600 foi aplicada no remoto em 2026-11-06, com pós-voo aprovado. O cliente está na branch `feat/group-rooms-mesh` (PR #19) e só é publicado com o merge; até lá, produção segue 1:1.** Contratos em README, "Salas de grupo"; aplicação no checklist de deploy, Etapa 6.
+**Estado: a 0600 foi aplicada no remoto em 2026-11-06, com pós-voo aprovado, e o cliente está em produção desde o merge do PR #19.** Contratos em README, "Salas de grupo"; aplicação no checklist de deploy, Etapa 6.
 
 **Decisões:**
 - **Contratos existentes preservados:** nenhuma RPC existente nem a função `signal` mudaram. Dois comportamentos ficaram mais restritos por gatilho: sala nova com mais de 4 lugares é recusada, e quem saiu ou foi removido só volta por convite emitido depois disso.
@@ -1626,7 +1626,7 @@ painel mostra erro de carga; login, salas e chamada não dependem dele.
 
 ### 14.14 Soundboard (0700 + `sound-media` + cliente; ⛔ cada passo marcado exige autorização própria)
 
-**Estado: 0700 aplicada, função publicada (versão 2) e Storage testado em produção em 2026-11-07. O cliente não foi publicado.** Contratos em README, "Soundboard"; aplicação no checklist de deploy, Etapa 7; evidências e roteiro em `docs/validation/P05-SOUNDBOARD.md`.
+**Estado: 0700 aplicada, função publicada (versão 2), Storage testado e cliente em produção desde o merge do PR #20, em 2026-11-07. Etapa Macro 5 encerrada por decisão de produto, com riscos residuais aceitos (P05, seção 6).** Contratos em README, "Soundboard"; aplicação no checklist de deploy, Etapa 7; evidências e roteiro em `docs/validation/P05-SOUNDBOARD.md`.
 
 **Decisões:**
 - **Por sala:** o catálogo é por `room_id`, como decidido pelo arquiteto. A sala faz o papel de espaço; se espaços entrarem, será preciso migrar. O dono faz o papel de admin.
@@ -1651,3 +1651,12 @@ painel mostra erro de carga; login, salas e chamada não dependem dele.
 - **Autoplay:** `AudioContext` pode ficar suspenso até um gesto. O painel avisa, mas o caminho real só foi exercitado com a política de autoplay liberada no navegador de teste.
 - **Eco:** em alto-falantes, o som pode voltar pelo microfone dos outros. Sem evidência real.
 - **Quota do plano:** consumo de Storage e banda não medido.
+
+### 14.15 Interface Midnight (⛔ integração e publicação exigem autorização própria)
+
+**Estado em 2026-11-07: validada localmente na branch `feat/midnight-ui`; não integrada e não publicada.** Sem operação de banco ou função. Checklist, limites da prévia e reversão: `docs/validation/MIDNIGHT-INTEGRACAO.md`.
+
+**Para operar:**
+- **O merge publica sozinho,** e a regra da `main` não exige CI verde: conferir antes.
+- **A prévia da Vercel não testa a aplicação:** é construída sem o Supabase. Voz só na stack local ou depois de publicar.
+- **Depois de um rollback na Vercel,** um merge seguinte não entra no ar até um `vercel promote`.

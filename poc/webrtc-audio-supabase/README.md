@@ -11,7 +11,9 @@ POC-02C.0 e 02C.0A (D1 a D4).
 
 ## Estado (último registro documentado: 2026-11-06)
 
-**Validação real (2026-11-06):** o cliente está publicado em produção no commit `f7bae53`. Chamada entre redes diferentes,
+**Produção em 2026-11-07:** cliente do PR #20 (`4c49bf9`), com salas de grupo e Soundboard. A interface Midnight ainda não foi integrada (seção "Interface Midnight").
+
+**Validação real (2026-11-06), com o cliente de então, no commit `f7bae53`:** chamada entre redes diferentes,
 Chrome no Windows e Safari no iPhone, com voz, mudo, saída e reentrada relatados como funcionando. **NET-01 e NET-02: validação
 funcional manual positiva; homologação técnica integral pendente.** A duração de 15 minutos e a troca de rede são relatos manuais; a
 duração contínua de mídia e a migração do caminho WebRTC não estão comprovadas.
@@ -189,7 +191,7 @@ um túnel HTTPS temporário:
 - **NAT e operadoras:** o WAN cobre um único cenário (uma rede Wi-Fi e uma operadora móvel). NAT restritivo
   (simétrico, CGNAT) e redes corporativas não foram testados.
 - **TURN:** não existe; sem ele, redes restritivas podem não conectar.
-- **Grupo:** até 4 contas por sala, em mesh, na seção "Salas de grupo"; o cliente só é publicado com o merge do PR #19.
+- **Grupo:** até 4 contas por sala, em mesh, na seção "Salas de grupo".
 
 ## MVP 01 — gerenciamento de salas pela interface
 
@@ -232,7 +234,7 @@ cenários sem evidência em aparelho e riscos: runbook §14.12. Implantação: c
 
 ## Salas de grupo e voz multiponto
 
-**Estado: a migração 0600 foi aplicada no remoto em 2026-11-06, com pós-voo aprovado. O cliente de grupo está na branch `feat/group-rooms-mesh` (PR #19); até o merge, o cliente publicado em produção segue 1:1.**
+**Estado: a migração 0600 foi aplicada no remoto em 2026-11-06, com pós-voo aprovado, e o cliente de grupo está em produção desde o merge do PR #19.**
 Implantação: checklist de deploy, Etapa 6 ⛔. Operação, homologação e riscos: runbook §14.13.
 
 - **Capacidade:** 2, 3 ou 4 contas por sala, com o dono. O backend recusa sala nova acima de 4 e o resgate que ultrapassaria a capacidade.
@@ -244,7 +246,7 @@ Implantação: checklist de deploy, Etapa 6 ⛔. Operação, homologação e ris
 
 ## Soundboard
 
-**Estado: migração 0700 aplicada, função `sound-media` publicada e Storage testado em produção. O cliente publicado ainda não tem o painel, e a homologação em aparelhos está pendente.**
+**Estado: migração 0700 aplicada, função `sound-media` publicada, Storage testado e cliente em produção desde o merge do PR #20. Etapa Macro 5 encerrada por decisão de produto, com riscos residuais aceitos: nem todas as métricas da P05 foram verificadas.**
 Implantação: checklist de deploy, Etapa 7 ⛔. Operação e riscos: runbook §14.14. Evidências e roteiro em aparelhos: `docs/validation/P05-SOUNDBOARD.md`.
 
 - **Modelo:** o clique vira um evento curto, e cada cliente toca a própria cópia. O arquivo nunca passa pelo Realtime nem pelo WebRTC, e o som não entra no microfone.
@@ -257,6 +259,17 @@ Implantação: checklist de deploy, Etapa 7 ⛔. Operação e riscos: runbook §
 - **Cache:** IndexedDB, LRU até 100 MiB, por conta, sala, som, versão e hash. Só bytes e metadados. Sai ao remover o som, sair da sala, ser removido ou sair da conta.
 - **Limpeza:** sem agendador; roda quando o dono entra na chamada ou remove um som. Reconciliação em `integration/sql/15_sound_orphans.sql`.
 - **Remoção:** vale na hora no banco: sai do catálogo e novos disparos são recusados. Uma leitura já autorizada pode persistir por uma janela no CDN do Storage, e bytes já entregues não são revogados. Contrato na P05, seção 3.
+
+## Interface Midnight
+
+**Estado em 2026-11-07: implementada e validada localmente na branch `feat/midnight-ui`; não integrada e não publicada.** Produção segue com a interface anterior. Checklist, limites da prévia e reversão: `docs/validation/MIDNIGHT-INTEGRACAO.md`.
+
+- **O que muda:** só apresentação e navegação, em TypeScript puro e Vite. Sem mudança de banco, funções, contratos ou WebRTC.
+- **Estilos:** `src/web/styles/`, com os tokens em `tokens.css`. Fonte do sistema e logotipo em texto, sem ativos externos.
+- **Navegação:** `src/web/shell.ts` guarda o estado visual só em memória. Selecionar uma sala não entra na chamada.
+- **Áudio remoto:** `#audio-container` é filho direto de `<main>`, fora de todo painel recolhível. Não mover para dentro de um.
+
+**Piloto Windows/web (Etapa Macro 6), pendente:** P06 (desktop), P07 (carga e custo) e P08 (recuperação), sem evidência; instalador assinado, atualizações, métricas, runbooks do piloto e limitações comunicadas; WebView2 sem evidência. Baselines S2, S3 e S4 seguem com os valores pós-0600, e não há C0 nem C2 até o commit próprio deles.
 
 ## Modelo de segurança
 
