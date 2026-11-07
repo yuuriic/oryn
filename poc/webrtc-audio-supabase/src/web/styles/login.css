@@ -39,11 +39,6 @@ main:has(> #account[hidden]) .brand-tagline {
   display: block;
 }
 
-/* O registro de uma chamada anterior fica fora da tela de login. */
-main:has(> #account[hidden]) #status {
-  display: none;
-}
-
 #login {
   background: var(--color-surface);
   border: 1px solid var(--color-divider);

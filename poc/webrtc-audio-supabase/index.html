@@ -47,6 +47,18 @@
           </div>
         </nav>
 
+        <section id="call-bar" class="call-bar" aria-label="Chamada em curso" hidden>
+          <div class="call-bar-info">
+            <strong id="call-room">—</strong>
+            <p class="call-bar-status"><span id="call-phase" role="status"></span><span id="call-mic"></span></p>
+          </div>
+          <div class="call-bar-actions">
+            <button id="listen-btn" type="button" hidden>Ouvir</button>
+            <button id="mute-btn" type="button" disabled>Mutar</button>
+            <button id="leave-btn" type="button" disabled>Sair da chamada</button>
+          </div>
+        </section>
+
         <div id="shell-main" class="shell-main">
           <header class="context-header">
             <button id="shell-menu-btn" class="ghost-btn" type="button" aria-controls="sidebar" aria-expanded="false">Menu</button>
@@ -88,6 +100,29 @@
             <button id="entry-recheck-btn" type="button" hidden>Verificar de novo</button>
             <button id="entry-cancel-btn" type="button">Cancelar</button>
           </div>
+        </section>
+
+        <section id="call-panel">
+        <h2 id="voice-title">Chamada</h2>
+        <p id="voice-state"></p>
+        <p id="voice-note" hidden></p>
+        <div id="participants" hidden></div>
+
+        <section id="soundboard" hidden>
+          <h3>Sons da sala</h3>
+          <p id="soundboard-status" role="status" hidden></p>
+          <div id="soundboard-list"></div>
+          <label>Volume dos sons <input id="sound-volume" type="range" min="0" max="100" step="1" /></label>
+          <label class="check"><input id="sound-disabled" type="checkbox" /> Desativar sons neste aparelho</label>
+          <form id="sound-form" autocomplete="off" hidden>
+            <h4>Publicar som</h4>
+            <!-- maxlength conta unidades UTF-16: fica no dobro do limite real, conferido em pontos de código. -->
+            <label>Nome (até 40 caracteres) <input id="sound-name" type="text" maxlength="80" spellcheck="false" required /></label>
+            <label>Arquivo MP3 ou WAV, até 2 MiB e 10 s <input id="sound-file" type="file" accept=".mp3,.wav,audio/mpeg,audio/wav" required /></label>
+            <button id="sound-publish-btn" type="submit">Publicar</button>
+          </form>
+        </section>
+
         </section>
 
         <div id="rooms"></div>
@@ -148,58 +183,33 @@
         </form>
         </section>
 
-        <section id="call-panel">
-        <h2>Chamada</h2>
-        <p>Sala: <strong id="call-room">—</strong></p>
-        <div id="participants" hidden></div>
-        <div class="buttons">
-          <button id="mute-btn" type="button" disabled>Mutar</button>
-          <button id="leave-btn" type="button" disabled>Sair da chamada</button>
-          <button id="listen-btn" type="button" hidden>Ouvir</button>
-        </div>
-
-        <section id="soundboard" hidden>
-          <h3>Sons da sala</h3>
-          <p id="soundboard-status" role="status" hidden></p>
-          <div id="soundboard-list"></div>
-          <label>Volume dos sons <input id="sound-volume" type="range" min="0" max="100" step="1" /></label>
-          <label class="check"><input id="sound-disabled" type="checkbox" /> Desativar sons neste aparelho</label>
-          <form id="sound-form" autocomplete="off" hidden>
-            <h4>Publicar som</h4>
-            <!-- maxlength conta unidades UTF-16: fica no dobro do limite real, conferido em pontos de código. -->
-            <label>Nome (até 40 caracteres) <input id="sound-name" type="text" maxlength="80" spellcheck="false" required /></label>
-            <label>Arquivo MP3 ou WAV, até 2 MiB e 10 s <input id="sound-file" type="file" accept=".mp3,.wav,audio/mpeg,audio/wav" required /></label>
-            <button id="sound-publish-btn" type="submit">Publicar</button>
-          </form>
-        </section>
-
         <details id="diagnostics">
           <summary>Diagnóstico</summary>
           <label>ID da sala <input id="room" type="text" spellcheck="false" autocomplete="off" size="38" /></label>
           <button id="join-btn" type="button">Entrar na chamada por ID</button>
-        </details>
+        <section id="status" hidden>
+          <h2>Status</h2>
+          <dl>
+            <dt>Fase</dt><dd data-field="phase">—</dd>
+            <dt>Microfone</dt><dd data-field="mic">—</dd>
+            <dt>Conexão</dt><dd data-field="peer">—</dd>
+            <dt>ICE</dt><dd data-field="ice">—</dd>
+            <dt>Caminho</dt><dd data-field="path">—</dd>
+            <dt>Codec</dt><dd data-field="codec">—</dd>
+            <dt>Envio / recepção</dt><dd data-field="rate">—</dd>
+            <dt>RTT / perda / jitter</dt><dd data-field="quality">—</dd>
+          </dl>
+          <h3>Registro</h3>
+          <ol id="log" class="log"></ol>
         </section>
+        </details>
         </div>
       </section>
 
       <p id="error" class="error" role="alert" hidden></p>
 
-      <section id="status" hidden>
-        <h2>Status</h2>
-        <dl>
-          <dt>Fase</dt><dd data-field="phase">—</dd>
-          <dt>Microfone</dt><dd data-field="mic">—</dd>
-          <dt>Conexão</dt><dd data-field="peer">—</dd>
-          <dt>ICE</dt><dd data-field="ice">—</dd>
-          <dt>Caminho</dt><dd data-field="path">—</dd>
-          <dt>Codec</dt><dd data-field="codec">—</dd>
-          <dt>Envio / recepção</dt><dd data-field="rate">—</dd>
-          <dt>RTT / perda / jitter</dt><dd data-field="quality">—</dd>
-        </dl>
-        <div id="audio-container" hidden></div>
-        <h3>Registro</h3>
-        <ol id="log" class="log"></ol>
-      </section>
+      <!-- Áudio remoto: fora de todo painel recolhível. Recolher ou navegar não pode alcançar estes elementos. -->
+      <div id="audio-container" hidden></div>
     </main>
     <script type="module" src="/src/web/main.ts"></script>
   </body>

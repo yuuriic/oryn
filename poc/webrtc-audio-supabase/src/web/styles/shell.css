@@ -25,11 +25,6 @@ main:has(> #account:not([hidden])) > .brand {
   display: contents;
 }
 
-#status {
-  grid-column: 2;
-  margin: 0 var(--space-5) var(--space-5);
-}
-
 .label-compact {
   display: none;
 }
@@ -361,17 +356,12 @@ main:has(> #error:not([hidden])) .shell-main {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .shell-main,
-  #status {
+  .shell-main {
     grid-column: 1;
   }
 
   .shell-main {
     padding: var(--space-3);
-  }
-
-  #status {
-    margin: 0 var(--space-3) var(--space-3);
   }
 
   .sidebar {

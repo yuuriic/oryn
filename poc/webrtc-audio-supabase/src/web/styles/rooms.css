@@ -62,12 +62,12 @@
 }
 
 /* Sala selecionada: nome e resumo já estão no cabeçalho. */
-main[data-view='room'] .rooms li > strong,
-main[data-view='room'] .rooms li > .muted {
+main[data-view='room'] #rooms .rooms li > strong,
+main[data-view='room'] #rooms .rooms li > .muted {
   display: none;
 }
 
-main[data-view='room'] .rooms .buttons {
+main[data-view='room'] #rooms .rooms .buttons {
   margin-top: 0;
 }
 

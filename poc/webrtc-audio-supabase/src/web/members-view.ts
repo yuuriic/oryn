@@ -4,6 +4,7 @@
 import type { ParticipantState, ParticipantView } from './mesh-call.ts';
 import type { MembersState } from './members.ts';
 import type { ViewDocument } from './rooms-view.ts';
+import { roomInitials } from './shell.ts';
 
 export interface MembersViewOptions {
   canManage: boolean;
@@ -82,6 +83,8 @@ export function renderParticipants(doc: ViewDocument, list: readonly Participant
   const items = el('ul', undefined, 'rooms');
   for (const p of list) {
     const item = el('li');
+    item.setAttribute('data-initial', roomInitials(p.displayName));
+    item.setAttribute('data-state', p.state);
     item.append(el('strong', p.displayName), el('span', ` ${standby ? 'na chamada' : STATE_TEXT[p.state]}`, p.state === 'failed' && !standby ? 'error' : 'muted'));
     items.append(item);
   }

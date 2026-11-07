@@ -26,6 +26,7 @@ import { MeshSignaling } from './mesh-signaling.ts';
 import { DISCONNECT_CHECKING, LobbyController, disconnectPhase, explainDisconnect, formatCallError, isClosingOwnCall, peerProblemNotice, type Notice } from './rooms.ts';
 import { renderLobby, renderRoomNav, roomContext } from './rooms-view.ts';
 import { ShellController, replaceKeepingFocus, type ShellState } from './shell.ts';
+import { micLabel, otherRoomNote, voiceSummary } from './voice-view.ts';
 import { SoundBus } from './sound-bus.ts';
 import { SoundCache, createBrowserSoundStore } from './sound-cache.ts';
 import { loadSoundPrefs, saveSoundPrefs } from './sound-prefs.ts';
@@ -142,6 +143,12 @@ const ui = {
   contextTitle: el<HTMLElement>('context-title'),
   contextDetail: el<HTMLParagraphElement>('context-detail'),
   createRoom: el<HTMLElement>('create-room'),
+  callBar: el<HTMLElement>('call-bar'),
+  callPhase: el<HTMLElement>('call-phase'),
+  callMic: el<HTMLElement>('call-mic'),
+  voiceTitle: el<HTMLElement>('voice-title'),
+  voiceState: el<HTMLParagraphElement>('voice-state'),
+  voiceNote: el<HTMLParagraphElement>('voice-note'),
 };
 
 const PHASES: Record<CallPhase, string> = {
@@ -189,6 +196,30 @@ let accessToken: string | null = null;
 function setField(name: string, value: string): void {
   const node = document.querySelector<HTMLElement>(`[data-field="${name}"]`);
   if (node) node.textContent = value;
+  if (name === 'mic') ui.callMic.textContent = micLabel(value);
+  if (name === 'phase') {
+    voicePhase = value;
+    renderVoice();
+  }
+}
+
+/** Fase da chamada em texto, a mesma do diagnóstico. */
+let voicePhase = '—';
+
+/** Painel e barra da chamada. Só lê estado: a barra acompanha a chamada, nunca a sala selecionada. */
+function renderVoice(): void {
+  const room = ui.callRoom.textContent ?? '';
+  const summary = voiceSummary({ active: callActive, phase: voicePhase, room });
+  ui.voiceTitle.textContent = summary.title;
+  ui.voiceState.textContent = summary.state;
+  const note = otherRoomNote(callActive, shell.state.selectedRoomId, callRoomId, room);
+  ui.voiceNote.textContent = note ?? '';
+  ui.voiceNote.hidden = note === null;
+  ui.callPhase.textContent = callActive ? summary.state : '';
+  // O botão usado saiu da tela com a barra: o foco do teclado não pode sumir com ele.
+  const focusInBar = !callActive && ui.callBar.contains(document.activeElement);
+  ui.callBar.hidden = !callActive;
+  if (focusInBar) ui.contextTitle.focus();
 }
 
 function log(message: string): void {
@@ -537,6 +568,7 @@ function renderShell(state: ShellState): void {
   ui.shellMenuBtn.setAttribute('aria-expanded', String(state.drawerOpen));
   ui.shellBackdrop.hidden = !state.drawerOpen;
   ui.shellMain.inert = state.drawerOpen; // o foco fica na navegação enquanto ela cobre o conteúdo
+  ui.callBar.inert = state.drawerOpen;
   renderRooms();
 }
 
@@ -553,6 +585,7 @@ function renderRooms(): void {
   ui.contextDetail.textContent = context.detail ?? '';
   ui.contextDetail.hidden = context.detail === null;
   ui.createRoom.hidden = selectedRoomId !== null;
+  renderVoice();
   ui.app.dataset['view'] = selectedRoomId === null ? 'all' : 'room';
   if (selectedRoomId === null) ui.roomsHomeBtn.setAttribute('aria-current', 'true');
   else ui.roomsHomeBtn.removeAttribute('aria-current');
