@@ -3,6 +3,7 @@
 
 import type { RoomSummary } from '../contracts.ts';
 import { splitRooms, type LobbyState } from './rooms.ts';
+import { roomInitials } from './shell.ts';
 
 /** O mínimo do DOM usado aqui (o `document` da página ou um documento falso nos testes). */
 export interface ViewDocument {
@@ -28,6 +29,16 @@ export interface LobbyViewOptions {
   onMembers?(roomId: string): void;
   /** Sala com o painel de membros aberto, se houver. */
   membersRoomId?: string | null;
+  /** Mostra só esta sala, com as mesmas ações. Sem ela, todas. */
+  selectedRoomId?: string | null;
+}
+
+export interface RoomNavOptions {
+  selectedRoomId: string | null;
+  /** Sala da chamada em curso, se houver. */
+  activeRoomId: string | null;
+  /** Só muda o que é mostrado: não entra na chamada. */
+  onSelect(roomId: string): void;
 }
 
 const ROLE: Record<RoomSummary['role'], string> = { owner: 'dono', member: 'membro' };
@@ -44,6 +55,62 @@ export function statusText(state: LobbyState): string {
   if (state.rooms.length === 0) return 'Nenhuma sala ainda. Crie a primeira abaixo.';
   if (!state.rooms.some((r) => r.is_open)) return 'Nenhuma sala aberta.';
   return '';
+}
+
+/** Título e resumo do cabeçalho, para a sala selecionada ou para a visão geral. */
+export function roomContext(state: LobbyState, selectedRoomId: string | null): { title: string; detail: string | null } {
+  const room = selectedRoomId === null ? undefined : state.rooms.find((r) => r.room_id === selectedRoomId);
+  if (!room) return { title: 'Minhas salas', detail: null };
+  const situation = room.is_open ? `${room.member_count}/${room.max_members} membros · aberta` : `encerrada em ${formatWhen(room.closed_at ?? '')}`;
+  return { title: room.name, detail: `${ROLE[room.role]} · ${situation}` };
+}
+
+/** Salas na barra lateral. Abrir uma sala aqui nunca entra na chamada: isso é uma ação da área central. */
+export function renderRoomNav(doc: ViewDocument, state: LobbyState, opts: RoomNavOptions): HTMLElement {
+  const el = (tag: string, text?: string, className?: string): HTMLElement => {
+    const node = doc.createElement(tag);
+    if (text !== undefined) node.textContent = text;
+    if (className) node.className = className;
+    return node;
+  };
+  const root = el('div');
+  if (state.status === 'loading' && state.rooms.length === 0) root.append(el('p', 'Carregando…', 'muted room-nav-status'));
+  if (state.status === 'error') root.append(el('p', 'Lista indisponível', 'error room-nav-status'));
+
+  const item = (room: RoomSummary): HTMLElement => {
+    const inCall = opts.activeRoomId === room.room_id;
+    const selected = opts.selectedRoomId === room.room_id;
+    const li = el('li');
+    const button = el('button', undefined, `room-link${room.is_open ? '' : ' room-closed'}${inCall ? ' room-in-call' : ''}`) as HTMLButtonElement;
+    button.type = 'button';
+    const situation = room.is_open ? 'aberta' : 'encerrada';
+    button.setAttribute('aria-label', `${room.name}, ${ROLE[room.role]}, ${situation}${inCall ? ', na chamada' : ''}`);
+    button.setAttribute('title', room.name);
+    button.setAttribute('data-name', room.name);
+    if (selected) button.setAttribute('aria-current', 'true');
+    const initials = el('span', roomInitials(room.name), 'room-initials');
+    initials.setAttribute('aria-hidden', 'true');
+    const text = el('span', undefined, 'room-text');
+    text.append(el('span', room.name, 'room-name'), el('span', inCall ? 'na chamada' : `${ROLE[room.role]} · ${situation}`, 'room-meta'));
+    button.append(initials, text);
+    button.addEventListener('click', () => opts.onSelect(room.room_id));
+    li.append(button);
+    return li;
+  };
+
+  const { open, closed } = splitRooms(state.rooms);
+  if (open.length > 0) {
+    const list = el('ul', undefined, 'room-list');
+    list.append(...open.map(item));
+    root.append(list);
+  }
+  if (closed.length > 0) {
+    root.append(el('p', 'Encerradas', 'room-nav-group'));
+    const list = el('ul', undefined, 'room-list');
+    list.append(...closed.map(item));
+    root.append(list);
+  }
+  return root;
 }
 
 export function renderLobby(doc: ViewDocument, state: LobbyState, opts: LobbyViewOptions): HTMLElement {
@@ -79,7 +146,9 @@ export function renderLobby(doc: ViewDocument, state: LobbyState, opts: LobbyVie
     return button;
   };
 
-  const { open, closed } = splitRooms(state.status === 'ready' ? state.rooms : []);
+  const selected = opts.selectedRoomId ?? null;
+  const shown = (state.status === 'ready' ? state.rooms : []).filter((r) => selected === null || r.room_id === selected);
+  const { open, closed } = splitRooms(shown);
   const busy = state.busy !== null;
 
   if (open.length > 0) {
@@ -128,9 +197,9 @@ export function renderLobby(doc: ViewDocument, state: LobbyState, opts: LobbyVie
   }
 
   if (closed.length > 0) {
-    // Recolhida por padrão e sem nenhuma ação.
-    const box = el('details');
-    box.append(el('summary', `Salas encerradas (${closed.length})`));
+    // Recolhida por padrão e sem nenhuma ação. Selecionada, já é o que a pessoa pediu para ver.
+    const box = el(selected === null ? 'details' : 'div');
+    if (selected === null) box.append(el('summary', `Salas encerradas (${closed.length})`));
     const list = el('ul', undefined, 'rooms');
     for (const room of closed) {
       const item = el('li');

@@ -1,7 +1,7 @@
 # POC-02C — Checklist de implantação (02C.2C.1)
 
 **Estado:** Etapas 1–3 (0100–0300) **aplicadas** na 02C (evidências 02C.3C–02C.3H em `integration/evidence/`);
-**Etapa 4 (0400, MVP 01) aplicada em 2026-10-28 (registro na própria etapa).** As seções 0 e 1 registram o estado de antes da Etapa 1 e
+**Etapa 4 (0400, MVP 01) aplicada em 2026-10-28; Etapas 5 a 7 (0500, 0600 e 0700) aplicadas em 2026-11-06 e 2026-11-07 (registro em cada etapa).** As seções 0 e 1 registram o estado de antes da Etapa 1 e
 ficam como histórico. Cada item marcado com ⛔ exige autorização explícita do arquiteto, dada **por etapa**. As consultas marcadas com 🔎 são somente leitura. O ref do projeto não fica neste
 arquivo (repositório público): ele é digitado no terminal como `<PROJECT_REF>`.
 
@@ -411,7 +411,7 @@ Causa desconhecida:
 
 ### Etapa 7 — `20261108000700_oryn_soundboard.sql` e função `sound-media` ⛔ (soundboard)
 
-**Estado: migração aplicada em 2026-11-07 (00:25 UTC), função `sound-media` publicada (versão 2) e teste controlado de Storage executado. Merge e cliente pendentes.** Cada passo exigiu autorização própria, com **merge separado**, porque o merge publica o cliente. Resultados: `docs/validation/P05-SOUNDBOARD.md`, seção 3.
+**Estado: migração aplicada em 2026-11-07 (00:25 UTC), função `sound-media` publicada (versão 2), teste controlado de Storage executado e cliente em produção desde o merge do PR #20. Pendentes: baselines S2, S3 e S4.** Cada passo exigiu autorização própria. Resultados: `docs/validation/P05-SOUNDBOARD.md`, seção 3.
 
 **O que faz:**
 - cria `oryn.sound_assets` e `oryn.sound_trigger_state`, com RLS e sem acesso de cliente;
@@ -447,7 +447,7 @@ Causa desconhecida:
 - **Por uma janela, no Smart CDN:** leitura já autorizada para a mesma credencial pode continuar sendo respondida. A documentação do Supabase informa até 60 s para invalidar depois da exclusão. Duração real a medir nos passos 19 a 22 da P05.
 - **Sem promessa:** bytes já entregues ou em cache não são revogados de forma instantânea. A stack local não tem CDN e não reproduz esse comportamento.
 
-**Baselines S2/S3/S4:** só depois da aplicação, com os valores medidos no `08` (esperado `n = 93`), em commit próprio. S3 não deve mudar, por análise: bucket e políticas não são relações. Se mudar, interromper e investigar. Valor medido para S2: 93 / `0ad4a054e64e1a2122c27e58021e8838`. Até lá, S2 e S4 dão FAIL **esperado**: nenhuma C2, C0 ou outra bateria remota roda nesse intervalo. O teste controlado de Storage foi autorizado à parte, não muda a estrutura e não troca esses valores.
+**Baselines S2/S3/S4:** só depois da aplicação, com os valores medidos no `08` (esperado `n = 93`), em commit próprio. S3 não deve mudar, por análise: bucket e políticas não são relações. Se mudar, interromper e investigar. **Ainda não gravados nos scripts.** Último valor medido para S2, antes dos usos reais: 93 / `0ad4a054e64e1a2122c27e58021e8838`; medir de novo antes de gravar. Até lá, S2 e S4 dão FAIL **esperado**: nenhuma C2, C0 ou outra bateria remota roda nesse intervalo. O teste controlado de Storage foi autorizado à parte, não muda a estrutura e não troca esses valores.
 
 **Recuperação ⛔ (autorização própria):**
 1. publicar antes o cliente anterior: sem a 0700, o cliente novo mostra erro no painel de sons, e a voz segue;

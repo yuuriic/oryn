@@ -1,0 +1,120 @@
+/* Base do Oryn Midnight: elementos, controles, foco e movimento. Sem classes de tela. */
+
+/* O atributo hidden vence qualquer display definido em outra regra: é assim que a página liga e desliga as seções. */
+[hidden] {
+  display: none !important;
+}
+
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  line-height: 1.5;
+}
+
+label {
+  display: block;
+  margin: var(--space-2) 0;
+}
+
+input,
+textarea,
+select {
+  background: var(--color-bg);
+  color: var(--color-text);
+  border: 1px solid var(--color-border-control);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
+  max-width: 100%;
+  font: inherit;
+  transition: border-color var(--motion-fast) ease;
+}
+
+input:hover,
+textarea:hover,
+select:hover {
+  border-color: var(--color-text-secondary);
+}
+
+/* O preenchimento automático do navegador não pode trazer fundo claro para o tema escuro. */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--color-text);
+  caret-color: var(--color-text);
+  box-shadow: 0 0 0 1000px var(--color-elevated) inset;
+}
+
+button {
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  border: 0;
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  margin: var(--space-1) var(--space-1) var(--space-1) 0;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color var(--motion-fast) ease;
+}
+
+button:hover:not(:disabled) {
+  background: var(--color-accent-hover);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+button.danger {
+  background: var(--color-error);
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+details summary {
+  cursor: pointer;
+  color: var(--color-text-secondary);
+  margin: var(--space-2) 0;
+}
+
+.error {
+  color: var(--color-error);
+}
+
+.notice {
+  color: var(--color-text);
+}
+
+.muted {
+  color: var(--color-text-secondary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    transition-delay: 0s !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@media (max-width: 480px) {
+  input,
+  textarea,
+  select {
+    font-size: 16px; /* abaixo disso, o iOS amplia a página ao focar o campo */
+  }
+
+  button {
+    min-height: 44px;
+  }
+}

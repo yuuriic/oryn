@@ -1,8 +1,8 @@
 # P05 — Soundboard
 
-**Estado: testes locais e teste controlado de Storage em produção executados; homologação em aparelhos reais pendente. A P05 não está aprovada, e a Etapa Macro 5 não está encerrada.**
+**Estado: Etapa Macro 5 encerrada por decisão de produto, com riscos residuais aceitos (seção 6). O Soundboard foi validado funcionalmente em uso real, mas nem todas as métricas da P05 foram verificadas.**
 
-Critério da arquitetura (`ARCHITECTURE.md`, §14): sem duplicação ou reprodução fora do prazo, com latência medida. Meta da §12: clique até a reprodução remota em cache, p95 ≤ 300 ms. **Essa meta não foi comprovada.**
+Critério da arquitetura (`ARCHITECTURE.md`, §14): sem duplicação ou reprodução fora do prazo, com latência medida. Meta da §12: clique até a reprodução remota em cache, p95 ≤ 300 ms. **Essa meta não foi medida em rede real.**
 
 ## 1. Ambiente
 
@@ -138,6 +138,34 @@ A sonda de conferência mediu de 5 a 10 ms de ida e volta até a stack local, e 
 
 **Depois:** rodar `15_sound_orphans.sql` e os advisors, e registrar consumo de Storage. Registrar aqui data, commit, aparelhos, versões, resultados e limitações.
 
+## 5A. Uso real em produção
+
+Depois da integração do PR #20, em 2026-11-07. Distingue o que foi lido em produção do que é relato.
+
+| Item | Fonte | Resultado |
+|---|---|---|
+| Som tocou para dois participantes na mesma sala | Relato do responsável | Funcionou. Aparelhos, redes e voz simultânea não informados |
+| MP3 aprovado pela função | Leitura em produção | `audio/mpeg`, 34879 bytes, 1228 ms |
+| Disparos das duas contas | Leitura em produção | Registrados |
+
+**O relato sustenta** que o caminho completo em produção tocou um som. **Não sustenta** ausência de duplicação, latência, mistura com voz nem eco. A sessão direcionada de homologação foi preparada, mas nenhum resultado dela foi registrado.
+
 ## 6. Decisão
 
-**Pendente.** Só depois do roteiro acima é possível decidir o gate da Etapa 5: "P05 e quotas comprovadas".
+**Encerrada por decisão de produto, em 2026-11-07, com riscos residuais aceitos.** O gate da arquitetura era "P05 e quotas comprovadas". Essa decisão não muda o que foi medido.
+
+| Critério | Situação |
+|---|---|
+| Arquivo inválido, quotas, cooldown, isolamento básico | Comprovados: local e, em parte, produção |
+| Cache, duplicado, atraso e relógio | Comprovados só localmente |
+| Reprodução real | Relato de uso, sem medição |
+
+**Riscos aceitos, sem evidência:**
+- Latência real: a meta de p95 ≤ 300 ms e a assimetria entre clientes não foram medidas.
+- Reprodução uma única vez em aparelhos reais, mistura com voz real e eco.
+- Conta autenticada fora da sala com corpo no CDN (passo 19).
+- Membro removido e duração real da janela do CDN (passos 20 a 22).
+- Bloqueio real de autoplay; demais passos do roteiro em aparelho.
+- Consumo de Storage e banda; WebView2 e Safari.
+
+O roteiro da seção 5 fica como referência, caso algum desses riscos precise ser reavaliado.

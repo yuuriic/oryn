@@ -24,7 +24,9 @@ import { renderMembers, renderParticipants } from './members-view.ts';
 import { MeshCall, type ParticipantView } from './mesh-call.ts';
 import { MeshSignaling } from './mesh-signaling.ts';
 import { DISCONNECT_CHECKING, LobbyController, disconnectPhase, explainDisconnect, formatCallError, isClosingOwnCall, peerProblemNotice, type Notice } from './rooms.ts';
-import { renderLobby } from './rooms-view.ts';
+import { renderLobby, renderRoomNav, roomContext } from './rooms-view.ts';
+import { ShellController, replaceKeepingFocus, type ShellState } from './shell.ts';
+import { micLabel, otherRoomNote, voiceSummary } from './voice-view.ts';
 import { SoundBus } from './sound-bus.ts';
 import { SoundCache, createBrowserSoundStore } from './sound-cache.ts';
 import { loadSoundPrefs, saveSoundPrefs } from './sound-prefs.ts';
@@ -126,6 +128,29 @@ const ui = {
   soundFile: el<HTMLInputElement>('sound-file'),
   soundPublishBtn: el<HTMLButtonElement>('sound-publish-btn'),
   log: el<HTMLOListElement>('log'),
+  app: el<HTMLElement>('app'),
+  sidebar: el<HTMLElement>('sidebar'),
+  sidebarToggle: el<HTMLButtonElement>('sidebar-toggle'),
+  sidebarToggleIcon: el<HTMLElement>('sidebar-toggle-icon'),
+  sidebarClose: el<HTMLButtonElement>('sidebar-close'),
+  shellMain: el<HTMLElement>('shell-main'),
+  shellBackdrop: el<HTMLButtonElement>('shell-backdrop'),
+  shellMenuBtn: el<HTMLButtonElement>('shell-menu-btn'),
+  roomsHomeBtn: el<HTMLButtonElement>('rooms-home-btn'),
+  roomNav: el<HTMLDivElement>('room-nav'),
+  createOpenBtn: el<HTMLButtonElement>('create-open-btn'),
+  accountBox: el<HTMLElement>('account-box'),
+  contextTitle: el<HTMLElement>('context-title'),
+  contextDetail: el<HTMLParagraphElement>('context-detail'),
+  createRoom: el<HTMLElement>('create-room'),
+  callPanel: el<HTMLElement>('call-panel'),
+  roomsBlock: el<HTMLElement>('rooms-block'),
+  callBar: el<HTMLElement>('call-bar'),
+  callPhase: el<HTMLElement>('call-phase'),
+  callMic: el<HTMLElement>('call-mic'),
+  voiceTitle: el<HTMLElement>('voice-title'),
+  voiceState: el<HTMLParagraphElement>('voice-state'),
+  voiceNote: el<HTMLParagraphElement>('voice-note'),
 };
 
 const PHASES: Record<CallPhase, string> = {
@@ -173,6 +198,30 @@ let accessToken: string | null = null;
 function setField(name: string, value: string): void {
   const node = document.querySelector<HTMLElement>(`[data-field="${name}"]`);
   if (node) node.textContent = value;
+  if (name === 'mic') ui.callMic.textContent = micLabel(value);
+  if (name === 'phase') {
+    voicePhase = value;
+    renderVoice();
+  }
+}
+
+/** Fase da chamada em texto, a mesma do diagnóstico. */
+let voicePhase = '—';
+
+/** Painel e barra da chamada. Só lê estado: a barra acompanha a chamada, nunca a sala selecionada. */
+function renderVoice(): void {
+  const room = ui.callRoom.textContent ?? '';
+  const summary = voiceSummary({ active: callActive, phase: voicePhase, room });
+  ui.voiceTitle.textContent = summary.title;
+  ui.voiceState.textContent = summary.state;
+  const note = otherRoomNote(callActive, shell.state.selectedRoomId, callRoomId, room);
+  ui.voiceNote.textContent = note ?? '';
+  ui.voiceNote.hidden = note === null;
+  ui.callPhase.textContent = callActive ? summary.state : '';
+  // O botão usado saiu da tela com a barra: o foco do teclado não pode sumir com ele.
+  const focusInBar = !callActive && ui.callBar.contains(document.activeElement);
+  ui.callBar.hidden = !callActive;
+  if (focusInBar) ui.contextTitle.focus();
 }
 
 function log(message: string): void {
@@ -510,12 +559,55 @@ ui.returnDismissBtn.addEventListener('click', () => callReturn.dismiss());
 
 // ---------- lobby (MVP 01) ----------
 
+function renderShell(state: ShellState): void {
+  ui.app.dataset['sidebar'] = state.collapsed ? 'collapsed' : 'expanded';
+  ui.app.dataset['drawer'] = state.drawerOpen ? 'open' : 'closed';
+  const label = state.collapsed ? 'Expandir barra lateral' : 'Recolher barra lateral';
+  ui.sidebarToggle.setAttribute('aria-expanded', String(!state.collapsed));
+  ui.sidebarToggle.setAttribute('aria-label', label);
+  ui.sidebarToggle.title = label;
+  ui.sidebarToggleIcon.textContent = state.collapsed ? '›' : '‹';
+  ui.shellMenuBtn.setAttribute('aria-expanded', String(state.drawerOpen));
+  ui.shellBackdrop.hidden = !state.drawerOpen;
+  ui.shellMain.inert = state.drawerOpen; // o foco fica na navegação enquanto ela cobre o conteúdo
+  ui.callBar.inert = state.drawerOpen;
+  renderRooms();
+}
+
+const shell = new ShellController(renderShell);
+
 function renderRooms(): void {
   if (!lobby) return;
   const s = lobby.state;
   const busy = s.busy !== null;
-  ui.rooms.replaceChildren(
+  if (s.status === 'ready') shell.reconcile(s.rooms.map((r) => r.room_id));
+  const { selectedRoomId } = shell.state;
+  const context = roomContext(s, selectedRoomId);
+  ui.contextTitle.textContent = context.title;
+  ui.contextDetail.textContent = context.detail ?? '';
+  ui.contextDetail.hidden = context.detail === null;
+  ui.createRoom.hidden = selectedRoomId !== null;
+  // Sala aberta: as ações dela vêm antes da voz. Na visão geral, a voz vem antes de uma lista que pode ser longa. A troca é
+  // no DOM, para o teclado seguir a ordem da tela, e só quando muda, para não tirar o foco de quem está no bloco.
+  const roomFirst = selectedRoomId !== null;
+  if (roomFirst && ui.callPanel.previousElementSibling !== ui.roomsBlock) ui.callPanel.before(ui.roomsBlock);
+  if (!roomFirst && ui.callPanel.nextElementSibling !== ui.roomsBlock) ui.callPanel.after(ui.roomsBlock);
+  renderVoice();
+  ui.app.dataset['view'] = selectedRoomId === null ? 'all' : 'room';
+  if (selectedRoomId === null) ui.roomsHomeBtn.setAttribute('aria-current', 'true');
+  else ui.roomsHomeBtn.removeAttribute('aria-current');
+  replaceKeepingFocus(
+    ui.roomNav,
+    renderRoomNav(document, s, {
+      selectedRoomId,
+      activeRoomId: callActive ? callRoomId : null,
+      onSelect: (roomId) => navigate(roomId),
+    }),
+  );
+  replaceKeepingFocus(
+    ui.rooms,
     renderLobby(document, s, {
+      selectedRoomId,
       callActive: callActive || entryGate.checking,
       activeRoomId: callActive ? callRoomId : null,
       onJoin: (roomId) => startCall(roomId),
@@ -537,6 +629,39 @@ function renderRooms(): void {
   ui.createDisplay.disabled = busy;
   ui.createCapacity.disabled = busy;
 }
+
+/** Abre uma sala ou a visão geral. Só muda o que é mostrado: entrar na chamada segue sendo uma ação à parte. */
+function navigate(roomId: string | null): void {
+  const covering = shell.state.drawerOpen;
+  shell.select(roomId);
+  if (covering) ui.contextTitle.focus(); // a navegação saiu da tela, e o foco não pode sumir com ela
+}
+
+function closeDrawer(): void {
+  if (!shell.state.drawerOpen) return;
+  shell.closeDrawer();
+  ui.shellMenuBtn.focus();
+}
+
+ui.sidebarToggle.addEventListener('click', () => shell.toggleCollapsed());
+ui.sidebarClose.addEventListener('click', closeDrawer);
+ui.shellBackdrop.addEventListener('click', closeDrawer);
+ui.shellMenuBtn.addEventListener('click', () => {
+  shell.openDrawer();
+  ui.sidebarClose.focus();
+});
+ui.roomsHomeBtn.addEventListener('click', () => navigate(null));
+ui.createOpenBtn.addEventListener('click', () => {
+  shell.select(null);
+  ui.createName.focus();
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') closeDrawer();
+});
+// A janela cresceu com a navegação aberta: na tela grande ela não cobre mais nada.
+window.matchMedia('(max-width: 768px)').addEventListener('change', (event) => {
+  if (!event.matches) shell.closeDrawer();
+});
 
 ui.refreshBtn.addEventListener('click', () => void lobby.refresh());
 ui.createForm.addEventListener('submit', (event) => {
@@ -704,6 +829,7 @@ function showLoggedIn(email: string | undefined): void {
   ui.login.hidden = true;
   ui.account.hidden = false;
   ui.userLabel.textContent = email ?? '(conta sem e-mail)';
+  ui.accountBox.title = email ?? '';
   renderInviteAccept(inviteAccept.state);
 }
 
@@ -748,6 +874,7 @@ function showLoggedOut(): void {
   callReturn.reset();
   inviteAccept.accountChanged();
   renderInviteAccept(inviteAccept.state);
+  shell.reset();
   ui.account.hidden = true;
   ui.login.hidden = false;
   ui.loginBtn.disabled = false;
