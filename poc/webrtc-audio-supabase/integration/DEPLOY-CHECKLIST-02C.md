@@ -411,7 +411,7 @@ Causa desconhecida:
 
 ### Etapa 7 — `20261108000700_oryn_soundboard.sql` e função `sound-media` ⛔ (soundboard)
 
-**Estado: não aplicada e não publicada.** Exige autorização explícita própria, com o estado anterior lido, commit publicado em PR aberto, CI aprovado e **sem merge**. O merge publica o cliente.
+**Estado: migração aplicada em 2026-11-07 (00:25 UTC), função `sound-media` publicada (versão 2) e teste controlado de Storage executado. Merge e cliente pendentes.** Cada passo exigiu autorização própria, com **merge separado**, porque o merge publica o cliente. Resultados: `docs/validation/P05-SOUNDBOARD.md`, seção 3.
 
 **O que faz:**
 - cria `oryn.sound_assets` e `oryn.sound_trigger_state`, com RLS e sem acesso de cliente;
@@ -430,7 +430,7 @@ Causa desconhecida:
 | 🔎 `01_postflight.sql` | 0 FAIL; 12 tabelas e 29 RPCs; só "Data API" e "Allow public access" como NOT VERIFIED | Interromper; `94` |
 | 🔎 Diferença do `08` | entradas anteriores **todas iguais** e **exatamente 17** novas: 2 tabelas, 4 índices e 11 funções | Interromper; `94` |
 | 🔎 `06` | 7 versões, com `20261108000700` | Interromper |
-| 🔎 Advisors | sem ERROR; WARN `0029` sobe de 19 para 26, valor esperado por análise, a medir | Investigar |
+| 🔎 Advisors | sem ERROR; medido: `0029` 19→26, `0008` 10→12, `0001` 7→9 e `0005` 0→1. Classificação na P05, seção 3A: nenhum é bloqueador | Investigar |
 
 **Publicação da função ⛔:** `supabase functions deploy sound-media --project-ref <PROJECT_REF> --use-api`. Usa os secrets existentes, sem secret novo. `signal` não é publicada de novo.
 
@@ -440,9 +440,14 @@ Causa desconhecida:
 | 🔎 `OPTIONS` de outra origem | 403 | Remover a função |
 | 🔎 `POST` sem login | 401 | Remover a função |
 | 🔎 Logs da função | só `outcome`, sem chave, token ou nome de som | Remover a função |
-| 🔎 **Storage com a chave do servidor** | publicar um som de teste aprova, e um arquivo falso é recusado e apagado. **Local aprovado; em produção, sem evidência** | Interromper; sem merge |
+| 🔎 **Storage com a chave do servidor** | publicar um som de teste aprova, e um arquivo falso é recusado e apagado. **Produção: aprovado em 2026-11-07**, 23 de 24; a falha C2 é o CDN, ver abaixo | Interromper; sem merge |
 
-**Baselines S2/S3/S4:** só depois da aplicação, com os valores medidos no `08` (esperado `n = 93`), em commit próprio. S3 não deve mudar, por análise: bucket e políticas não são relações. Se mudar, interromper e investigar. Até lá, S2 e S4 dão FAIL **esperado**: nenhuma C2, C0 ou teste remoto roda nesse intervalo.
+**Contrato de remoção (decisão do arquiteto, P05 seção 3):**
+- **Na hora, pelo banco:** remoção lógica, saída do catálogo, recusa de novos disparos e de nova autorização de leitura.
+- **Por uma janela, no Smart CDN:** leitura já autorizada para a mesma credencial pode continuar sendo respondida. A documentação do Supabase informa até 60 s para invalidar depois da exclusão. Duração real a medir nos passos 19 a 22 da P05.
+- **Sem promessa:** bytes já entregues ou em cache não são revogados de forma instantânea. A stack local não tem CDN e não reproduz esse comportamento.
+
+**Baselines S2/S3/S4:** só depois da aplicação, com os valores medidos no `08` (esperado `n = 93`), em commit próprio. S3 não deve mudar, por análise: bucket e políticas não são relações. Se mudar, interromper e investigar. Valor medido para S2: 93 / `0ad4a054e64e1a2122c27e58021e8838`. Até lá, S2 e S4 dão FAIL **esperado**: nenhuma C2, C0 ou outra bateria remota roda nesse intervalo. O teste controlado de Storage foi autorizado à parte, não muda a estrutura e não troca esses valores.
 
 **Recuperação ⛔ (autorização própria):**
 1. publicar antes o cliente anterior: sem a 0700, o cliente novo mostra erro no painel de sons, e a voz segue;

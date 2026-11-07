@@ -1626,7 +1626,7 @@ painel mostra erro de carga; login, salas e chamada não dependem dele.
 
 ### 14.14 Soundboard (0700 + `sound-media` + cliente; ⛔ cada passo marcado exige autorização própria)
 
-**Estado: implementado e validado só localmente. A 0700 não foi aplicada, a função não foi publicada, e o cliente não foi publicado.** Contratos em README, "Soundboard"; aplicação no checklist de deploy, Etapa 7; evidências e roteiro em `docs/validation/P05-SOUNDBOARD.md`.
+**Estado: 0700 aplicada, função publicada (versão 2) e Storage testado em produção em 2026-11-07. O cliente não foi publicado.** Contratos em README, "Soundboard"; aplicação no checklist de deploy, Etapa 7; evidências e roteiro em `docs/validation/P05-SOUNDBOARD.md`.
 
 **Decisões:**
 - **Por sala:** o catálogo é por `room_id`, como decidido pelo arquiteto. A sala faz o papel de espaço; se espaços entrarem, será preciso migrar. O dono faz o papel de admin.
@@ -1643,6 +1643,7 @@ painel mostra erro de carga; login, salas e chamada não dependem dele.
 
 **Riscos e limites:**
 - **Cópias baixadas:** não podem ser revogadas num aparelho hostil. O cliente legítimo limpa o cache.
+- **CDN do Storage:** depois da remoção, uma leitura já autorizada pode persistir por uma janela. Sem CDN, a stack local não reproduz isso. Contrato e medição na P05, seção 3 e passos 19 a 22.
 - **Sala encerrada e conta excluída:** os objetos ficam no Storage. O `15_sound_orphans.sql` lista órfãos, mas apagá-los é operação à parte. Consumo a acompanhar.
 - **Limpeza oportunista:** depende de o dono voltar à chamada. Um objeto pendente fica inacessível aos clientes até lá.
 - **MP3 real:** o validador foi exercitado com quadros construídos pelo teste. Não havia MP3 de codificador real nesta máquina: pode recusar arquivos reais fora do esperado, o que é falha segura, a conferir na homologação.
