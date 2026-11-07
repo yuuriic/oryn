@@ -50,6 +50,26 @@ grant usage on schema auth to anon, authenticated, service_role, migration_owner
 grant execute on function auth.uid() to anon, authenticated, service_role, migration_owner;
 grant references on auth.users to migration_owner; -- chaves estrangeiras para auth.users
 
+-- Storage: só o que a 0700 usa. O dono é outro papel, como no projeto real; a criação de políticas é aproximada como em realtime.messages.
+create role supabase_storage_admin nologin noinherit;
+grant supabase_storage_admin to migration_owner with inherit true;
+create schema storage;
+create table storage.buckets (
+  id text primary key, name text not null, public boolean default false, file_size_limit bigint, allowed_mime_types text[]
+);
+create table storage.objects (
+  id uuid primary key default gen_random_uuid(), bucket_id text references storage.buckets (id), name text, owner uuid,
+  unique (bucket_id, name)
+);
+alter table storage.buckets enable row level security;
+alter table storage.objects enable row level security;
+alter table storage.buckets owner to supabase_storage_admin;
+alter table storage.objects owner to supabase_storage_admin;
+grant usage on schema storage to anon, authenticated, service_role, migration_owner, supabase_storage_admin;
+grant select, insert, update, delete on storage.objects to anon, authenticated, service_role;
+grant select on storage.buckets to anon, authenticated, service_role;
+grant select, insert on storage.buckets to migration_owner;
+
 create schema realtime;
 create table realtime.messages (
   topic text not null,

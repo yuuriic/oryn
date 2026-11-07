@@ -30,14 +30,27 @@ const USER_RPCS: Record<string, string> = {
   get_voice_participants: 'public.get_voice_participants(uuid)',
   leave_room_membership: 'public.leave_room_membership(uuid)',
   remove_room_member: 'public.remove_room_member(uuid,text)',
+  sound_clock: 'public.sound_clock()',
+  list_sounds: 'public.list_sounds(uuid)',
+  request_sound_upload: 'public.request_sound_upload(uuid,text,integer)',
+  claim_sound_validation: 'public.claim_sound_validation(uuid)',
+  remove_sound: 'public.remove_sound(uuid)',
+  list_sound_cleanup: 'public.list_sound_cleanup(uuid)',
+  trigger_sound: 'public.trigger_sound(uuid,uuid)',
 };
-const SERVICE_RPCS: Record<string, string> = { set_signal_state: 'public.set_signal_state(uuid,text)' };
+const SERVICE_RPCS: Record<string, string> = {
+  set_signal_state: 'public.set_signal_state(uuid,text)',
+  complete_sound_validation: 'public.complete_sound_validation(uuid,boolean,text,integer,integer,text,text)',
+  finish_sound_cleanup: 'public.finish_sound_cleanup(uuid[])',
+};
 
 /** Quem, além do dono, pode ter EXECUTE em cada função das schemas da Oryn. Ausente = ninguém. */
 const ALLOWED_GRANTEES: Record<string, string[]> = {
   ...Object.fromEntries(Object.values(USER_RPCS).map((sig) => [sig, ['authenticated']])),
-  [SERVICE_RPCS['set_signal_state']!]: ['service_role'],
+  ...Object.fromEntries(Object.values(SERVICE_RPCS).map((sig) => [sig, ['service_role']])),
   'oryn_realtime.can_receive_topic(text)': ['authenticated'],
+  'oryn_realtime.can_read_sound(text)': ['authenticated'],
+  'oryn_realtime.can_upload_sound(text)': ['authenticated'],
 };
 
 // Token com formato válido (43 caracteres base64url) que não corresponde a nenhum convite.
@@ -107,6 +120,20 @@ function matrix(s: Scenario, stranger: { uid: string }, inviteToken: string): Ca
     { label: 'estranho: remove membro', actor: stranger, fn: 'remove_room_member', args: { p_room_id: s.room, p_member_ref: 'x' }, error: /unauthorized/ },
     { label: 'dono: referência inexistente', actor: s.owner, fn: 'remove_room_member', args: { p_room_id: s.room, p_member_ref: 'x' }, error: /unauthorized/ },
     { label: 'anon: remove membro', actor: 'anon', fn: 'remove_room_member', args: { p_room_id: s.room, p_member_ref: 'x' }, error: /permission denied/ },
+    { label: 'anon: hora do servidor', actor: 'anon', fn: 'sound_clock', args: {}, error: /permission denied/ },
+    { label: 'estranho: catálogo', actor: stranger, fn: 'list_sounds', args: { p_room_id: s.room }, error: /not-member/ },
+    { label: 'anon: catálogo', actor: 'anon', fn: 'list_sounds', args: { p_room_id: s.room }, error: /permission denied/ },
+    { label: 'membro: reserva envio', actor: s.member, fn: 'request_sound_upload', args: { p_room_id: s.room, p_name: 'x', p_size_bytes: 10 }, error: /unauthorized/ },
+    { label: 'estranho: reserva envio', actor: stranger, fn: 'request_sound_upload', args: { p_room_id: s.room, p_name: 'x', p_size_bytes: 10 }, error: /unauthorized/ },
+    { label: 'anon: reserva envio', actor: 'anon', fn: 'request_sound_upload', args: { p_room_id: s.room, p_name: 'x', p_size_bytes: 10 }, error: /permission denied/ },
+    { label: 'estranho: valida som', actor: stranger, fn: 'claim_sound_validation', args: { p_asset_id: rnd() }, error: /unauthorized/ },
+    { label: 'anon: valida som', actor: 'anon', fn: 'claim_sound_validation', args: { p_asset_id: rnd() }, error: /permission denied/ },
+    { label: 'estranho: remove som', actor: stranger, fn: 'remove_sound', args: { p_asset_id: rnd() }, error: /unauthorized/ },
+    { label: 'anon: remove som', actor: 'anon', fn: 'remove_sound', args: { p_asset_id: rnd() }, error: /permission denied/ },
+    { label: 'membro: lista limpeza', actor: s.member, fn: 'list_sound_cleanup', args: { p_room_id: s.room }, error: /unauthorized/ },
+    { label: 'anon: lista limpeza', actor: 'anon', fn: 'list_sound_cleanup', args: { p_room_id: s.room }, error: /permission denied/ },
+    { label: 'estranho: dispara som', actor: stranger, fn: 'trigger_sound', args: { p_session_id: rnd(), p_asset_id: rnd() }, error: /session-invalid/ },
+    { label: 'anon: dispara som', actor: 'anon', fn: 'trigger_sound', args: { p_session_id: rnd(), p_asset_id: rnd() }, error: /permission denied/ },
   ];
 }
 

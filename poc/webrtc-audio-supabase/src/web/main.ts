@@ -9,7 +9,7 @@
 // o convite de sala (invites.ts) sai da URL ao carregar e fica só em memória; o registro em tela nunca mostra token, SDP,
 // candidato ICE ou senha. A configuração aceita só a chave publicável (config.ts).
 
-import { createClient, type Session, type SupabaseClient } from '@supabase/supabase-js';
+import { FunctionsHttpError, createClient, type Session, type SupabaseClient } from '@supabase/supabase-js';
 import { isUuid } from '../../supabase/functions/_shared/signal-contract.ts';
 import { authOptions, createAuthStorage, logout, restoreSession, type AuthStorage } from './auth-session.ts';
 import type { CallPhase, CallStats, PeerStates } from './call.ts';
@@ -25,6 +25,11 @@ import { MeshCall, type ParticipantView } from './mesh-call.ts';
 import { MeshSignaling } from './mesh-signaling.ts';
 import { DISCONNECT_CHECKING, LobbyController, disconnectPhase, explainDisconnect, formatCallError, isClosingOwnCall, peerProblemNotice, type Notice } from './rooms.ts';
 import { renderLobby } from './rooms-view.ts';
+import { SoundBus } from './sound-bus.ts';
+import { SoundCache, createBrowserSoundStore } from './sound-cache.ts';
+import { loadSoundPrefs, saveSoundPrefs } from './sound-prefs.ts';
+import { SoundboardController, type SoundboardState } from './soundboard.ts';
+import { renderSoundboard, soundboardStatus } from './soundboard-view.ts';
 import { describePair, formatCodec, formatMetric } from './stats.ts';
 import { createBrowserLedger, type SessionLedger } from './session-ledger.ts';
 import { createSupabaseBackend } from './supabase-backend.ts';
@@ -111,6 +116,15 @@ const ui = {
   error: el<HTMLParagraphElement>('error'),
   status: el<HTMLElement>('status'),
   audioContainer: el<HTMLDivElement>('audio-container'),
+  soundboard: el<HTMLElement>('soundboard'),
+  soundboardStatus: el<HTMLParagraphElement>('soundboard-status'),
+  soundboardList: el<HTMLDivElement>('soundboard-list'),
+  soundVolume: el<HTMLInputElement>('sound-volume'),
+  soundDisabled: el<HTMLInputElement>('sound-disabled'),
+  soundForm: el<HTMLFormElement>('sound-form'),
+  soundName: el<HTMLInputElement>('sound-name'),
+  soundFile: el<HTMLInputElement>('sound-file'),
+  soundPublishBtn: el<HTMLButtonElement>('sound-publish-btn'),
   log: el<HTMLOListElement>('log'),
 };
 
@@ -147,6 +161,8 @@ let inviteShare: InviteShareController;
 let inviteAccept: InviteAcceptController;
 let chat: ChatController;
 let members: MembersController;
+let soundboard: SoundboardController;
+let soundCache: SoundCache;
 /** Muda a cada chamada nova, logout e desconexão explicada: uma explicação de 4403 antiga não sobrescreve nada. */
 let disconnectTicket = 0;
 /** Último aviso de reconexão de um par: some quando o par volta ou a chamada termina. */
@@ -263,13 +279,31 @@ function renderPhase(phase: CallPhase, error?: string): void {
   if (phase === 'ended' || phase === 'failed') {
     sessionLedger.releaseEntry(); // saiu antes de registrar a sessão, inclusive por recusa do microfone
     signaling = null;
+    soundboard.leave();
     ui.participants.hidden = true;
     if (lobby.state.status !== 'idle') void lobby.refresh(); // contagens e estado das salas mudaram
   }
   renderRooms();
 }
 
+function renderSoundboardPanel(state: SoundboardState): void {
+  ui.soundboard.hidden = state.status === 'closed';
+  ui.soundVolume.value = String(Math.round(state.volume * 100));
+  ui.soundDisabled.checked = state.disabled;
+  ui.soundForm.hidden = !state.isOwner || state.status !== 'ready';
+  ui.soundPublishBtn.disabled = state.publishing;
+  ui.soundPublishBtn.textContent = state.publishing ? 'Publicando…' : 'Publicar';
+  const status = soundboardStatus(state);
+  ui.soundboardStatus.hidden = status === null;
+  ui.soundboardStatus.textContent = status ?? '';
+  ui.soundboardStatus.className = state.message?.tone === 'error' ? 'error' : 'muted';
+  ui.soundboardList.replaceChildren(
+    renderSoundboard(document, state, { onTrigger: (id) => void soundboard.trigger(id), onRemove: (id) => void soundboard.remove(id) }),
+  );
+}
+
 function renderCallParticipants(list: readonly ParticipantView[], standby: boolean): void {
+  soundboard.setStandby(standby);
   ui.participants.hidden = !callActive;
   ui.participants.replaceChildren(renderParticipants(document, list, standby));
   // O par voltou: o aviso de reconexão deixa de valer.
@@ -345,6 +379,9 @@ function beginCall(roomId: string, userId: string): void {
       onStats: (s) => call === current && renderStats(s),
       onLog: (m) => call === current && log(m),
       onIce: (info) => call === current && log(info ? `ICE: ${info.summary}.` : 'ICE: configuração descartada.'),
+      onSound: (payload) => {
+        if (call === current) soundboard.onEvent(payload);
+      },
       onPeerProblem: (name, kind) => {
         if (call !== current) return;
         const notice = peerProblemNotice(name, kind);
@@ -355,6 +392,7 @@ function beginCall(roomId: string, userId: string): void {
   );
   call = current;
   callActive = true; // antes da primeira fase: um segundo clique não abre outra chamada
+  soundboard.enter(roomId, userId, lobby.state.rooms.find((r) => r.room_id === roomId)?.role === 'owner');
   renderRooms();
   void current.start();
 }
@@ -365,6 +403,24 @@ async function endCall(): Promise<void> {
   call?.end();
   await s?.closed.catch(() => undefined);
 }
+
+// ---------- sons ----------
+
+ui.soundVolume.addEventListener('input', () => soundboard.setVolume(Number(ui.soundVolume.value) / 100));
+ui.soundDisabled.addEventListener('change', () => soundboard.setDisabled(ui.soundDisabled.checked));
+ui.soundForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  const file = ui.soundFile.files?.[0];
+  if (!file) return;
+  void soundboard.publish(file, ui.soundName.value).then(() => {
+    if (soundboard.state.message?.tone === 'info') {
+      ui.soundName.value = '';
+      ui.soundFile.value = '';
+    }
+  });
+});
+// O navegador só libera o áudio depois de uma interação com a página.
+document.addEventListener('pointerdown', () => soundboard?.unlock());
 
 ui.joinBtn.addEventListener('click', () => startCall(ui.room.value));
 ui.muteBtn.addEventListener('click', () => {
@@ -675,6 +731,8 @@ function endByAuth(notice: Notice): void {
 }
 
 function showLoggedOut(): void {
+  soundboard.leave();
+  if (selfUserId !== null) void soundCache.purgeAccount(selfUserId);
   selfUserId = null;
   accessToken = null;
   disconnectTicket += 1;
@@ -775,6 +833,10 @@ try {
       if (state.status === 'ready') {
         inviteShare.syncRooms(state.rooms);
         chat.syncRooms(state.rooms);
+        // Cobre remoção e encerramento, inclusive os ocorridos com este aparelho fora da sala.
+        if (selfUserId !== null) void soundCache.retainRooms(selfUserId, new Set(state.rooms.filter((r) => r.is_open).map((r) => r.room_id)));
+        const callRoom = state.rooms.find((r) => r.room_id === soundboard.state.roomId);
+        if (callRoom) soundboard.setOwner(callRoom.room_id, callRoom.role === 'owner');
       }
       renderRooms();
     },
@@ -798,6 +860,7 @@ try {
       if (callActive && callRoomId === roomId) await endCall();
     },
     onLeft: (roomId) => {
+      if (selfUserId !== null) void soundCache.purgeRoom(selfUserId, roomId);
       if (chat.state.roomId === roomId) chat.close();
       inviteShare.forget(roomId);
       void lobby.refresh();
@@ -805,6 +868,37 @@ try {
     onDenied: () => void lobby.refresh(),
     onChanged: () => void lobby.refresh(),
   });
+  soundCache = new SoundCache(createBrowserSoundStore(), () => Date.now());
+  soundboard = new SoundboardController({
+    rpc: (fn, args) => backend.rpc(fn, args),
+    upload: async (key, body) => !(await client.storage.from('oryn-sounds').upload(key, body, { contentType: body.type, upsert: false })).error,
+    download: async (key) => {
+      const { data, error } = await client.storage.from('oryn-sounds').download(key);
+      return error || !data ? null : data.arrayBuffer();
+    },
+    invokeMedia: async (body) => {
+      const { data, error } = await client.functions.invoke('sound-media', { body });
+      if (!error) return { status: 200, body: (data ?? {}) as Record<string, unknown> };
+      if (error instanceof FunctionsHttpError) {
+        const res = error.context as Response;
+        return { status: res.status, body: ((await res.json().catch(() => ({}))) ?? {}) as Record<string, unknown> };
+      }
+      return { status: 0, body: {} };
+    },
+    cache: soundCache,
+    bus: new SoundBus(() => new AudioContext()),
+    loadPrefs: loadSoundPrefs,
+    savePrefs: saveSoundPrefs,
+    sessionId: () => signaling?.ownSession ?? null,
+    wallNow: () => Date.now(),
+    monoNow: () => performance.now(),
+    isHidden: () => document.hidden,
+    confirm: (message) => window.confirm(message),
+    setTimer: (fn, ms) => setTimeout(fn, ms),
+    clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+    onChange: renderSoundboardPanel,
+  });
+  renderSoundboardPanel(soundboard.state);
   chat = new ChatController({
     rpc: (fn, args) => backend.rpc(fn, args),
     newNonce: () => crypto.randomUUID(),

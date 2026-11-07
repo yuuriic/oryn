@@ -1623,3 +1623,31 @@ painel mostra erro de carga; login, salas e chamada não dependem dele.
 - **Nomes repetidos:** duas pessoas podem usar o mesmo nome de exibição numa sala. Aceitável em piloto fechado; rever antes de ampliar.
 - **Convites revogados na remoção:** remover um membro revoga os pendentes da sala inteira, porque eles não são nominais.
 - **Prévia da hospedagem:** não tem as variáveis do Supabase, então a homologação é em produção, depois do merge.
+
+### 14.14 Soundboard (0700 + `sound-media` + cliente; ⛔ cada passo marcado exige autorização própria)
+
+**Estado: 0700 aplicada, função publicada (versão 2) e Storage testado em produção em 2026-11-07. O cliente não foi publicado.** Contratos em README, "Soundboard"; aplicação no checklist de deploy, Etapa 7; evidências e roteiro em `docs/validation/P05-SOUNDBOARD.md`.
+
+**Decisões:**
+- **Por sala:** o catálogo é por `room_id`, como decidido pelo arquiteto. A sala faz o papel de espaço; se espaços entrarem, será preciso migrar. O dono faz o papel de admin.
+- **Sem tocar na voz:** o evento usa `publish_control` e os tópicos de sessão existentes. `signal`, políticas do Realtime e `PeerCall` não mudaram. Cliente 1:1 em cache ignora o evento.
+- **`realtime.send`:** o evento fica gravado como os de controle, por 72 h a 4 dias, em `realtime.messages`. Leva identificadores e hash, sem áudio, nome de arquivo, chave de objeto nem conta.
+- **Identificador do evento gerado no servidor, sem retentativa:** repetir um disparo perdido não vale a pena num prazo de 2 s.
+- **Cooldown sem trava da sala:** a linha por conta serializa os disparos, então um disparo não espera por chat, entrada ou remoção.
+- **Sem teto extra por sala:** com 4 contas e 2 s por conta, o máximo já é de 2 eventos por segundo.
+- **Prazo pelo servidor:** o relógio do aparelho nunca é comparado direto com o do servidor. Se o restante calculado contradiz o prazo, a hora é medida de novo antes de decidir. Foi observada oscilação de até 90 ms entre o relógio do Docker e o do Windows.
+- **Validação no servidor, repetida no cliente só como aviso:** o cliente modificado que pula o aviso continua barrado pela função.
+- **Objetos sem UPDATE nem DELETE de cliente:** depois de enviado, o objeto não muda; o hash aprovado vale para o que está guardado.
+
+**Ordem de publicação ⛔:** aplicar a 0700, publicar `sound-media`, conferir e só então integrar o cliente à `main`. Com o cliente antes do backend, o painel mostra erro de carga, e a voz não é afetada.
+
+**Riscos e limites:**
+- **Cópias baixadas:** não podem ser revogadas num aparelho hostil. O cliente legítimo limpa o cache.
+- **CDN do Storage:** depois da remoção, uma leitura já autorizada pode persistir por uma janela. Sem CDN, a stack local não reproduz isso. Contrato e medição na P05, seção 3 e passos 19 a 22.
+- **Sala encerrada e conta excluída:** os objetos ficam no Storage. O `15_sound_orphans.sql` lista órfãos, mas apagá-los é operação à parte. Consumo a acompanhar.
+- **Limpeza oportunista:** depende de o dono voltar à chamada. Um objeto pendente fica inacessível aos clientes até lá.
+- **MP3 real:** o validador foi exercitado com quadros construídos pelo teste. Não havia MP3 de codificador real nesta máquina: pode recusar arquivos reais fora do esperado, o que é falha segura, a conferir na homologação.
+- **Formatos do validador:** MP3 Layer III com ID3v1, ID3v2 e APEv2; WAV PCM e float de 1 ou 2 canais. Outra cauda ou mais canais são recusados.
+- **Autoplay:** `AudioContext` pode ficar suspenso até um gesto. O painel avisa, mas o caminho real só foi exercitado com a política de autoplay liberada no navegador de teste.
+- **Eco:** em alto-falantes, o som pode voltar pelo microfone dos outros. Sem evidência real.
+- **Quota do plano:** consumo de Storage e banda não medido.

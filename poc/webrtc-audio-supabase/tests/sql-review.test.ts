@@ -58,6 +58,17 @@ describe('matriz de privilégios efetivos', () => {
       'list_room_members(uuid)': userRpc,
       'list_room_messages(uuid,bigint,bigint,integer)': userRpc,
       'remove_room_member(uuid,text)': userRpc,
+      'sound_clock()': userRpc,
+      'list_sounds(uuid)': userRpc,
+      'request_sound_upload(uuid,text,integer)': userRpc,
+      'claim_sound_validation(uuid)': userRpc,
+      'remove_sound(uuid)': userRpc,
+      'list_sound_cleanup(uuid)': userRpc,
+      'trigger_sound(uuid,uuid)': userRpc,
+      'complete_sound_validation(uuid,boolean,text,integer,integer,text,text)': '--S',
+      'finish_sound_cleanup(uuid[])': '--S',
+      'oryn_realtime.can_read_sound(text)': userRpc,
+      'oryn_realtime.can_upload_sound(text)': userRpc,
       'redeem_creator_invite(text)': userRpc,
       'redeem_room_invite(text,text)': userRpc,
       'revoke_room_invite(uuid)': userRpc,
@@ -88,7 +99,7 @@ describe('matriz de privilégios efetivos', () => {
     const owners = await db.admin<{ owner: string; n: number }>(`
       select pg_get_userbyid(p.proowner) as owner, count(*)::int as n from pg_proc p join pg_namespace n on n.oid = p.pronamespace
        where n.nspname in ('oryn', 'oryn_realtime') group by 1`);
-    expect(owners).toEqual([{ owner: 'migration_owner', n: 14 }]);
+    expect(owners).toEqual([{ owner: 'migration_owner', n: 16 }]);
     const tables = await db.admin<{ owner: string }>(`select distinct tableowner as owner from pg_tables where schemaname = 'oryn'`);
     expect(tables).toEqual([{ owner: 'migration_owner' }]);
     for (const client of ['anon', 'authenticated', 'service_role']) {

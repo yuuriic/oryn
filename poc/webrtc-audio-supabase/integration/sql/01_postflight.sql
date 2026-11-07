@@ -20,7 +20,12 @@ user_rpcs(sig) as (values
   ('public.list_my_rooms()'), ('public.close_room(uuid)'),
   ('public.send_room_message(uuid,uuid,text)'), ('public.list_room_messages(uuid,bigint,bigint,integer)'),
   ('public.list_room_members(uuid)'), ('public.get_voice_participants(uuid)'),
-  ('public.leave_room_membership(uuid)'), ('public.remove_room_member(uuid,text)')),
+  ('public.leave_room_membership(uuid)'), ('public.remove_room_member(uuid,text)'),
+  ('public.sound_clock()'), ('public.list_sounds(uuid)'), ('public.request_sound_upload(uuid,text,integer)'),
+  ('public.claim_sound_validation(uuid)'), ('public.remove_sound(uuid)'), ('public.list_sound_cleanup(uuid)'), ('public.trigger_sound(uuid,uuid)')),
+service_rpcs(sig) as (values
+  ('public.complete_sound_validation(uuid,boolean,text,integer,integer,text,text)'), ('public.finish_sound_cleanup(uuid[])')),
+storage_predicates(sig) as (values ('oryn_realtime.can_read_sound(text)'), ('oryn_realtime.can_upload_sound(text)')),
 internal_fns(sig) as (values
   ('oryn.admin_issue_creator_invite(integer,integer)'), ('oryn.publish_control(uuid,uuid,text,jsonb)'),
   ('oryn.new_token()'), ('oryn.token_hash(text)'), ('oryn.is_active_member(uuid,uuid)'), ('oryn.require_uid()'),
@@ -63,6 +68,26 @@ checks(item, expected, actual) as (
          pg_catalog.has_function_privilege(role, 'oryn_realtime.can_receive_topic(text)', 'EXECUTE')
     from client_roles where role <> 'authenticated'
   union all
+  select 'EXECUTE service_role ' || sig, true, pg_catalog.has_function_privilege('service_role', sig, 'EXECUTE') from service_rpcs
+  union all
+  select 'EXECUTE ' || role || ' ' || sig, false, pg_catalog.has_function_privilege(role, sig, 'EXECUTE')
+    from service_rpcs, client_roles where role <> 'service_role'
+  union all
+  select 'EXECUTE authenticated ' || sig, true, pg_catalog.has_function_privilege('authenticated', sig, 'EXECUTE') from storage_predicates
+  union all
+  select 'EXECUTE ' || role || ' ' || sig, false, pg_catalog.has_function_privilege(role, sig, 'EXECUTE')
+    from storage_predicates, client_roles where role <> 'authenticated'
+  union all
+  select 'bucket oryn-sounds privado, com 2 MiB e só MP3 e WAV', true,
+         exists (select 1 from storage.buckets b where b.id = 'oryn-sounds' and not b.public and b.file_size_limit = 2097152
+                  and b.allowed_mime_types = array['audio/mpeg', 'audio/wav'])
+  union all
+  select 'storage.objects: só leitura e envio em oryn-sounds, para authenticated', true,
+         (select pg_catalog.count(*) = 2 and pg_catalog.bool_and(roles = array['authenticated']::name[] and permissive = 'PERMISSIVE')
+                 and pg_catalog.count(*) filter (where cmd = 'SELECT' and policyname = 'oryn_sounds_read') = 1
+                 and pg_catalog.count(*) filter (where cmd = 'INSERT' and policyname = 'oryn_sounds_upload') = 1
+            from pg_catalog.pg_policies where schemaname = 'storage' and tablename = 'objects' and policyname like 'oryn\_%')
+  union all
   select 'USAGE ' || role || ' schema oryn', false, pg_catalog.has_schema_privilege(role, 'oryn', 'USAGE') from client_roles
   union all
   select 'USAGE authenticated schema oryn_realtime', true, pg_catalog.has_schema_privilege('authenticated', 'oryn_realtime', 'USAGE')
@@ -73,7 +98,7 @@ checks(item, expected, actual) as (
   select priv || ' ' || role || ' ' || t, false, pg_catalog.has_table_privilege(role, t, priv)
     from domain_tables, client_roles, table_privs
   union all
-  select 'tabelas de domínio = 10', true, (select pg_catalog.count(*) = 10 from domain_tables)
+  select 'tabelas de domínio = 12', true, (select pg_catalog.count(*) = 12 from domain_tables)
   union all
   select 'RLS ligado em ' || t, true, (select c.relrowsecurity from pg_catalog.pg_class c where c.oid = t::regclass)
     from domain_tables
@@ -98,12 +123,13 @@ checks(item, expected, actual) as (
     from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid = p.pronamespace
    where p.prosecdef and (n.nspname in ('oryn', 'oryn_realtime')
                           or p.oid in (select sig::regprocedure from user_rpcs)
-                          or p.oid = 'public.set_signal_state(uuid,text)'::regprocedure)
+                          or p.oid = 'public.set_signal_state(uuid,text)'::regprocedure
+                          or p.oid in (select sig::regprocedure from service_rpcs))
   union all
   -- Auditoria 02C.1B.0A: o conjunto exposto em public é EXATAMENTE o contrato (num projeto novo, public
   -- começa vazio; qualquer função a mais precisa de revisão antes de seguir).
-  select 'public contém só as 20 RPCs do contrato', true,
-         (select pg_catalog.count(*) = 20 from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+  select 'public contém só as 29 RPCs do contrato', true,
+         (select pg_catalog.count(*) = 29 from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid = p.pronamespace
            where n.nspname = 'public')
          and not exists (select 1 from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid = p.pronamespace
                           where n.nspname = 'public' and not p.prosecdef)

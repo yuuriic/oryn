@@ -435,6 +435,31 @@ describe('duas sessões da mesma conta', () => {
     expect(b2!.pcs.length).toBeLessThanOrEqual(1);
   });
 
+  it('evento de som: chega ao destino sem tocar na sinalização nem na voz; depois de encerrar, não chega', async () => {
+    const received: unknown[] = [];
+    const a = client(USERS.owner);
+    const events = { onOpen: () => undefined, onPeerUp: () => undefined, onPeerDown: () => undefined, onSignal: () => undefined, onParticipants: () => undefined, onSound: (p: unknown) => received.push(p) };
+    const signaling = new MeshSignaling({ backend: server.backend(USERS.owner), roomId: ROOM, selfUserId: USERS.owner, events, onDisconnected: () => undefined, iceServers: STUN });
+    await signaling.connect();
+    expect(signaling.ownSession).toBeTruthy();
+    const broadcast = (signaling as unknown as { onBroadcast(event: string, payload: unknown): void }).onBroadcast.bind(signaling);
+    broadcast('sound', { any: 1 });
+    expect(received).toEqual([{ any: 1 }]);
+    expect(a.pcs).toEqual([]);
+    signaling.close();
+    await settle();
+    broadcast('sound', { any: 2 });
+    expect(received).toHaveLength(1);
+  });
+
+  it('cliente 1:1 em cache ignora o evento de som, sem erro no registro', async () => {
+    const logs: string[] = [];
+    const signaling = new SupabaseSignaling({ backend: server.backend(USERS.owner), roomId: ROOM, selfUserId: USERS.owner, log: (m: string) => logs.push(m), handlers: { onMessage: () => undefined, onDisconnected: () => undefined, onInvalid: () => undefined }, iceServers: STUN } as never);
+    (signaling as unknown as { early: null }).early = null;
+    (signaling as unknown as { onBroadcast(event: string, payload: unknown): void }).onBroadcast('sound', { any: 1 });
+    expect(logs).toEqual([]);
+  });
+
   it('pickPrimaries: uma sessão por referência, a mais antiga', () => {
     const row = (session_id: string, participant_ref: string) => ({ session_id, participant_ref, display_name: 'x', is_self: false, joined_at: '' });
     expect(pickPrimaries([row('s1', 'a'), row('s2', 'b'), row('s3', 'a')]).map((r) => r.session_id)).toEqual(['s1', 's2']);

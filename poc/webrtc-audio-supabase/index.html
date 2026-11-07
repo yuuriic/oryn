@@ -129,6 +129,21 @@
           <button id="listen-btn" type="button" hidden>Ouvir</button>
         </div>
 
+        <section id="soundboard" hidden>
+          <h3>Sons da sala</h3>
+          <p id="soundboard-status" role="status" hidden></p>
+          <div id="soundboard-list"></div>
+          <label>Volume dos sons <input id="sound-volume" type="range" min="0" max="100" step="1" /></label>
+          <label class="check"><input id="sound-disabled" type="checkbox" /> Desativar sons neste aparelho</label>
+          <form id="sound-form" autocomplete="off" hidden>
+            <h4>Publicar som</h4>
+            <!-- maxlength conta unidades UTF-16: fica no dobro do limite real, conferido em pontos de código. -->
+            <label>Nome (até 40 caracteres) <input id="sound-name" type="text" maxlength="80" spellcheck="false" required /></label>
+            <label>Arquivo MP3 ou WAV, até 2 MiB e 10 s <input id="sound-file" type="file" accept=".mp3,.wav,audio/mpeg,audio/wav" required /></label>
+            <button id="sound-publish-btn" type="submit">Publicar</button>
+          </form>
+        </section>
+
         <details id="diagnostics">
           <summary>Diagnóstico</summary>
           <label>ID da sala <input id="room" type="text" spellcheck="false" autocomplete="off" size="38" /></label>

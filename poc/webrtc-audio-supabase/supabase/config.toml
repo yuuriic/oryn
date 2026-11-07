@@ -71,3 +71,8 @@ enabled = true
 # `functions new --auth user`. A função valida o usuário de novo no código (/auth/v1/user).
 verify_jwt = true
 entrypoint = "./functions/signal/index.ts"
+
+[functions.sound-media]
+# Valida sons em quarentena e apaga objetos pendentes (0700). Publicação só pela CLI, com autorização própria.
+enabled = true
+verify_jwt = true

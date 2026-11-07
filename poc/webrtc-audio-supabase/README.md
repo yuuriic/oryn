@@ -115,6 +115,8 @@ Requisitos: Node 24+ e pnpm 12+. Não há serviço a instalar: o PGlite e o Post
 | `supabase/migrations/…0400_oryn_room_management.sql` | MVP 01: `list_my_rooms` e `close_room` (aditiva; aplicada no remoto em 2026-10-28) |
 | `supabase/migrations/…0600_oryn_room_membership.sql` | Salas de grupo: capacidade de até 4 contas, lista de membros, saída, remoção e identidade de participante (aditiva; aplicada no remoto em 2026-11-06) |
 | `supabase/migrations/…0500_oryn_room_messages.sql` | Chat por sala: `oryn.room_messages`, `oryn.room_message_counters`, `send_room_message` e `list_room_messages` (aditiva; aplicada no remoto em 2026-11-06) |
+| `supabase/migrations/…0700_oryn_soundboard.sql` | Soundboard: `oryn.sound_assets`, `oryn.sound_trigger_state`, 9 RPCs, 2 predicados, bucket privado `oryn-sounds` e 2 políticas em `storage.objects` (aditiva; aplicada no remoto em 2026-11-07) |
+| `supabase/functions/sound-media/`, `_shared/sound-media-core.ts`, `_shared/sound-validate.ts` | Validação do conteúdo dos sons e limpeza de objetos (publicada no remoto, versão 2) |
 | `supabase/functions/_shared/` | Contrato da sinalização e núcleo da Edge Function (puros e testados) |
 | `supabase/functions/_shared/edge-config.ts`, `supabase-http.ts`, `signal-http.ts` | Credenciais, chamadas HTTP com headers separados por operação e camada HTTP/CORS (puros e testados) |
 | `supabase/functions/signal/index.ts` | Só a ligação Deno dos módulos de `_shared`. Publicado no projeto real (runbook §13); fora do typecheck do Node |
@@ -238,7 +240,23 @@ Implantação: checklist de deploy, Etapa 6 ⛔. Operação, homologação e ris
 - **Voz:** uma `RTCPeerConnection` por participante remoto: até 3 por cliente e 6 no total. Uma única captura de microfone. Cada áudio remoto fica separado.
 - **Identidade:** `get_voice_participants` distingue contas de sessões. De cada conta, só a sessão mais antiga entra no mesh; a outra fica em espera e assume quando a primeira sair, ou quando um par a chamar por ter perdido a primeira (navegador que caiu sem avisar).
 - **Isolamento:** a falha de um par não derruba os demais. Sem SFU e sem servidor de mídia.
-- **Fora do escopo:** espaços, canais, soundboard, TURN, deafen, volume individual e transferência de propriedade.
+- **Fora do escopo:** espaços, canais, TURN, deafen, volume individual e transferência de propriedade.
+
+## Soundboard
+
+**Estado: migração 0700 aplicada, função `sound-media` publicada e Storage testado em produção. O cliente publicado ainda não tem o painel, e a homologação em aparelhos está pendente.**
+Implantação: checklist de deploy, Etapa 7 ⛔. Operação e riscos: runbook §14.14. Evidências e roteiro em aparelhos: `docs/validation/P05-SOUNDBOARD.md`.
+
+- **Modelo:** o clique vira um evento curto, e cada cliente toca a própria cópia. O arquivo nunca passa pelo Realtime nem pelo WebRTC, e o som não entra no microfone.
+- **Catálogo:** por sala, até 20 sons. Só o dono publica e remove; membro ativo consulta e dispara.
+- **Arquivos:** MP3 e WAV, até 2 MiB e 10 s, sem transcodificação. Bucket privado; ler exige membro ativo e som disponível no catálogo, e a pasta não prova nada.
+- **Quarentena:** o envio só é aprovado pela função `sound-media`, que lê o arquivo inteiro e mede formato, duração, tamanho e hash reais. MIME e extensão não contam.
+- **Disparo:** `trigger_sound`, com cooldown de 2 s por conta aplicado no servidor. O evento leva só metadados e vence em 2 s.
+- **Prazo:** o cliente compara na hora do servidor, estimada por `sound_clock`, então um relógio errado no aparelho não descarta som válido nem toca som velho. Sem estimativa, descarta.
+- **Reprodução:** barramento Web Audio próprio, com volume e limitador; até 2 sons simultâneos; deduplicação por `event_id`. A sessão em espera não toca.
+- **Cache:** IndexedDB, LRU até 100 MiB, por conta, sala, som, versão e hash. Só bytes e metadados. Sai ao remover o som, sair da sala, ser removido ou sair da conta.
+- **Limpeza:** sem agendador; roda quando o dono entra na chamada ou remove um som. Reconciliação em `integration/sql/15_sound_orphans.sql`.
+- **Remoção:** vale na hora no banco: sai do catálogo e novos disparos são recusados. Uma leitura já autorizada pode persistir por uma janela no CDN do Storage, e bytes já entregues não são revogados. Contrato na P05, seção 3.
 
 ## Modelo de segurança
 

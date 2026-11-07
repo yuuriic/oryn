@@ -1,10 +1,24 @@
--- POC-02C.1B — REVERSÃO das migrações 0100–0600. DESTRUTIVO: apaga o schema da Oryn e seus dados.
+-- POC-02C.1B — REVERSÃO das migrações 0100–0700. DESTRUTIVO: apaga o schema da Oryn e seus dados.
 -- Rodar SOMENTE com autorização explícita do arquiteto, no ambiente onde as migrações falharam ou precisam
 -- ser refeitas. Tudo numa transação: ou volta inteiro, ou nada muda. Não toca em auth.users.
--- Ordem inversa das migrações: 0600 (salas de grupo) → 0500 (chat) → 0400 (RPCs de salas) → 0300 (políticas do Realtime) → 0200 (funções) →
+-- Ordem inversa das migrações: 0700 (soundboard) → 0600 (salas de grupo) → 0500 (chat) → 0400 (RPCs de salas) → 0300 (políticas do Realtime) → 0200 (funções) →
 -- 0100 (schema). Para desfazer SÓ a 0400, preservando dados, use o 91_rollback_0400.sql.
 
 begin;
+
+-- 0700 (soundboard): políticas do Storage e RPCs. Tabelas e predicados saem com os schemas, abaixo. O bucket fica, sem política:
+-- objetos não se apagam por SQL (ver 94_rollback_0700.sql).
+drop policy if exists oryn_sounds_upload on storage.objects;
+drop policy if exists oryn_sounds_read on storage.objects;
+drop function if exists public.finish_sound_cleanup(uuid[]);
+drop function if exists public.complete_sound_validation(uuid, boolean, text, integer, integer, text, text);
+drop function if exists public.trigger_sound(uuid, uuid);
+drop function if exists public.list_sound_cleanup(uuid);
+drop function if exists public.remove_sound(uuid);
+drop function if exists public.claim_sound_validation(uuid);
+drop function if exists public.request_sound_upload(uuid, text, integer);
+drop function if exists public.list_sounds(uuid);
+drop function if exists public.sound_clock();
 
 -- 0600 (salas de grupo): RPCs. Funções internas e gatilhos saem com o schema oryn, abaixo.
 drop function if exists public.remove_room_member(uuid, text);
