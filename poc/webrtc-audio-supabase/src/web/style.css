@@ -1,6 +1,8 @@
 @import './styles/tokens.css';
 @import './styles/base.css';
 @import './styles/login.css';
+@import './styles/shell.css';
+@import './styles/rooms.css';
 
 /* Telas ainda não redesenhadas: só a paleta mudou. */
 main { max-width: 760px; margin: 0 auto; padding: var(--space-4); }
@@ -9,9 +11,6 @@ dl { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-1) 
 dt { color: var(--color-text-secondary); }
 dd { margin: 0; overflow-wrap: anywhere; }
 .log { font-family: var(--font-mono); font-size: 0.8em; max-height: 240px; overflow-y: auto; color: var(--color-text-secondary); padding-left: 2em; }
-.rooms { list-style: none; padding: 0; margin: var(--space-2) 0; }
-.rooms li { padding: var(--space-2) 0; border-top: 1px solid var(--color-divider); overflow-wrap: anywhere; }
-.rooms .buttons { margin-top: var(--space-1); }
 #invite-link, #invite-display, #chat-input { display: block; width: 100%; box-sizing: border-box; margin-top: var(--space-1); }
 .chat-messages { max-height: 320px; overflow-y: auto; padding: var(--space-1) 0; }
 .chat-list { list-style: none; padding: 0; margin: var(--space-1) 0; }

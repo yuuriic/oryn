@@ -1,0 +1,447 @@
+/* Composição da aplicação com conta: barra lateral e área central. Sem conta, vale login.css.
+   #account usa display: contents para que barra, conteúdo, aviso e status fiquem na mesma grade de <main>. */
+
+main:has(> #account:not([hidden])) {
+  --sidebar-width: 264px;
+  display: grid;
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  max-width: none;
+  min-height: 100vh;
+  min-height: 100dvh;
+  margin: 0;
+  padding: 0;
+  transition: grid-template-columns var(--motion-base) ease;
+}
+
+main[data-sidebar='collapsed']:has(> #account:not([hidden])) {
+  --sidebar-width: 72px;
+}
+
+main:has(> #account:not([hidden])) > .brand {
+  display: none;
+}
+
+#account:not([hidden]) {
+  display: contents;
+}
+
+#status {
+  grid-column: 2;
+  margin: 0 var(--space-5) var(--space-5);
+}
+
+.label-compact {
+  display: none;
+}
+
+/* Barra lateral */
+.sidebar {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  position: sticky;
+  top: 0;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  height: 100vh;
+  height: 100dvh;
+  min-width: 0;
+  padding: var(--space-4) var(--space-3);
+  background: var(--color-surface);
+  border-right: 1px solid var(--color-divider);
+}
+
+.sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-height: 44px;
+  padding-left: var(--space-1);
+}
+
+.sidebar-brand {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+#sidebar-close {
+  display: none;
+}
+
+.icon-btn,
+.nav-btn,
+.ghost-btn {
+  margin: 0;
+  background: transparent;
+  color: var(--color-text);
+  font-weight: 500;
+}
+
+.icon-btn:hover:not(:disabled),
+.nav-btn:hover:not(:disabled),
+.ghost-btn:hover:not(:disabled) {
+  background: var(--color-elevated);
+}
+
+.icon-btn {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0;
+  font-size: 1.25rem;
+  line-height: 1;
+}
+
+.nav-btn {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 44px;
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+}
+
+.nav-btn[aria-current='true'] {
+  background: var(--color-elevated);
+}
+
+.ghost-btn {
+  min-height: 44px;
+  border: 1px solid var(--color-border-control);
+}
+
+#create-open-btn {
+  border: 1px solid var(--color-border-control);
+}
+
+.room-nav {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.room-list {
+  list-style: none;
+  margin: 0;
+  padding: var(--space-1) 0;
+}
+
+.room-nav-status,
+.room-nav-group {
+  margin: var(--space-2) var(--space-3) var(--space-1);
+  font-size: 0.8125rem;
+}
+
+.room-nav-group {
+  color: var(--color-text-secondary);
+}
+
+.room-link {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 44px;
+  margin: 0 0 var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  background: transparent;
+  border-left: 3px solid transparent;
+  color: var(--color-text);
+  font-weight: 400;
+  text-align: left;
+}
+
+.room-link:focus-visible {
+  outline-offset: -2px;
+}
+
+.room-link:hover:not(:disabled) {
+  background: var(--color-elevated);
+}
+
+/* Seleção visível também sem cor: a borda à esquerda e o peso do nome. */
+.room-link[aria-current='true'] {
+  background: var(--color-elevated);
+  border-left-color: var(--color-accent);
+}
+
+.room-link[aria-current='true'] .room-name {
+  font-weight: 700;
+}
+
+.room-initials {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  background: var(--color-elevated);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-sm);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.room-link.room-in-call .room-initials {
+  border-color: var(--color-accent);
+}
+
+.room-link.room-closed .room-initials {
+  background: transparent;
+  border-style: dashed;
+  border-color: var(--color-border-control);
+  color: var(--color-text-secondary);
+}
+
+.room-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.room-name,
+.room-meta {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.room-meta {
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+}
+
+.sidebar-foot {
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--color-divider);
+}
+
+.account-line {
+  margin: 0 var(--space-1) var(--space-2);
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
+
+.account-line strong {
+  display: block;
+  font-weight: 600;
+}
+
+/* Área central */
+.shell-main {
+  grid-column: 2;
+  grid-row: 1;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 1040px;
+  min-width: 0;
+  justify-self: center;
+  padding: var(--space-5);
+}
+
+.context-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.context-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.context-text h1 {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.context-text h1:focus {
+  outline: none;
+}
+
+.context-text p {
+  margin: var(--space-1) 0 0;
+  font-size: 0.875rem;
+}
+
+#shell-menu-btn {
+  display: none;
+}
+
+/* Avisos da página ficam sempre na tela, sobre o conteúdo. A folga embaixo mantém o fim da página alcançável. */
+main:has(> #account:not([hidden])) > #error,
+main:has(> #account:not([hidden])) > #config-error {
+  position: fixed;
+  right: var(--space-5);
+  bottom: var(--space-5);
+  z-index: 10;
+  box-sizing: border-box;
+  width: min(560px, calc(100vw - 2 * var(--space-5)));
+  max-height: 40vh;
+  overflow-y: auto;
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-elevated);
+  border: 1px solid currentColor;
+  border-radius: var(--radius-sm);
+}
+
+main:has(> #error:not([hidden])) .shell-main {
+  padding-bottom: 128px;
+}
+
+/* Barra recolhida: só na tela grande */
+@media (min-width: 769px) {
+  main[data-sidebar='collapsed'] .sidebar {
+    align-items: stretch;
+    padding-inline: var(--space-2);
+  }
+
+  main[data-sidebar='collapsed'] .sidebar-head {
+    flex-direction: column;
+    padding-left: 0;
+  }
+
+  main[data-sidebar='collapsed'] .label-full,
+  main[data-sidebar='collapsed'] .room-text,
+  main[data-sidebar='collapsed'] .room-nav-group,
+  main[data-sidebar='collapsed'] .room-nav-status,
+  main[data-sidebar='collapsed'] .account-line {
+    display: none;
+  }
+
+  main[data-sidebar='collapsed'] .label-compact {
+    display: inline;
+  }
+
+  main[data-sidebar='collapsed'] .nav-btn {
+    padding: var(--space-2) 0;
+    text-align: center;
+  }
+
+  main[data-sidebar='collapsed'] #logout-btn {
+    font-size: 0.8125rem;
+  }
+
+  main[data-sidebar='collapsed'] .room-link {
+    justify-content: center;
+    padding-inline: 0;
+  }
+
+  /* Nome completo visível também ao focar com o teclado. Fixo, para não ser cortado pela lista que rola. */
+  main[data-sidebar='collapsed'] .room-link:hover::after,
+  main[data-sidebar='collapsed'] .room-link:focus-visible::after {
+    content: attr(data-name);
+    position: fixed;
+    left: 80px;
+    z-index: 20;
+    max-width: 280px;
+    padding: var(--space-1) var(--space-2);
+    background: var(--color-elevated);
+    border: 1px solid var(--color-border-control);
+    border-radius: var(--radius-sm);
+    color: var(--color-text);
+    font-size: 0.875rem;
+    overflow-wrap: anywhere;
+    pointer-events: none;
+  }
+}
+
+/* Telas pequenas: navegação temporária sobre o conteúdo */
+@media (max-width: 768px) {
+  main:has(> #account:not([hidden])) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .shell-main,
+  #status {
+    grid-column: 1;
+  }
+
+  .shell-main {
+    padding: var(--space-3);
+  }
+
+  #status {
+    margin: 0 var(--space-3) var(--space-3);
+  }
+
+  .sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 30;
+    width: min(300px, 85vw);
+    border-right: 1px solid var(--color-border-control);
+    transform: translateX(-100%);
+    visibility: hidden; /* fechada, sai também da ordem do teclado */
+    transition:
+      transform var(--motion-base) ease,
+      visibility 0s linear var(--motion-base);
+  }
+
+  /* Ao abrir, visível na hora: elemento oculto não recebe foco, e a navegação precisa recebê-lo. */
+  main[data-drawer='open'] .sidebar {
+    transform: none;
+    visibility: visible;
+    transition:
+      transform var(--motion-base) ease,
+      visibility 0s;
+  }
+
+  .shell-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 25;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    border-radius: 0;
+    background: rgb(11 14 24 / 72%);
+  }
+
+  .shell-backdrop:hover:not(:disabled) {
+    background: rgb(11 14 24 / 72%);
+  }
+
+  #sidebar-toggle {
+    display: none;
+  }
+
+  #sidebar-close {
+    display: block;
+  }
+
+  #shell-menu-btn {
+    display: block;
+    flex: none;
+  }
+
+  .context-header {
+    flex-wrap: wrap;
+  }
+
+  .context-text {
+    flex-basis: 40%;
+  }
+
+  main:has(> #account:not([hidden])) > #error,
+  main:has(> #account:not([hidden])) > #config-error {
+    right: var(--space-2);
+    bottom: var(--space-2);
+    width: calc(100vw - 2 * var(--space-2));
+  }
+}
+
+@media (min-width: 769px) {
+  .shell-backdrop {
+    display: none;
+  }
+}

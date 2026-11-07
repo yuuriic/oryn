@@ -1,0 +1,154 @@
+/* Salas, criação e convites na área central. Só apresentação: as ações vêm de rooms-view.ts e main.ts. */
+
+.rooms {
+  list-style: none;
+  display: grid;
+  gap: var(--space-3);
+  margin: 0 0 var(--space-4);
+  padding: 0;
+}
+
+.rooms li {
+  padding: var(--space-4);
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-md);
+  overflow-wrap: anywhere;
+}
+
+.rooms li > strong {
+  display: block;
+  font-size: 1.0625rem;
+  font-weight: 600;
+}
+
+.rooms li > .muted {
+  font-size: 0.875rem;
+}
+
+.rooms .buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.rooms .buttons button {
+  min-height: 44px;
+  margin: 0;
+}
+
+/* A primeira ação da sala é a principal. As demais ficam discretas, e as destrutivas se distinguem pelo texto e pela borda. */
+.rooms .buttons button:not(:first-child) {
+  background: transparent;
+  border: 1px solid var(--color-border-control);
+  color: var(--color-text);
+  font-weight: 500;
+}
+
+.rooms .buttons button:not(:first-child):hover:not(:disabled) {
+  background: var(--color-elevated);
+}
+
+.rooms .buttons button.danger,
+.rooms .buttons button.danger:not(:first-child) {
+  background: transparent;
+  border: 1px solid var(--color-error);
+  color: var(--color-error);
+}
+
+.rooms .buttons button.danger:hover:not(:disabled) {
+  background: var(--color-elevated);
+}
+
+/* Sala selecionada: nome e resumo já estão no cabeçalho. */
+main[data-view='room'] .rooms li > strong,
+main[data-view='room'] .rooms li > .muted {
+  display: none;
+}
+
+main[data-view='room'] .rooms .buttons {
+  margin-top: 0;
+}
+
+#rooms > div > details {
+  margin-top: var(--space-3);
+}
+
+#rooms-error {
+  margin: 0 0 var(--space-3);
+}
+
+#create-room,
+#invite-share,
+#invite-accept,
+#return-call,
+#entry-state,
+#call-panel {
+  margin: 0 0 var(--space-4);
+  padding: var(--space-4);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-md);
+}
+
+#create-room h2,
+#call-panel > h2,
+#invite-share h3,
+#invite-accept h2 {
+  margin: 0 0 var(--space-3);
+  font-size: 1.125rem;
+  font-weight: 600;
+}
+
+#create-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) max-content;
+  align-items: end;
+  gap: var(--space-3);
+}
+
+#create-form label {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--color-text-secondary);
+}
+
+#create-form input,
+#create-form select {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 44px;
+  margin-top: var(--space-1);
+  font-size: 1rem;
+}
+
+#create-form button {
+  min-height: 44px;
+  margin: 0;
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+
+#invite-share .buttons,
+#invite-accept .buttons,
+#return-call .buttons,
+#entry-state .buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+#invite-share .buttons button,
+#invite-accept .buttons button,
+#return-call .buttons button,
+#entry-state .buttons button {
+  min-height: 44px;
+  margin: 0;
+}
+
+@media (max-width: 768px) {
+  #create-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
