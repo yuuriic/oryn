@@ -4,6 +4,7 @@
 @import './styles/shell.css';
 @import './styles/rooms.css';
 @import './styles/voice.css';
+@import './styles/panels.css';
 
 /* Telas ainda não redesenhadas: só a paleta mudou. */
 main { max-width: 760px; margin: 0 auto; padding: var(--space-4); }
@@ -13,18 +14,6 @@ dt { color: var(--color-text-secondary); }
 dd { margin: 0; overflow-wrap: anywhere; }
 .log { font-family: var(--font-mono); font-size: 0.8em; max-height: 240px; overflow-y: auto; color: var(--color-text-secondary); padding-left: 2em; }
 #invite-link, #invite-display, #chat-input { display: block; width: 100%; box-sizing: border-box; margin-top: var(--space-1); }
-.chat-messages { max-height: 320px; overflow-y: auto; padding: var(--space-1) 0; }
-.chat-list { list-style: none; padding: 0; margin: var(--space-1) 0; }
-.chat-list li { padding: 6px var(--space-2); margin: var(--space-1) 0; border-radius: var(--radius-sm); background: var(--color-bg); }
-.chat-list li.chat-pending { opacity: 0.85; }
-.chat-head { font-size: 0.85em; }
-.chat-body { white-space: pre-wrap; overflow-wrap: anywhere; }
-.sound-list { list-style: none; padding: 0; margin: var(--space-2) 0; }
-.sound-list li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: var(--space-1) 0; border-top: 1px solid var(--color-divider); }
-.sound-play { margin: 0; overflow-wrap: anywhere; text-align: left; }
-.sound-detail { flex: 1; font-size: 0.85em; }
-label.check { display: flex; align-items: center; gap: var(--space-2); }
-#sound-volume { width: 100%; box-sizing: border-box; }
 @media (max-width: 480px) {
   main { padding: var(--space-2); }
   section { padding: var(--space-3); }

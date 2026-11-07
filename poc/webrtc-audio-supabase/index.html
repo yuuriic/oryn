@@ -112,14 +112,20 @@
           <h3>Sons da sala</h3>
           <p id="soundboard-status" role="status" hidden></p>
           <div id="soundboard-list"></div>
-          <label>Volume dos sons <input id="sound-volume" type="range" min="0" max="100" step="1" /></label>
-          <label class="check"><input id="sound-disabled" type="checkbox" /> Desativar sons neste aparelho</label>
+          <div class="sound-controls">
+            <label class="sound-volume-label">Volume dos sons <input id="sound-volume" type="range" min="0" max="100" step="1" /></label>
+            <label class="check"><input id="sound-disabled" type="checkbox" /> Desativar sons neste aparelho</label>
+          </div>
           <form id="sound-form" autocomplete="off" hidden>
-            <h4>Publicar som</h4>
+            <details>
+            <summary>Publicar som</summary>
+            <div class="sound-fields">
             <!-- maxlength conta unidades UTF-16: fica no dobro do limite real, conferido em pontos de código. -->
             <label>Nome (até 40 caracteres) <input id="sound-name" type="text" maxlength="80" spellcheck="false" required /></label>
             <label>Arquivo MP3 ou WAV, até 2 MiB e 10 s <input id="sound-file" type="file" accept=".mp3,.wav,audio/mpeg,audio/wav" required /></label>
             <button id="sound-publish-btn" type="submit">Publicar</button>
+            </div>
+            </details>
           </form>
         </section>
 
@@ -147,14 +153,19 @@
         </section>
 
         <section id="members" hidden>
-          <h3>Membros: <span id="members-room"></span></h3>
+          <div class="panel-head">
+            <h3>Membros: <span id="members-room"></span></h3>
+            <button id="members-close-btn" class="ghost-btn" type="button">Fechar membros</button>
+          </div>
           <p id="members-status" role="status" hidden></p>
           <div id="members-list"></div>
-          <div class="buttons"><button id="members-close-btn" type="button">Fechar membros</button></div>
         </section>
 
         <section id="chat" hidden>
-          <h3>Chat: <span id="chat-room"></span></h3>
+          <div class="panel-head">
+            <h3>Chat: <span id="chat-room"></span></h3>
+            <button id="chat-close-btn" class="ghost-btn" type="button">Fechar chat</button>
+          </div>
           <p id="chat-status" role="status" hidden></p>
           <div id="chat-messages" class="chat-messages" role="log" aria-live="polite" aria-label="Mensagens da sala" tabindex="0"></div>
           <form id="chat-form" autocomplete="off">
@@ -162,7 +173,6 @@
             <label>Mensagem <textarea id="chat-input" rows="2" maxlength="8000"></textarea></label>
             <div class="buttons"><button id="chat-send-btn" type="submit">Enviar</button></div>
           </form>
-          <div class="buttons"><button id="chat-close-btn" type="button">Fechar chat</button></div>
         </section>
 
         <section id="create-room">

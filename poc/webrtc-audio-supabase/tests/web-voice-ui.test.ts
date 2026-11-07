@@ -3,7 +3,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { renderParticipants } from '../src/web/members-view.ts';
+import { renderMembers, renderParticipants } from '../src/web/members-view.ts';
 import { micLabel, otherRoomNote, voiceSummary } from '../src/web/voice-view.ts';
 
 const read = (path: string): string => readFileSync(fileURLToPath(new URL(`../${path}`, import.meta.url)), 'utf8');
@@ -157,6 +157,44 @@ describe('participantes', () => {
     expect(nodes.map((n) => n.text).join('|')).toContain('Bia Souza');
     expect(nodes.map((n) => n.text).join('|')).toContain('sem conexão');
     expect(nodes.map((n) => n.text).join('|')).not.toContain('BS');
+  });
+});
+
+describe('painéis', () => {
+  it('publicar som fica recolhido dentro do formulário, que segue escondido para quem não é dono', () => {
+    const form = element('sound-form');
+    expect(form).toMatch(/^<form id="sound-form"[^>]*\shidden>\s*<details>\s*<summary>Publicar som<\/summary>/);
+    for (const id of ['sound-name', 'sound-file', 'sound-publish-btn']) expect(form).toContain(`id="${id}"`);
+  });
+
+  it('os controles de volume e desativação ficam fora do recolhido, para qualquer membro', () => {
+    const board = element('soundboard');
+    expect(element('sound-form')).not.toContain('id="sound-volume"');
+    for (const id of ['sound-volume', 'sound-disabled']) expect(board).toContain(`id="${id}"`);
+  });
+
+  it('fechar vem antes do conteúdo também na ordem do teclado', () => {
+    for (const [panel, close, content] of [['chat', 'chat-close-btn', 'chat-messages'], ['members', 'members-close-btn', 'members-list']] as const) {
+      const box = element(panel);
+      expect(box.indexOf(`id="${close}"`), panel).toBeGreaterThan(-1);
+      expect(box.indexOf(`id="${close}"`), panel).toBeLessThan(box.indexOf(`id="${content}"`));
+    }
+  });
+
+  it('membro tem inicial só como atributo: nome e papel seguem em texto', () => {
+    const items: { attrs: Record<string, string>; text: string }[] = [];
+    const doc = {
+      createElement: () => {
+        const node = { attrs: {} as Record<string, string>, text: '', className: '', disabled: false, type: '', set textContent(v: string) { this.text = v; }, get textContent(): string { return this.text; }, append() {}, addEventListener() {}, setAttribute(k: string, v: string) { this.attrs[k] = v; } };
+        items.push(node);
+        return node as unknown as HTMLElement;
+      },
+    };
+    renderMembers(doc, { status: 'ready', members: [{ member_ref: 'r', display_name: 'Bia Souza', role: 'member', is_self: false, in_call: true }], busy: null } as never, { canManage: true, onRemove() {}, onLeave() {} } as never);
+    expect(items.find((n) => n.attrs['data-initial'])?.attrs['data-initial']).toBe('BS');
+    expect(items.map((n) => n.text).join('|')).toContain('Bia Souza');
+    expect(items.map((n) => n.text).join('|')).toContain('na chamada');
+    expect(items.map((n) => n.text).join('|')).not.toContain('BS');
   });
 });
 

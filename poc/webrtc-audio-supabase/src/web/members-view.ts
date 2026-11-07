@@ -35,6 +35,7 @@ export function renderMembers(doc: ViewDocument, state: MembersState, opts: Memb
   const busy = state.busy !== null;
   for (const member of state.members) {
     const item = el('li');
+    item.setAttribute('data-initial', roomInitials(member.display_name));
     item.append(
       el('strong', member.is_self ? `${member.display_name} (você)` : member.display_name),
       el('span', ` ${ROLE[member.role]}${member.in_call ? ' · na chamada' : ''}`, 'muted'),

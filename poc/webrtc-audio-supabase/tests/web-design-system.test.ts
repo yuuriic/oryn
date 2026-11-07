@@ -14,8 +14,9 @@ const login = read('src/web/styles/login.css');
 const shellCss = read('src/web/styles/shell.css');
 const roomsCss = read('src/web/styles/rooms.css');
 const voiceCss = read('src/web/styles/voice.css');
+const panelsCss = read('src/web/styles/panels.css');
 const entry = read('src/web/style.css');
-const allCss = [tokens, base, login, shellCss, roomsCss, voiceCss, entry].join('\n');
+const allCss = [tokens, base, login, shellCss, roomsCss, voiceCss, panelsCss, entry].join('\n');
 
 const idsIn = (text: string, pattern: RegExp): string[] => [...text.matchAll(pattern)].map((m) => m[1]!);
 
@@ -94,7 +95,7 @@ describe('estilos', () => {
 
   it('sem ativo externo nem estilo em linha, que a CSP recusaria', () => {
     expect(allCss).not.toMatch(/url\(|@font-face/);
-    expect(idsIn(allCss, /@import\s+'([^']+)'/g)).toEqual(['./styles/tokens.css', './styles/base.css', './styles/login.css', './styles/shell.css', './styles/rooms.css', './styles/voice.css']);
+    expect(idsIn(allCss, /@import\s+'([^']+)'/g)).toEqual(['./styles/tokens.css', './styles/base.css', './styles/login.css', './styles/shell.css', './styles/rooms.css', './styles/voice.css', './styles/panels.css']);
     expect(html).not.toMatch(/\sstyle=|<style\b/);
   });
 
