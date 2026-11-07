@@ -285,6 +285,35 @@ describe('renderização', () => {
     expect((renderParticipants(doc, [], false) as unknown as FakeEl).allText).toMatch(/Nenhum outro participante/);
   });
 
+  it('palco: o próprio cartão, os outros e a vaga, só com estado real e sem contar como "conectado"', () => {
+    const list = [{ session: 'a', displayName: 'Bia', state: 'connected' as const }];
+    const root = renderParticipants(doc, list, false, { owner: true, muted: false, freeSlots: 2 }) as unknown as FakeEl;
+    const ul = root.children.find((c) => c.tag === 'ul')!;
+    expect(ul.children.map((li) => li.className)).toEqual(['participant-self', '', 'participant-waiting']);
+    expect(ul.attrs.get('data-count')).toBe('3');
+    const [self, , waiting] = ul.children;
+    expect(self!.allText).toContain('Você');
+    expect(self!.allText).toContain('Microfone ligado');
+    expect(self!.allText).toContain('Dono');
+    expect(self!.attrs.get('data-role')).toBe('owner');
+    expect(waiting!.allText).toContain('Até 2 vagas disponíveis');
+    // Os roteiros contam "conectado" no palco: o próprio cartão e a vaga não podem somar.
+    expect(root.allText.split('conectado').length - 1).toBe(1);
+  });
+
+  it('palco: mudo, membro sem selo, uma vaga no singular e sala cheia sem vaga', () => {
+    const muted = renderParticipants(doc, [], false, { owner: false, muted: true, freeSlots: 1 }) as unknown as FakeEl;
+    expect(muted.allText).toContain('Microfone desligado');
+    expect(muted.allText).not.toContain('Dono');
+    expect(muted.allText).toContain('Até 1 vaga disponível');
+    expect(muted.allText).toMatch(/Nenhum outro participante/); // segue para leitores de tela
+    const full = renderParticipants(doc, [1, 2, 3].map((i) => ({ session: `s${i}`, displayName: `P${i}`, state: 'connected' as const })), false, { owner: true, muted: false, freeSlots: 0 }) as unknown as FakeEl;
+    const ul = full.children.find((c) => c.tag === 'ul')!;
+    expect(ul.children).toHaveLength(4);
+    expect(ul.attrs.get('data-count')).toBe('4');
+    expect(full.allText).not.toContain('Aguardando participantes');
+  });
+
   it('os módulos não usam API de HTML', () => {
     for (const file of ['members.ts', 'members-view.ts', 'mesh-call.ts', 'mesh-signaling.ts']) {
       const source = readFileSync(new URL(`../src/web/${file}`, import.meta.url), 'utf8').replace(/^\s*\/\/.*$/gm, '');

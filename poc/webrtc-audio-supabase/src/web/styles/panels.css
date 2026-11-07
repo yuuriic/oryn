@@ -162,6 +162,13 @@
   font-weight: 600;
 }
 
+/* Dono: avatar dourado. O papel segue escrito ("dono"). */
+#members-list .rooms li[data-role='owner']::before {
+  background: var(--color-gold-soft);
+  border-color: var(--color-gold);
+  color: var(--color-gold);
+}
+
 #members-list .rooms li > strong,
 #members-list .rooms li > .muted {
   grid-column: 2;
@@ -177,17 +184,11 @@
   margin: 0;
 }
 
-/* Sons */
-#soundboard > h3 {
-  margin: 0 0 var(--space-2);
-  font-size: 1rem;
-  font-weight: 600;
-}
-
+/* Sons: grade no painel flutuante */
 .sound-list {
   list-style: none;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
   gap: var(--space-2);
   margin: 0;
   padding: 0;
@@ -203,16 +204,17 @@
   align-items: center;
   gap: var(--space-1) var(--space-2);
   padding: var(--space-2);
-  background: var(--color-surface);
-  border-radius: var(--radius-sm);
+  background: var(--color-elevated);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-md);
 }
 
 .sound-play {
   flex: 1 1 100%;
-  min-height: 44px;
+  min-height: 64px;
   margin: 0;
   overflow-wrap: anywhere;
-  text-align: left;
+  text-align: center;
 }
 
 .sound-detail {

@@ -53,11 +53,15 @@ describe('barra da chamada', () => {
     expect(bar).toMatch(/aria-label="Chamada em curso"/);
     for (const id of ['call-room', 'call-phase', 'call-mic', 'mute-btn', 'leave-btn', 'listen-btn']) expect(bar).toContain(`id="${id}"`);
     expect(bar).toMatch(/id="call-phase" role="status"/);
-    expect(bar).toMatch(/<button id="listen-btn" type="button" hidden>Ouvir<\/button>/);
+    expect(bar).toMatch(/<button id="listen-btn" class="round-btn" type="button" hidden>Ouvir<\/button>/);
   });
 
-  it('não ganhou comandos novos', () => {
-    expect(bar.match(/<button\b/g)).toHaveLength(3);
+  it('só ganhou o botão Sons, que abre o painel existente: nenhuma função de áudio nova', () => {
+    // Os 4 controles que funcionam e, ao lado deles, os 2 futuros, que são só apresentação (aria-disabled, sem id).
+    expect(bar.match(/<button\b/g)).toHaveLength(6);
+    expect(bar.match(/<button\b(?![^>]*aria-disabled="true")/g)).toHaveLength(4);
+    expect(bar.match(/<button class="future-btn[^"]*" type="button" aria-disabled="true"/g)).toHaveLength(2);
+    expect(bar).toMatch(/<button id="sound-toggle-btn" type="button" aria-expanded="false" aria-controls="soundboard" hidden>Sons<\/button>/);
     expect(html).not.toMatch(/deafen|ensurdecer|enumerateDevices|setSinkId/i);
     expect(main).not.toMatch(/enumerateDevices|setSinkId/);
   });
@@ -173,6 +177,24 @@ describe('painéis', () => {
     for (const id of ['sound-volume', 'sound-disabled']) expect(board).toContain(`id="${id}"`);
   });
 
+  it('sons: painel flutuante fora do painel de voz e da área central, logo depois da barra da chamada', () => {
+    expect(element('call-panel')).not.toContain('id="soundboard"');
+    expect(element('shell-main')).not.toContain('id="soundboard"');
+    expect(html.indexOf('id="soundboard"')).toBeGreaterThan(html.indexOf('id="sound-toggle-btn"'));
+    expect(element('soundboard')).toMatch(/^<section id="soundboard" class="sound-popover" aria-labelledby="soundboard-title" hidden>/);
+    expect(element('soundboard').indexOf('id="sound-close-btn"')).toBeLessThan(element('soundboard').indexOf('id="soundboard-list"'));
+  });
+
+  it('sons: o botão só existe com o soundboard da chamada, e abrir ou fechar é só apresentação', () => {
+    const render = /function renderSoundboardPanel[^]*?\n}\n/.exec(main)![0];
+    expect(render).toContain("const available = state.status !== 'closed'");
+    expect(render).toContain('ui.soundboard.hidden = !available || !soundsOpen');
+    expect(render).toContain('ui.soundToggleBtn.hidden = !available');
+    expect(render).toContain("setAttribute('aria-expanded', String(available && soundsOpen))");
+    const toggle = /function setSoundsOpen[^]*?\n}\n/.exec(main)![0];
+    expect(toggle).not.toMatch(/soundboard\.(enter|leave|trigger|publish|remove|setVolume|setDisabled|unlock)/);
+  });
+
   it('fechar vem antes do conteúdo também na ordem do teclado', () => {
     for (const [panel, close, content] of [['chat', 'chat-close-btn', 'chat-messages'], ['members', 'members-close-btn', 'members-list']] as const) {
       const box = element(panel);
@@ -201,9 +223,12 @@ describe('painéis', () => {
 describe('ordem da sala e da voz', () => {
   const render = /function renderRooms[^]*?\n}\n/.exec(main)![0];
 
-  it('sala aberta: ações antes da voz; visão geral: voz antes da lista', () => {
-    expect(render).toMatch(/roomFirst && ui\.callPanel\.previousElementSibling !== ui\.roomsBlock\) ui\.callPanel\.before\(ui\.roomsBlock\)/);
+  it('sala aberta: ações no cabeçalho, antes da voz; visão geral: voz antes da lista', () => {
+    expect(render).toMatch(/roomFirst && ui\.roomsBlock\.parentElement !== ui\.contextActions\) ui\.contextActions\.prepend\(ui\.roomsBlock\)/);
     expect(render).toMatch(/!roomFirst && ui\.callPanel\.nextElementSibling !== ui\.roomsBlock\) ui\.callPanel\.after\(ui\.roomsBlock\)/);
+    // O cabeçalho vem antes do painel de voz no DOM: a ordem do teclado segue a da tela.
+    expect(html.indexOf('id="context-actions"')).toBeGreaterThan(html.indexOf('class="context-header"'));
+    expect(html.indexOf('id="context-actions"')).toBeLessThan(html.indexOf('id="call-panel"'));
   });
 
   it('a troca move no DOM, sem CSS order, e o bloco não contém mídia nem o painel de voz', () => {

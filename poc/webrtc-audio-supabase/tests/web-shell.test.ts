@@ -68,7 +68,12 @@ class FakeEl {
     (this.listeners[type] ??= []).push(fn);
   }
   click(): void {
-    for (const fn of this.listeners['click'] ?? []) fn();
+    this.dispatch('click');
+  }
+  /** Estado de um <details>, como o navegador o mantém. */
+  open = false;
+  dispatch(type: string): void {
+    for (const fn of this.listeners[type] ?? []) fn();
   }
   all(): FakeEl[] {
     return [this, ...this.children.flatMap((c) => c.all())];
@@ -161,7 +166,7 @@ describe('roomInitials', () => {
 describe('renderRoomNav', () => {
   it('abrir uma sala só avisa a seleção: nada de entrar na chamada', () => {
     const { links, onSelect } = nav(state());
-    expect(links).toHaveLength(3);
+    expect(links).toHaveLength(2);
     links[0]!.click();
     expect(onSelect).toHaveBeenCalledExactlyOnceWith(ROOM_A);
   });
@@ -170,7 +175,6 @@ describe('renderRoomNav', () => {
     const { links } = nav(state());
     expect(links[0]!.attrs).toMatchObject({ title: 'Sala Principal', 'data-name': 'Sala Principal' });
     expect(links[0]!.attrs['aria-label']).toBe('Sala Principal, dono, aberta');
-    expect(links[2]!.attrs['aria-label']).toBe('Antiga, dono, encerrada');
     expect(links[0]!.find('span')[0]!.attrs['aria-hidden']).toBe('true');
     expect(links[0]!.textContent).toContain('SP');
   });
@@ -183,10 +187,17 @@ describe('renderRoomNav', () => {
     expect(links[0]!.attrs['aria-label']).toContain('na chamada');
   });
 
-  it('separa as encerradas', () => {
+  it('lista só as salas abertas: nenhuma encerrada na navegação', () => {
     const { root, links } = nav(state());
-    expect(root.textContent).toContain('Encerradas');
-    expect(links[2]!.className).toContain('room-closed');
+    expect(links.map((l) => l.attrs['data-name'])).toEqual(['Sala Principal', 'Outra']);
+    expect(root.textContent).not.toMatch(/Antiga|Encerradas/);
+    expect(links.every((l) => !l.className.includes('room-closed'))).toBe(true);
+  });
+
+  it('sem sala aberta, diz isso em vez de ficar vazia', () => {
+    const closedOnly = state({ rooms: state().rooms.filter((r) => !r.is_open) });
+    expect(nav(closedOnly).links).toHaveLength(0);
+    expect(nav(closedOnly).root.textContent).toContain('Nenhuma sala aberta');
   });
 
   it('mostra carregamento e erro, e nome de sala nunca vira HTML', () => {
@@ -208,6 +219,33 @@ describe('área central', () => {
     expect(one.onJoin).not.toHaveBeenCalled();
   });
 
+  it('a administração do dono fica recolhida em "Gerenciar sala", depois das ações principais', () => {
+    const one = lobby(state(), ROOM_A);
+    const [admin, ...others] = one.root.find('details');
+    expect(others).toHaveLength(0);
+    expect(admin!.className).toBe('room-admin');
+    expect(admin!.find('summary')[0]!.textContent).toBe('Gerenciar sala');
+    expect(admin!.find('button').map((b) => b.textContent)).toEqual(['Convidar', 'Revogar convites pendentes desta sala', 'Encerrar sala']);
+    expect(admin!.attrs['open']).toBeUndefined();
+  });
+
+  it('o redesenho mantém "Gerenciar sala" aberto e avisa quem o abriu ou fechou', () => {
+    const onAdminToggle = vi.fn();
+    const root = renderLobby(fakeDoc, state(), { selectedRoomId: ROOM_A, callActive: false, activeRoomId: null, onJoin: vi.fn(), onClose: vi.fn(), onInvite: vi.fn(), onRevokeInvites: vi.fn(), onChat: vi.fn(), onMembers: vi.fn(), adminOpenRoomIds: new Set([ROOM_A]), onAdminToggle }) as unknown as FakeEl;
+    const admin = root.find('details')[0]!;
+    expect(admin.attrs['open']).toBe('');
+    admin.open = false;
+    admin.dispatch('toggle');
+    admin.open = true;
+    admin.dispatch('toggle');
+    expect(onAdminToggle.mock.calls).toEqual([[ROOM_A, false], [ROOM_A, true]]);
+  });
+
+  it('membro não vê "Gerenciar sala"', () => {
+    const one = lobby(state(), ROOM_B);
+    expect(one.root.find('details')).toHaveLength(0);
+  });
+
   it('sala encerrada selecionada aparece sem precisar abrir nada, e sem ação de chamada', () => {
     const { root } = lobby(state(), CLOSED);
     expect(root.find('details')).toHaveLength(0);
@@ -220,6 +258,10 @@ describe('área central', () => {
     expect(roomContext(state(), ROOM_A)).toEqual({ title: 'Sala Principal', detail: 'dono · 1/3 membros · aberta' });
     expect(roomContext(state(), CLOSED).detail).toMatch(/^dono · encerrada em /);
     expect(roomContext(state(), 'sumiu')).toEqual({ title: 'Minhas salas', detail: null });
+    // Sala da chamada: o cabeçalho diz "Em chamada"; outra sala selecionada segue com o papel.
+    expect(roomContext(state(), ROOM_A, ROOM_A)).toEqual({ title: 'Sala Principal', detail: 'Em chamada · 1/3 membros' });
+    expect(roomContext(state(), ROOM_A, 'outra')).toEqual({ title: 'Sala Principal', detail: 'dono · 1/3 membros · aberta' });
+    expect(roomContext(state(), CLOSED, CLOSED).detail).toMatch(/^dono · encerrada em /);
   });
 });
 
@@ -238,5 +280,31 @@ describe('limites do módulo de navegação', () => {
   it('a página não usa biblioteca de ícones nem imagem externa', () => {
     const html = read('index.html');
     expect(html).not.toMatch(/<img\b|<link\b(?![^>]*\/src\/web\/style\.css)/);
+  });
+});
+
+describe('Hybrid Midnight Gold: criação sob demanda e chat contextual', () => {
+  const html = read('index.html');
+  const main = read('src/web/main.ts');
+  const fn = (name: string): string => new RegExp(`function ${name}[^]*?\n}\n`).exec(main)![0];
+
+  it('criar sala começa oculto, com Cancelar, e só abre por "Criar sala" ou sem nenhuma sala', () => {
+    expect(html).toMatch(/<section id="create-room" hidden>/);
+    expect(html).toMatch(/id="create-cancel-btn"/);
+    const render = fn('renderRooms');
+    expect(render).toContain("const noRooms = s.status === 'ready' && s.rooms.length === 0");
+    expect(render).toContain('ui.createRoom.hidden = selectedRoomId !== null || !(createOpen || noRooms)');
+    expect(main).toMatch(/ui\.createOpenBtn\.addEventListener\('click', \(\) => \{\n  createOpen = true;/);
+  });
+
+  it('o chat aberto acompanha a sala escolhida, sem trocar com mensagem pendente e sem abrir sozinho', () => {
+    const nav = fn('navigate');
+    expect(nav).toContain("chat.state.status !== 'closed'");
+    expect(nav).toContain('chat.state.pending.length === 0');
+    expect(nav).toContain('chat.open(room.room_id, !room.is_open)');
+  });
+
+  it('logout esquece criação e administração abertas', () => {
+    expect(main).toMatch(/createOpen = false;\n  adminOpen\.clear\(\);\n  shell\.reset\(\);/);
   });
 });

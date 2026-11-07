@@ -1,0 +1,1561 @@
+/* Composição Hybrid Midnight Gold (docs/design/referencias/gold-desktop-sala-sons.png): a sala de voz é a experiência principal.
+   Só apresentação. Vem por último em style.css: refina as regras de shell, rooms, voice e panels sem mudar o que elas
+   ligam ou desligam. Nenhum seletor aqui decide visibilidade de seção: isso segue com o atributo hidden. */
+
+/* ---------- Fundo ---------- */
+body {
+  background:
+    radial-gradient(1100px 620px at 100% -10%, rgb(109 61 242 / 20%), transparent 60%),
+    radial-gradient(900px 520px at -10% 110%, rgb(242 181 68 / 9%), transparent 60%),
+    var(--color-bg);
+  background-attachment: fixed;
+}
+
+/* ---------- Ícones (máscara + currentColor). O texto do controle segue sendo o nome acessível. ---------- */
+.context-icon::after,
+.call-bar-icon::after,
+.brand-mark,
+.user-avatar::after,
+#rooms-home-btn::before,
+#create-open-btn::before,
+#logout-btn::before,
+#rooms-refresh-btn::before,
+#rooms .buttons button::before,
+#rooms .room-admin > summary::before,
+.round-btn::before,
+#sound-toggle-btn::before,
+button.future-btn::before,
+#leave-btn::before,
+#sound-close-btn::before,
+#chat-close-btn::before,
+#members-close-btn::before,
+#soundboard-title::before,
+#chat .panel-head h3::before,
+#members .panel-head h3::before,
+#sound-form > details > summary::before,
+.sound-play::before,
+.sound-popover .sound-list button.danger::before,
+#chat-send-btn::before,
+.chat-empty::before,
+#participants .participant-waiting::after,
+#participants .participant-self[data-role='owner']::after,
+main[data-view='room'] #call-panel:has(> #participants[hidden])::before {
+  content: '' / '';
+  flex: none;
+  display: block;
+  width: 20px;
+  height: 20px;
+  background: currentColor;
+  -webkit-mask: var(--i) center / contain no-repeat;
+  mask: var(--i) center / contain no-repeat;
+}
+
+/* ---------- Barra lateral ---------- */
+main:has(> #account:not([hidden])) {
+  --sidebar-width: 288px;
+}
+
+.sidebar {
+  gap: var(--space-1);
+  padding: var(--space-5) var(--space-4) var(--space-4);
+  background: linear-gradient(180deg, rgb(19 15 38 / 96%), rgb(12 10 24 / 96%));
+  border-right-color: var(--color-divider);
+}
+
+.sidebar-head {
+  align-items: flex-start;
+  margin-bottom: var(--space-4);
+}
+
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.brand-mark {
+  --i: var(--icon-logo);
+  width: 40px;
+  height: 40px;
+  background: linear-gradient(135deg, #c4b0ff, var(--color-accent-strong));
+}
+
+.brand-text {
+  display: grid;
+  font-size: 1.625rem;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.brand-tagline-side {
+  margin-top: 2px;
+  color: var(--color-text-secondary);
+  font-size: 0.8125rem;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+.sidebar .nav-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 48px;
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-lg);
+  font-weight: 600;
+}
+
+#rooms-home-btn {
+  --i: var(--icon-home);
+}
+
+#rooms-home-btn[aria-current='true'] {
+  background: linear-gradient(90deg, var(--color-accent-strong), #4f22c9);
+  color: #fff;
+  box-shadow: var(--glow-accent);
+}
+
+#rooms-home-btn[aria-current='true']:hover:not(:disabled) {
+  background: linear-gradient(90deg, #7a4cf5, #5a2dd4);
+}
+
+.room-nav-heading {
+  margin: var(--space-5) var(--space-3) var(--space-1);
+  color: var(--color-text);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.sidebar .room-link {
+  min-height: 60px;
+  margin-bottom: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-lg);
+}
+
+.sidebar .room-link[aria-current='true'] {
+  background: linear-gradient(90deg, rgb(109 61 242 / 34%), rgb(42 31 85 / 55%));
+  border-color: var(--color-gold);
+  box-shadow: var(--glow-gold);
+}
+
+.sidebar .room-initials {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-md);
+}
+
+/* Sala da chamada: ponto verde de conexão, além do "na chamada" escrito. */
+.sidebar .room-link.room-in-call .room-initials::after {
+  content: '' / '';
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  width: 10px;
+  height: 10px;
+  background: var(--color-success);
+  border: 2px solid var(--color-surface);
+  border-radius: 50%;
+}
+
+.sidebar .room-meta {
+  font-size: 0.8125rem;
+}
+
+#create-open-btn {
+  --i: var(--icon-plus);
+  justify-content: center;
+  min-height: 52px;
+  margin: var(--space-3) 0;
+  background: rgb(242 181 68 / 8%);
+  border: 1.5px solid var(--color-gold);
+  border-radius: 999px;
+  box-shadow: var(--glow-gold);
+  color: var(--color-text);
+}
+
+#create-open-btn::before {
+  color: var(--color-gold);
+}
+
+#create-open-btn:hover:not(:disabled) {
+  background: rgb(242 181 68 / 16%);
+}
+
+.sidebar-foot {
+  padding-top: var(--space-3);
+}
+
+.account-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: 0 var(--space-1) var(--space-2);
+}
+
+.user-avatar {
+  --i: var(--icon-user);
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  background: radial-gradient(circle at 30% 30%, var(--color-accent-strong), var(--color-accent-soft) 70%);
+  border: 2px solid var(--color-gold);
+  border-radius: 50%;
+}
+
+.user-avatar::after {
+  width: 22px;
+  height: 22px;
+}
+
+.account-text {
+  display: grid;
+  min-width: 0;
+}
+
+.account-text strong {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.account-text .muted::before {
+  content: '' / '';
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: var(--space-2);
+  background: var(--color-success);
+  border-radius: 50%;
+}
+
+#logout-btn {
+  --i: var(--icon-logout);
+  min-height: 40px;
+  color: var(--color-text-secondary);
+  font-weight: 500;
+}
+
+#logout-btn::before {
+  width: 18px;
+  height: 18px;
+}
+
+@media (min-width: 769px) {
+  main[data-sidebar='collapsed']:has(> #account:not([hidden])) {
+    --sidebar-width: 80px;
+  }
+
+  main[data-sidebar='collapsed'] .sidebar .nav-btn,
+  main[data-sidebar='collapsed'] .sidebar-brand {
+    justify-content: center;
+    padding-inline: 0;
+  }
+
+  main[data-sidebar='collapsed'] .room-nav-heading {
+    display: none;
+  }
+}
+
+/* ---------- Área central e cabeçalho ---------- */
+.shell-main {
+  max-width: 1560px;
+  padding: var(--space-5) var(--space-6);
+}
+
+.context-header {
+  flex-wrap: wrap;
+  gap: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-5);
+}
+
+/* O nome da sala nunca é espremido pelas ações: sem espaço, elas descem para a linha de baixo. */
+.context-text {
+  flex: 1 1 240px;
+}
+
+.context-icon {
+  --i: var(--icon-wave);
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  background: radial-gradient(circle at 35% 30%, #8b5cf6, #4c1fc0 75%);
+  border-radius: 50%;
+  box-shadow: var(--glow-accent);
+  color: #fff;
+}
+
+.context-icon::after {
+  width: 28px;
+  height: 28px;
+}
+
+main[data-view='all'] .context-icon {
+  --i: var(--icon-home);
+}
+
+.context-text h1 {
+  font-size: 1.875rem;
+  font-weight: 700;
+}
+
+.context-text p {
+  color: var(--color-text);
+  font-size: 0.9375rem;
+  font-weight: 500;
+}
+
+#context-detail[data-in-call='true']::before {
+  content: '' / '';
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: var(--space-2);
+  background: var(--color-success);
+  border-radius: 50%;
+}
+
+.context-actions {
+  flex: 0 1 auto;
+  margin-left: auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+/* Botões de ícone do cabeçalho: o texto fica como nome acessível e no title. */
+#rooms-refresh-btn {
+  --i: var(--icon-refresh);
+  display: grid;
+  place-items: center;
+  width: 48px;
+  min-height: 48px;
+  padding: 0;
+  background: var(--color-elevated);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-lg);
+  font-size: 0;
+}
+
+#rooms-refresh-btn:hover:not(:disabled) {
+  background: var(--color-accent-soft);
+}
+
+/* Ações da sala selecionada, no cabeçalho: pílulas compactas, a administração num menu ⋮. */
+.context-actions #rooms-block {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.context-actions #rooms > div > p {
+  display: none;
+}
+
+.context-actions #rooms .rooms {
+  display: block;
+  margin: 0;
+}
+
+.context-actions #rooms .rooms li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0;
+  background: transparent;
+  border: 0;
+}
+
+.context-actions #rooms .buttons {
+  margin: 0;
+  gap: var(--space-2);
+}
+
+#rooms .buttons button,
+#rooms .buttons button:not(:first-child) {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 48px;
+  padding: 0 var(--space-4);
+  background: var(--color-elevated);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-lg);
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+#rooms .buttons button:hover:not(:disabled) {
+  background: var(--color-accent-soft);
+}
+
+#rooms .buttons button::before {
+  width: 18px;
+  height: 18px;
+}
+
+#rooms .buttons button.room-join {
+  --i: var(--icon-phone);
+  background: linear-gradient(90deg, var(--color-accent-strong), #4f22c9);
+  border-color: transparent;
+  box-shadow: var(--glow-accent);
+  color: #fff;
+}
+
+#rooms .buttons button.room-join:hover:not(:disabled) {
+  background: linear-gradient(90deg, #7a4cf5, #5a2dd4);
+}
+
+/* Já na chamada desta sala: vira um selo verde, sem aparência de ação. */
+#rooms .buttons button.room-join.room-joined {
+  --i: var(--icon-wave);
+  background: rgb(94 224 165 / 10%);
+  border-color: var(--color-success);
+  box-shadow: none;
+  color: var(--color-success);
+  opacity: 1;
+}
+
+/* Outra chamada em curso: entrar aqui não é possível, e o botão diz isso pela opacidade e pelo disabled. */
+#rooms .buttons button.room-join:disabled:not(.room-joined) {
+  box-shadow: none;
+}
+
+#rooms .buttons button.room-chat {
+  --i: var(--icon-chat);
+}
+
+#rooms .buttons button.room-members {
+  --i: var(--icon-users);
+}
+
+/* Painel aberto: aba ativa, em dourado e com o texto "aberto". */
+#rooms .buttons button.room-chat:disabled,
+#rooms .buttons button.room-members:disabled {
+  background: var(--color-gold-soft);
+  border-color: var(--color-gold);
+  color: var(--color-gold);
+  opacity: 1;
+}
+
+#rooms .room-admin {
+  position: relative;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+#rooms .room-admin > summary {
+  --i: var(--icon-more-v);
+  display: grid;
+  place-items: center;
+  width: 48px;
+  min-height: 48px;
+  background: var(--color-elevated);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-lg);
+  color: var(--color-text);
+  font-size: 0;
+  list-style: none;
+}
+
+#rooms .room-admin > summary::-webkit-details-marker {
+  display: none;
+}
+
+#rooms .room-admin[open] > summary {
+  border-color: var(--color-gold);
+  color: var(--color-gold);
+}
+
+#rooms .room-admin > .buttons {
+  position: absolute;
+  top: calc(100% + var(--space-2));
+  right: 0;
+  z-index: 15;
+  flex-direction: column;
+  align-items: stretch;
+  width: max-content;
+  max-width: min(320px, calc(100vw - 32px));
+  margin: 0;
+  padding: var(--space-2);
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 16px 40px rgb(0 0 0 / 50%);
+}
+
+#rooms .room-admin .buttons button,
+#rooms .room-admin .buttons button:not(:first-child),
+#rooms .room-admin .buttons button.danger {
+  justify-content: flex-start;
+  background: transparent;
+  border: 0;
+  text-align: left;
+}
+
+#rooms .room-admin .buttons button:hover:not(:disabled) {
+  background: var(--color-elevated);
+}
+
+#rooms .room-admin .buttons button.danger {
+  color: var(--color-error);
+}
+
+#rooms .room-admin .buttons button.room-invite {
+  --i: var(--icon-user-plus);
+}
+
+#rooms .room-admin .buttons button.danger {
+  --i: var(--icon-close);
+}
+
+/* Visão geral: as salas em cartões. */
+main[data-view='all'] #rooms .rooms {
+  grid-template-columns: repeat(auto-fill, minmax(min(380px, 100%), 1fr));
+  gap: var(--space-4);
+}
+
+main[data-view='all'] #rooms .rooms li {
+  padding: var(--space-5);
+  background: linear-gradient(160deg, rgb(109 61 242 / 14%), rgb(21 17 42 / 92%) 55%);
+  border-color: var(--color-divider);
+  border-radius: var(--radius-xl);
+  transition: border-color var(--motion-fast) ease;
+}
+
+main[data-view='all'] #rooms .rooms li:hover {
+  border-color: var(--color-accent);
+}
+
+main[data-view='all'] #rooms .rooms li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+main[data-view='all'] #rooms .rooms li > strong {
+  flex-basis: 100%;
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+main[data-view='all'] #rooms .rooms li > .muted {
+  flex-basis: 100%;
+  margin-bottom: var(--space-3);
+}
+
+main[data-view='all'] #rooms .rooms li > .buttons {
+  margin: 0;
+}
+
+/* Nos cartões, chat e membros só com ícone: a ação principal é entrar na chamada. O texto segue como nome do botão. */
+main[data-view='all'] #rooms .buttons button.room-chat,
+main[data-view='all'] #rooms .buttons button.room-members {
+  justify-content: center;
+  width: 48px;
+  padding: 0;
+  font-size: 0;
+}
+
+/* Visão geral sem chamada: a frase fica discreta, as salas são o conteúdo. */
+main[data-view='all'] #call-panel:has(> #participants[hidden]) > #voice-title {
+  display: none;
+}
+
+main[data-view='all'] #call-panel:has(> #participants[hidden]) > #voice-state {
+  font-size: 0.875rem;
+}
+
+#create-room,
+#invite-share,
+#invite-accept,
+#return-call,
+#entry-state {
+  background: linear-gradient(160deg, rgb(33 27 60 / 70%), rgb(21 17 42 / 92%));
+  border-color: var(--color-divider);
+  border-radius: var(--radius-xl);
+  padding: var(--space-5);
+}
+
+/* ---------- Palco da chamada ---------- */
+#call-panel {
+  margin: 0 0 var(--space-5);
+  padding: 0;
+  background: transparent;
+  border: 0;
+}
+
+#call-panel > #voice-title {
+  margin: 0 0 var(--space-1);
+  font-size: 1.125rem;
+}
+
+/* Em chamada, o cabeçalho e a barra já dizem sala e fase: o título fica só para leitores de tela. */
+#call-panel:has(> #participants:not([hidden])) > #voice-title,
+#call-panel:has(> #participants:not([hidden])) > #voice-state {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* Sala aberta sem chamada: o palco vazio convida a entrar, sem inventar participantes. */
+main[data-view='room'] #call-panel:has(> #participants[hidden]) {
+  --i: var(--icon-wave);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 320px;
+  padding: var(--space-6);
+  background: linear-gradient(160deg, rgb(109 61 242 / 12%), rgb(21 17 42 / 70%) 60%);
+  border: 1px dashed var(--color-border-control);
+  border-radius: var(--radius-xl);
+  text-align: center;
+}
+
+main[data-view='room'] #call-panel:has(> #participants[hidden])::before {
+  width: 40px;
+  height: 40px;
+  margin-bottom: var(--space-4);
+  padding: 20px;
+  background-color: var(--color-accent);
+  -webkit-mask-origin: content-box;
+  mask-origin: content-box;
+}
+
+main[data-view='room'] #call-panel:has(> #participants[hidden]) > #voice-state {
+  max-width: 420px;
+}
+
+/* A grade se ajusta à largura do palco (não da janela): o chat à direita estreita o palco, e o cartão acompanha.
+   Até 4 cartões (você, os outros e a vaga): 2 colunas por padrão; 3 ou 4 numa linha só quando o palco é largo. */
+#participants {
+  margin-top: 0;
+  container-type: inline-size;
+}
+
+#participants .participant-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-5);
+  margin: 0;
+}
+
+#participants .participant-grid[data-count='1'] {
+  grid-template-columns: minmax(0, 420px);
+}
+
+/* Dois cartões num palco largo não viram faixas: cada um fica com até 460 px. */
+#participants .participant-grid[data-count='2'] {
+  grid-template-columns: repeat(2, minmax(0, 460px));
+}
+
+@container (min-width: 960px) {
+  #participants .participant-grid[data-count='3'] {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  #participants .participant-grid[data-count='4'] {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+#participants .participant-grid li {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--space-1);
+  min-width: 0;
+  padding: 32px var(--space-4) var(--space-5);
+  background: linear-gradient(165deg, rgb(109 61 242 / 26%), rgb(21 17 42 / 94%) 62%);
+  border: 1px solid rgb(157 123 255 / 35%);
+  border-radius: var(--radius-xl);
+  text-align: center;
+}
+
+#participants .participant-grid li::before {
+  content: attr(data-initial) / '';
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 132px;
+  height: 132px;
+  margin-bottom: var(--space-4);
+  background: radial-gradient(circle at 32% 28%, #8b5cf6, var(--color-accent-soft) 72%);
+  border: 3px solid var(--color-accent);
+  border-radius: 50%;
+  box-shadow: var(--glow-accent);
+  font-size: 2.5rem;
+  font-weight: 700;
+}
+
+/* Conectado: avatar com borda verde (o estado segue escrito). Sem conexão: tracejado. */
+#participants .participant-grid li[data-state='connected']::before {
+  border-color: var(--color-success);
+}
+
+#participants .participant-grid li[data-state='failed'] {
+  border-style: dashed;
+}
+
+#participants .participant-grid li > strong {
+  font-size: 1.375rem;
+  font-weight: 700;
+}
+
+#participants .participant-grid li > span {
+  font-size: 0.9375rem;
+}
+
+/* Dono: cartão dourado, coroa e o selo "Dono" escrito. */
+#participants .participant-self[data-role='owner'] {
+  border-color: var(--color-gold);
+  box-shadow: var(--glow-gold);
+}
+
+#participants .participant-self[data-role='owner']::before {
+  border-color: var(--color-gold);
+}
+
+#participants .participant-self[data-role='owner']::after {
+  --i: var(--icon-crown);
+  position: absolute;
+  top: 124px;
+  left: calc(50% + 36px);
+  width: 40px;
+  height: 40px;
+  padding: 9px;
+  box-sizing: border-box;
+  background-color: var(--color-gold);
+  -webkit-mask-origin: content-box;
+  mask-origin: content-box;
+  filter: drop-shadow(0 0 6px rgb(242 181 68 / 60%));
+}
+
+#participants .participant-self[data-muted='true'] > .muted {
+  color: var(--color-error);
+}
+
+#participants .owner-badge {
+  margin-top: var(--space-2);
+  padding: 2px var(--space-4);
+  background: var(--color-gold-soft);
+  border: 1px solid var(--color-gold);
+  border-radius: 999px;
+  color: var(--color-gold);
+  font-size: 0.875rem;
+  font-weight: 700;
+}
+
+#participants .participant-grid li.participant-waiting {
+  padding-top: 72px;
+  background: rgb(21 17 42 / 45%);
+  border: 1.5px dashed var(--color-border-control);
+}
+
+#participants .participant-grid li.participant-waiting::before {
+  content: '' / '';
+  width: 72px;
+  height: 72px;
+  background: var(--color-elevated);
+  border: 0;
+  box-shadow: none;
+}
+
+#participants .participant-waiting::after {
+  --i: var(--icon-user-plus);
+  position: absolute;
+  top: 92px;
+  left: calc(50% - 16px);
+  width: 32px;
+  height: 32px;
+  color: var(--color-text);
+}
+
+#participants .participant-waiting > strong {
+  font-size: 1.25rem;
+}
+
+/* Palco estreito (chat aberto em 1280 px, 1024 px, tablet): cartões compactos, para duas linhas caberem acima da barra. */
+@container (max-width: 719px) {
+  #participants .participant-grid {
+    gap: var(--space-3);
+  }
+
+  #participants .participant-grid li {
+    padding: 20px var(--space-2) var(--space-4);
+  }
+
+  #participants .participant-grid li::before {
+    width: 96px;
+    height: 96px;
+    margin-bottom: var(--space-3);
+    font-size: 2rem;
+  }
+
+  #participants .participant-grid li > strong {
+    font-size: 1.125rem;
+  }
+
+  #participants .participant-grid li > span {
+    font-size: 0.8125rem;
+  }
+
+  #participants .participant-self[data-role='owner']::after {
+    top: 84px;
+    left: calc(50% + 26px);
+    width: 32px;
+    height: 32px;
+    padding: 7px;
+  }
+
+  #participants .participant-grid li.participant-waiting {
+    padding-top: 40px;
+  }
+
+  #participants .participant-grid li.participant-waiting::before {
+    width: 56px;
+    height: 56px;
+  }
+
+  #participants .participant-waiting::after {
+    top: 55px;
+    left: calc(50% - 13px);
+    width: 26px;
+    height: 26px;
+  }
+
+  #participants .participant-waiting > strong {
+    font-size: 1rem;
+  }
+}
+
+/* Janela baixa (1280×800, por exemplo): o palco médio também fica compacto, para quatro cartões caberem acima da barra. */
+@media (max-height: 860px) {
+  @container (max-width: 959px) {
+    #participants .participant-grid {
+      gap: var(--space-3);
+    }
+
+    #participants .participant-grid li {
+      padding: 20px var(--space-2) var(--space-4);
+    }
+
+    #participants .participant-grid li::before {
+      width: 96px;
+      height: 96px;
+      margin-bottom: var(--space-3);
+      font-size: 2rem;
+    }
+
+    #participants .participant-grid li > strong {
+      font-size: 1.125rem;
+    }
+
+    #participants .participant-grid li > span {
+      font-size: 0.8125rem;
+    }
+
+    #participants .participant-self[data-role='owner']::after {
+      top: 84px;
+      left: calc(50% + 26px);
+      width: 32px;
+      height: 32px;
+      padding: 7px;
+    }
+
+    #participants .participant-grid li.participant-waiting {
+      padding-top: 40px;
+    }
+
+    #participants .participant-grid li.participant-waiting::before {
+      width: 56px;
+      height: 56px;
+    }
+
+    #participants .participant-waiting::after {
+      top: 55px;
+      left: calc(50% - 13px);
+      width: 26px;
+      height: 26px;
+    }
+
+    #participants .participant-waiting > strong {
+      font-size: 1rem;
+    }
+  }
+}
+
+/* Celular: avatar menor, a grade segue com 2 colunas. */
+@container (max-width: 400px) {
+  #participants .participant-grid li {
+    padding: 16px var(--space-2) var(--space-3);
+  }
+
+  #participants .participant-grid li::before {
+    width: 64px;
+    height: 64px;
+    margin-bottom: var(--space-2);
+    font-size: 1.375rem;
+  }
+
+  #participants .participant-self[data-role='owner']::after {
+    top: 52px;
+    left: calc(50% + 16px);
+    width: 28px;
+    height: 28px;
+    padding: 6px;
+  }
+
+  #participants .participant-grid li.participant-waiting {
+    padding-top: 24px;
+  }
+
+  #participants .participant-waiting::after {
+    top: 39px;
+  }
+}
+
+@container (max-width: 279px) {
+  #participants .participant-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ---------- Barra da chamada ---------- */
+.call-bar {
+  right: var(--space-5);
+  bottom: var(--space-4);
+  left: calc(var(--sidebar-width, 0px) + var(--space-5));
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto minmax(max-content, 1fr); /* o fim nunca encolhe: Sair não cobre os controles */
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-5);
+  background: rgb(21 17 42 / 94%);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-xl);
+  box-shadow: 0 16px 48px rgb(0 0 0 / 45%);
+  backdrop-filter: blur(12px);
+}
+
+.call-bar-icon {
+  --i: var(--icon-wave);
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  background: var(--color-elevated);
+  border-radius: 50%;
+  color: var(--color-gold);
+}
+
+.call-bar-icon::after {
+  width: 24px;
+  height: 24px;
+}
+
+.call-bar-info {
+  flex: none;
+}
+
+#call-room {
+  font-size: 1rem;
+}
+
+.call-bar-info {
+  min-width: 0;
+}
+
+.call-bar-status {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.call-bar-actions {
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.call-bar-actions .round-btn,
+.call-bar-actions #sound-toggle-btn {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  min-height: 56px;
+  padding: 0;
+  background: var(--color-elevated);
+  border: 1px solid var(--color-divider);
+  border-radius: 50%;
+  color: var(--color-text);
+  font-size: 0;
+}
+
+.call-bar-actions .round-btn::before,
+.call-bar-actions #sound-toggle-btn::before {
+  width: 24px;
+  height: 24px;
+}
+
+.call-bar-actions .round-btn:hover:not(:disabled),
+.call-bar-actions #sound-toggle-btn:hover:not(:disabled) {
+  background: var(--color-accent-soft);
+}
+
+#listen-btn {
+  --i: var(--icon-headphones);
+}
+
+/* Microfone ligado: anel dourado. Mutado: vermelho com o ícone cortado. O nome do botão diz a ação. */
+#mute-btn {
+  --i: var(--icon-mic);
+}
+
+#mute-btn:not(:disabled) {
+  background: var(--color-gold-soft);
+  border: 2px solid var(--color-gold);
+  box-shadow: var(--glow-gold);
+  color: var(--color-gold);
+}
+
+#mute-btn[data-muted='true'] {
+  --i: var(--icon-mic-off);
+  background: rgb(255 138 150 / 10%);
+  border-color: var(--color-error);
+  box-shadow: none;
+  color: var(--color-error);
+}
+
+#sound-toggle-btn {
+  --i: var(--icon-music);
+}
+
+#sound-toggle-btn[aria-expanded='true'] {
+  background: var(--color-gold-soft);
+  border: 2px solid var(--color-gold);
+  box-shadow: var(--glow-gold);
+  color: var(--color-gold);
+}
+
+.call-bar-end {
+  justify-self: end;
+}
+
+#leave-btn {
+  --i: var(--icon-phone);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 52px;
+  margin: 0;
+  padding: 0 var(--space-5);
+  background: var(--color-danger-strong);
+  border: 0;
+  border-radius: 999px;
+  color: #fff;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+#leave-btn::before {
+  transform: rotate(135deg);
+}
+
+#leave-btn:hover:not(:disabled) {
+  background: #e23a59;
+}
+
+main:has(#call-bar:not([hidden])) .shell-main {
+  padding-bottom: 136px;
+}
+
+main:has(#call-bar:not([hidden])) > #error {
+  bottom: 120px;
+}
+
+/* ---------- Painel de sons ---------- */
+.sound-popover {
+  right: auto;
+  bottom: 120px;
+  left: calc(var(--sidebar-width, 0px) + (100vw - var(--sidebar-width, 0px)) / 2);
+  width: min(560px, calc(100vw - var(--sidebar-width, 0px) - 48px));
+  padding: var(--space-4) var(--space-5) var(--space-5);
+  background: linear-gradient(180deg, rgb(33 27 60 / 98%), rgb(21 17 42 / 98%));
+  border: 1px solid rgb(242 181 68 / 60%);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--glow-gold), 0 24px 60px rgb(0 0 0 / 55%);
+  transform: translateX(-50%);
+}
+
+.sound-popover .panel-head {
+  margin-bottom: var(--space-4);
+}
+
+#soundboard-title {
+  --i: var(--icon-music);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: 1.125rem;
+}
+
+#soundboard-title::before {
+  width: 24px;
+  height: 24px;
+  color: var(--color-gold);
+}
+
+#sound-close-btn,
+#chat-close-btn,
+#members-close-btn {
+  --i: var(--icon-close);
+  display: grid;
+  place-items: center;
+  width: 44px;
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  font-size: 0;
+}
+
+#sound-form {
+  margin: 0 0 var(--space-4);
+}
+
+#sound-form > details > summary {
+  --i: var(--icon-upload);
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: 44px;
+  background: var(--color-elevated);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-md);
+  list-style: none;
+}
+
+#sound-form > details > summary::-webkit-details-marker {
+  display: none;
+}
+
+#sound-form > details > summary::before {
+  content: '' / '';
+  margin: 0;
+  width: 18px;
+  height: 18px;
+}
+
+#sound-form > details[open] > summary {
+  margin-bottom: var(--space-3);
+  border-color: var(--color-gold);
+  color: var(--color-gold);
+}
+
+#sound-form > details[open] > summary::before {
+  content: '' / '';
+}
+
+.sound-popover .sound-list {
+  grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+  gap: var(--space-3);
+}
+
+.sound-popover .sound-list li {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-1);
+  padding: 0;
+  background: transparent;
+  border: 0;
+}
+
+.sound-popover .sound-play {
+  --i: var(--icon-play-ring);
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: 108px;
+  padding: var(--space-3) var(--space-2);
+  background: var(--color-elevated);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-lg);
+  color: var(--color-text);
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.sound-popover .sound-play::before {
+  width: 40px;
+  height: 40px;
+  color: var(--color-gold);
+}
+
+.sound-popover .sound-play:hover:not(:disabled) {
+  background: var(--color-gold-soft);
+  border-color: var(--color-gold);
+}
+
+.sound-popover .sound-detail {
+  text-align: center;
+  font-size: 0.75rem;
+}
+
+.sound-popover .sound-detail:empty {
+  display: none;
+}
+
+/* Remover: ação secundária, no canto do cartão. O nome acessível segue "Remover <som>". */
+.sound-popover .sound-list button.danger {
+  --i: var(--icon-close);
+  position: absolute;
+  top: var(--space-1);
+  right: var(--space-1);
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 50%;
+  color: var(--color-text-secondary);
+  font-size: 0;
+}
+
+.sound-popover .sound-list button.danger::before {
+  width: 16px;
+  height: 16px;
+}
+
+.sound-popover .sound-list button.danger:hover:not(:disabled) {
+  background: var(--color-surface);
+  color: var(--color-error);
+}
+
+.sound-popover .sound-controls {
+  margin-top: var(--space-4);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-divider);
+}
+
+#sound-volume {
+  accent-color: var(--color-gold);
+}
+
+/* ---------- Chat e membros: painel contextual ---------- */
+#chat,
+#members {
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-4) var(--space-5) var(--space-5);
+  background: linear-gradient(180deg, rgb(33 27 60 / 75%), rgb(21 17 42 / 92%));
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-xl);
+}
+
+#chat .panel-head,
+#members .panel-head {
+  margin: 0 calc(-1 * var(--space-5)) var(--space-3);
+  padding: 0 var(--space-5) var(--space-3);
+  border-bottom: 1px solid var(--color-divider);
+}
+
+#chat .panel-head h3,
+#members .panel-head h3 {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 1.0625rem;
+}
+
+#chat .panel-head h3 {
+  --i: var(--icon-chat);
+}
+
+#members .panel-head h3 {
+  --i: var(--icon-users);
+}
+
+#chat .panel-head h3::before,
+#members .panel-head h3::before {
+  color: var(--color-gold);
+}
+
+.chat-messages {
+  flex: 1;
+  min-height: 200px;
+  padding: var(--space-1) 0;
+  background: transparent;
+}
+
+.chat-messages > div > p.chat-empty {
+  --i: var(--icon-chat);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-4);
+  margin: var(--space-6) var(--space-2) var(--space-1);
+  color: var(--color-text);
+  font-size: 1.1875rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+.chat-messages > div > p.chat-empty::before {
+  width: 64px;
+  height: 64px;
+  color: var(--color-gold);
+}
+
+.chat-messages > div > p.chat-empty-hint {
+  margin: 0 var(--space-4);
+  text-align: center;
+}
+
+.chat-list li {
+  background: var(--color-elevated);
+  border-radius: var(--radius-lg);
+}
+
+.chat-list li.chat-mine {
+  background: var(--color-accent-soft);
+  border-right-color: var(--color-gold);
+}
+
+#chat-form {
+  grid-template-columns: minmax(0, 1fr) max-content;
+  align-items: center;
+  margin-top: var(--space-3);
+}
+
+#chat-input {
+  min-height: 52px;
+  max-height: 160px;
+  margin: 0;
+  padding: var(--space-3) var(--space-5);
+  background: var(--color-elevated);
+  border: 1px solid var(--color-border-control);
+  border-radius: 26px;
+  resize: none;
+}
+
+#chat-form #chat-send-btn {
+  --i: var(--icon-send);
+  display: grid;
+  place-items: center;
+  width: 52px;
+  min-height: 52px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid var(--color-divider);
+  border-radius: 50%;
+  color: var(--color-gold);
+  font-size: 0;
+}
+
+#chat-form #chat-send-btn::before {
+  width: 22px;
+  height: 22px;
+}
+
+#chat-form #chat-send-btn:hover:not(:disabled) {
+  background: var(--color-gold-soft);
+}
+
+#members-list .rooms li {
+  background: var(--color-elevated);
+  border-radius: var(--radius-lg);
+}
+
+/* ---------- Diagnóstico: discreto, fora da composição principal ---------- */
+#diagnostics {
+  background: transparent;
+  border-color: var(--color-divider);
+  border-radius: var(--radius-lg);
+}
+
+/* ---------- Telas pequenas ---------- */
+@media (max-width: 768px) {
+  .shell-main {
+    padding: var(--space-4) var(--space-3);
+  }
+
+  .context-icon {
+    width: 44px;
+    height: 44px;
+  }
+
+  .context-icon::after {
+    width: 22px;
+    height: 22px;
+  }
+
+  .context-text h1 {
+    font-size: 1.375rem;
+  }
+
+  .context-text {
+    flex: 1 1 40%;
+  }
+
+  .context-actions {
+    flex-basis: 100%;
+    justify-content: flex-start;
+  }
+
+  .context-actions #rooms .room-admin > .buttons {
+    right: auto;
+    left: 0;
+  }
+
+  /* Ações da sala numa linha: chat e membros só com ícone (o texto segue como nome e no estado "aberto"). */
+  #rooms .rooms li > .buttons,
+  .context-actions #rooms .rooms li {
+    flex-wrap: nowrap;
+  }
+
+  #rooms .buttons button.room-chat,
+  #rooms .buttons button.room-members {
+    justify-content: center;
+    width: 44px;
+    min-height: 44px;
+    padding: 0;
+    font-size: 0;
+  }
+
+  #rooms .buttons button.room-join {
+    min-height: 44px;
+    padding: 0 var(--space-3);
+  }
+
+  #rooms .room-admin > summary,
+  #rooms-refresh-btn {
+    width: 44px;
+    min-height: 44px;
+  }
+
+  #shell-menu-btn {
+    background: var(--color-elevated);
+    border-color: var(--color-divider);
+    border-radius: var(--radius-md);
+  }
+
+  .call-bar {
+    right: var(--space-2);
+    bottom: var(--space-2);
+    left: var(--space-2);
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: var(--space-2) var(--space-3);
+    padding: var(--space-3);
+  }
+
+  .call-bar-icon {
+    width: 44px;
+    height: 44px;
+  }
+
+  .call-bar-actions {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-content: center;
+    width: auto;
+  }
+
+  .call-bar-actions .round-btn,
+  .call-bar-actions #sound-toggle-btn,
+  .call-bar-actions button.future-btn[aria-disabled='true'] {
+    flex: none;
+    width: 48px;
+    height: 48px;
+    min-height: 48px;
+  }
+
+  .call-bar-end {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  #leave-btn {
+    min-height: 44px;
+    padding: 0 var(--space-4);
+    font-size: 0.875rem;
+  }
+
+  main:has(#call-bar:not([hidden])) .shell-main {
+    padding-bottom: 176px;
+  }
+
+  main:has(#call-bar:not([hidden])) > #error {
+    bottom: 160px;
+  }
+
+  .sound-popover {
+    right: var(--space-2);
+    bottom: 160px;
+    left: var(--space-2);
+    width: auto;
+    max-height: calc(100dvh - 224px);
+    padding: var(--space-3) var(--space-4) var(--space-4);
+    transform: none;
+  }
+
+  .sound-popover .sound-list {
+    grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
+    gap: var(--space-2);
+  }
+
+  .sound-popover .sound-play {
+    min-height: 92px;
+  }
+}
+
+@media (max-width: 480px) {
+  /* Sair da chamada vira o botão redondo vermelho com o telefone; o nome segue no texto do botão. */
+  #leave-btn {
+    justify-content: center;
+    width: 48px;
+    padding: 0;
+    font-size: 0;
+  }
+
+  #leave-btn::before {
+    width: 22px;
+    height: 22px;
+  }
+
+  #chat-form {
+    grid-template-columns: minmax(0, 1fr) max-content;
+  }
+
+  #chat-form .buttons button {
+    width: 52px;
+  }
+}

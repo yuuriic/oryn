@@ -36,6 +36,7 @@ export function renderMembers(doc: ViewDocument, state: MembersState, opts: Memb
   for (const member of state.members) {
     const item = el('li');
     item.setAttribute('data-initial', roomInitials(member.display_name));
+    item.setAttribute('data-role', member.role); // o dono ganha o destaque dourado; o papel segue no texto
     item.append(
       el('strong', member.is_self ? `${member.display_name} (você)` : member.display_name),
       el('span', ` ${ROLE[member.role]}${member.in_call ? ' · na chamada' : ''}`, 'muted'),
@@ -68,7 +69,17 @@ const STATE_TEXT: Record<ParticipantState, string> = {
 /** Texto de estado de um participante da chamada. */
 export const participantStateText = (state: ParticipantState): string => STATE_TEXT[state];
 
-export function renderParticipants(doc: ViewDocument, list: readonly ParticipantView[], standby: boolean): HTMLElement {
+/** Palco da chamada: o próprio cartão e as vagas livres. Só estado que já existe (papel, mudo, lotação): nada de fala simulada. */
+export interface ParticipantStage {
+  /** Papel da própria conta na sala da chamada. */
+  owner: boolean;
+  /** O próprio microfone está mutado. */
+  muted: boolean;
+  /** Lugares ainda livres na chamada. */
+  freeSlots: number;
+}
+
+export function renderParticipants(doc: ViewDocument, list: readonly ParticipantView[], standby: boolean, stage?: ParticipantStage): HTMLElement {
   const el = (tag: string, text?: string, className?: string): HTMLElement => {
     const node = doc.createElement(tag);
     if (text !== undefined) node.textContent = text;
@@ -77,11 +88,18 @@ export function renderParticipants(doc: ViewDocument, list: readonly Participant
   };
   const root = el('div');
   if (standby) root.append(el('p', 'Esta conta já está na chamada em outra aba ou aparelho. Esta sessão fica em espera e assume quando a outra sair.', 'notice'));
-  if (list.length === 0) {
-    if (!standby) root.append(el('p', 'Nenhum outro participante na chamada.', 'muted'));
-    return root;
+  if (list.length === 0 && !standby) root.append(el('p', 'Nenhum outro participante na chamada.', stage ? 'visually-hidden' : 'muted'));
+  if (list.length === 0 && !stage) return root;
+  const items = el('ul', undefined, stage ? 'rooms participant-grid' : 'rooms');
+  if (stage) {
+    const self = el('li', undefined, 'participant-self');
+    self.setAttribute('data-initial', 'Eu');
+    self.setAttribute('data-role', stage.owner ? 'owner' : 'member');
+    self.setAttribute('data-muted', String(stage.muted));
+    self.append(el('strong', 'Você'), el('span', stage.muted ? 'Microfone desligado' : 'Microfone ligado', 'muted'));
+    if (stage.owner) self.append(el('span', 'Dono', 'owner-badge'));
+    items.append(self);
   }
-  const items = el('ul', undefined, 'rooms');
   for (const p of list) {
     const item = el('li');
     item.setAttribute('data-initial', roomInitials(p.displayName));
@@ -89,6 +107,12 @@ export function renderParticipants(doc: ViewDocument, list: readonly Participant
     item.append(el('strong', p.displayName), el('span', ` ${standby ? 'na chamada' : STATE_TEXT[p.state]}`, p.state === 'failed' && !standby ? 'error' : 'muted'));
     items.append(item);
   }
+  if (stage && stage.freeSlots > 0) {
+    const waiting = el('li', undefined, 'participant-waiting');
+    waiting.append(el('strong', 'Aguardando participantes'), el('span', stage.freeSlots === 1 ? 'Até 1 vaga disponível' : `Até ${stage.freeSlots} vagas disponíveis`, 'muted'));
+    items.append(waiting);
+  }
+  if (stage) items.setAttribute('data-count', String(Math.min(4, list.length + 1 + (stage.freeSlots > 0 ? 1 : 0)))); // só o desenho da grade
   root.append(items);
   return root;
 }
