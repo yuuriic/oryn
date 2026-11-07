@@ -31,6 +31,9 @@ export interface LobbyViewOptions {
   membersRoomId?: string | null;
   /** Mostra só esta sala, com as mesmas ações. Sem ela, todas. */
   selectedRoomId?: string | null;
+  /** Salas com "Gerenciar sala" aberto: o redesenho não pode recolher o que a pessoa abriu. */
+  adminOpenRoomIds?: ReadonlySet<string>;
+  onAdminToggle?(roomId: string, open: boolean): void;
 }
 
 export interface RoomNavOptions {
@@ -58,9 +61,10 @@ export function statusText(state: LobbyState): string {
 }
 
 /** Título e resumo do cabeçalho, para a sala selecionada ou para a visão geral. */
-export function roomContext(state: LobbyState, selectedRoomId: string | null): { title: string; detail: string | null } {
+export function roomContext(state: LobbyState, selectedRoomId: string | null, activeRoomId: string | null = null): { title: string; detail: string | null } {
   const room = selectedRoomId === null ? undefined : state.rooms.find((r) => r.room_id === selectedRoomId);
   if (!room) return { title: 'Minhas salas', detail: null };
+  if (room.is_open && room.room_id === activeRoomId) return { title: room.name, detail: `Em chamada · ${room.member_count}/${room.max_members} membros` };
   const situation = room.is_open ? `${room.member_count}/${room.max_members} membros · aberta` : `encerrada em ${formatWhen(room.closed_at ?? '')}`;
   return { title: room.name, detail: `${ROLE[room.role]} · ${situation}` };
 }
@@ -91,24 +95,21 @@ export function renderRoomNav(doc: ViewDocument, state: LobbyState, opts: RoomNa
     const initials = el('span', roomInitials(room.name), 'room-initials');
     initials.setAttribute('aria-hidden', 'true');
     const text = el('span', undefined, 'room-text');
-    text.append(el('span', room.name, 'room-name'), el('span', inCall ? 'na chamada' : `${ROLE[room.role]} · ${situation}`, 'room-meta'));
+    text.append(el('span', room.name, 'room-name'), el('span', `${inCall ? 'na chamada' : ROLE[room.role]} · ${room.member_count}/${room.max_members}`, 'room-meta'));
     button.append(initials, text);
     button.addEventListener('click', () => opts.onSelect(room.room_id));
     li.append(button);
     return li;
   };
 
-  const { open, closed } = splitRooms(state.rooms);
+  // Só salas abertas: as encerradas seguem em "Minhas salas", recolhidas e só para leitura.
+  const { open } = splitRooms(state.rooms);
   if (open.length > 0) {
     const list = el('ul', undefined, 'room-list');
     list.append(...open.map(item));
     root.append(list);
-  }
-  if (closed.length > 0) {
-    root.append(el('p', 'Encerradas', 'room-nav-group'));
-    const list = el('ul', undefined, 'room-list');
-    list.append(...closed.map(item));
-    root.append(list);
+  } else if (state.status === 'ready') {
+    root.append(el('p', 'Nenhuma sala aberta', 'muted room-nav-status'));
   }
   return root;
 }
@@ -130,7 +131,7 @@ export function renderLobby(doc: ViewDocument, state: LobbyState, opts: LobbyVie
 
   const chatButton = (roomId: string, text: string, onChat: (roomId: string) => void): HTMLElement => {
     const opened = opts.chatRoomId === roomId;
-    const button = el('button', opened ? 'Chat aberto' : text) as HTMLButtonElement;
+    const button = el('button', opened ? 'Chat aberto' : text, 'room-chat') as HTMLButtonElement;
     button.type = 'button';
     button.disabled = opened;
     button.addEventListener('click', () => onChat(roomId));
@@ -139,7 +140,7 @@ export function renderLobby(doc: ViewDocument, state: LobbyState, opts: LobbyVie
 
   const membersButton = (roomId: string, onMembers: (roomId: string) => void): HTMLElement => {
     const opened = opts.membersRoomId === roomId;
-    const button = el('button', opened ? 'Membros abertos' : 'Membros') as HTMLButtonElement;
+    const button = el('button', opened ? 'Membros abertos' : 'Membros', 'room-members') as HTMLButtonElement;
     button.type = 'button';
     button.disabled = opened;
     button.addEventListener('click', () => onMembers(roomId));
@@ -158,20 +159,22 @@ export function renderLobby(doc: ViewDocument, state: LobbyState, opts: LobbyVie
       item.append(el('strong', room.name), el('span', ` ${ROLE[room.role]} · ${room.member_count}/${room.max_members} membros · aberta`, 'muted'));
       const actions = el('div', undefined, 'buttons');
       const inThis = opts.activeRoomId === room.room_id;
-      const join = el('button', inThis ? 'Na chamada' : 'Entrar na chamada') as HTMLButtonElement;
+      const join = el('button', inThis ? 'Na chamada' : 'Entrar na chamada', inThis ? 'room-join room-joined' : 'room-join') as HTMLButtonElement;
       join.type = 'button';
       join.disabled = opts.callActive || busy;
       join.addEventListener('click', () => opts.onJoin(room.room_id));
       actions.append(join);
       if (opts.onChat) actions.append(chatButton(room.room_id, 'Abrir chat', opts.onChat));
       if (opts.onMembers) actions.append(membersButton(room.room_id, opts.onMembers));
+      // Administração do dono: recolhida, depois das ações principais, para não competir com elas.
+      const admin = el('div', undefined, 'buttons');
       if (room.role === 'owner' && room.member_count < room.max_members && opts.onInvite) {
         const { onInvite } = opts;
-        const invite = el('button', 'Convidar') as HTMLButtonElement;
+        const invite = el('button', 'Convidar', 'room-invite') as HTMLButtonElement;
         invite.type = 'button';
         invite.disabled = busy || opts.inviteBusy === true; // a chamada em curso não impede: o dono pode estar esperando
         invite.addEventListener('click', () => onInvite(room.room_id));
-        actions.append(invite);
+        admin.append(invite);
       }
       // Fora do painel de propósito: depois de recarregar, o dono revoga sem precisar gerar mais um convite.
       if (room.role === 'owner' && room.member_count < room.max_members && opts.onRevokeInvites) {
@@ -180,7 +183,7 @@ export function renderLobby(doc: ViewDocument, state: LobbyState, opts: LobbyVie
         revoke.type = 'button';
         revoke.disabled = busy || opts.inviteBusy === true;
         revoke.addEventListener('click', () => onRevokeInvites(room.room_id));
-        actions.append(revoke);
+        admin.append(revoke);
       }
       if (room.role === 'owner') {
         const closing = state.busy?.kind === 'close' && state.busy.roomId === room.room_id;
@@ -188,9 +191,16 @@ export function renderLobby(doc: ViewDocument, state: LobbyState, opts: LobbyVie
         close.type = 'button';
         close.disabled = busy;
         close.addEventListener('click', () => opts.onClose(room.room_id));
-        actions.append(close);
+        admin.append(close);
       }
       item.append(actions);
+      if (admin.children.length > 0) {
+        const box = el('details', undefined, 'room-admin');
+        if (opts.adminOpenRoomIds?.has(room.room_id)) box.setAttribute('open', '');
+        box.addEventListener('toggle', () => opts.onAdminToggle?.(room.room_id, (box as HTMLDetailsElement).open));
+        box.append(el('summary', 'Gerenciar sala'), admin);
+        item.append(box);
+      }
       list.append(item);
     }
     root.append(list);

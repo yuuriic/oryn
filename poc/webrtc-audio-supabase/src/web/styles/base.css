@@ -95,6 +95,17 @@ details summary {
   color: var(--color-text-secondary);
 }
 
+/* Fora da tela, dentro da árvore de acessibilidade. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

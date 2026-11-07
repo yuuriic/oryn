@@ -71,6 +71,46 @@ main[data-view='room'] #rooms .rooms .buttons {
   margin-top: 0;
 }
 
+/* Administração do dono: recolhida, discreta, depois das ações principais. */
+.room-admin {
+  margin-top: var(--space-3);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--color-divider);
+}
+
+.room-admin > summary {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-weight: 500;
+}
+
+.room-admin > summary::before {
+  content: '+' / '';
+  margin-right: var(--space-2);
+}
+
+.room-admin[open] > summary::before {
+  content: '−' / '';
+}
+
+.room-admin > .buttons {
+  margin-top: var(--space-2);
+}
+
+.rooms .room-admin .buttons button:first-child:not(.danger) {
+  background: transparent;
+  border: 1px solid var(--color-border-control);
+  color: var(--color-text);
+  font-weight: 500;
+}
+
+.rooms .room-admin .buttons button:first-child:not(.danger):hover:not(:disabled) {
+  background: var(--color-elevated);
+}
+
 #rooms > div > details {
   margin-top: var(--space-3);
 }
@@ -97,6 +137,10 @@ main[data-view='room'] #rooms .rooms .buttons {
   padding: var(--space-4);
   border: 1px solid var(--color-divider);
   border-radius: var(--radius-md);
+}
+
+#create-room .panel-head h2 {
+  margin: 0;
 }
 
 #create-room h2,

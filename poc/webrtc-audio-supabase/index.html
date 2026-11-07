@@ -34,39 +34,80 @@
 
         <nav id="sidebar" class="sidebar" aria-label="Navegação principal">
           <div class="sidebar-head">
-            <p class="sidebar-brand"><span class="label-full">Oryn</span><span class="label-compact" aria-hidden="true">O</span></p>
+            <p class="sidebar-brand"><span class="brand-mark" aria-hidden="true"></span><span class="label-full brand-text">Oryn <span class="brand-tagline-side" lang="en">Stay close. Play on.</span></span></p>
             <button id="sidebar-toggle" class="icon-btn" type="button" aria-controls="sidebar" aria-expanded="true" aria-label="Recolher barra lateral" title="Recolher barra lateral"><span id="sidebar-toggle-icon" aria-hidden="true">‹</span></button>
             <button id="sidebar-close" class="icon-btn" type="button" aria-label="Fechar navegação"><span aria-hidden="true">×</span></button>
           </div>
-          <button id="rooms-home-btn" class="nav-btn" type="button" aria-label="Todas as salas" title="Todas as salas"><span class="label-compact" aria-hidden="true">≡</span><span class="label-full">Todas as salas</span></button>
+          <button id="rooms-home-btn" class="nav-btn" type="button" aria-label="Minhas salas" title="Minhas salas"><span class="label-full">Minhas salas</span></button>
+          <p class="room-nav-heading label-full" aria-hidden="true">Salas ativas</p>
           <div id="room-nav" class="room-nav"></div>
-          <button id="create-open-btn" class="nav-btn" type="button" aria-label="Criar sala" title="Criar sala"><span class="label-compact" aria-hidden="true">+</span><span class="label-full">+ Nova sala</span></button>
+          <button id="create-open-btn" class="nav-btn" type="button" aria-label="Criar sala" title="Criar sala"><span class="label-full">Criar sala</span></button>
           <div id="account-box" class="sidebar-foot">
-            <p class="account-line"><span class="muted">Conectado como</span> <strong id="user-label"></strong></p>
+            <p class="account-line"><span class="user-avatar" aria-hidden="true"></span><span class="account-text"><strong id="user-label"></strong><span class="muted">Conectado</span></span></p>
             <button id="logout-btn" class="nav-btn" type="button" aria-label="Sair da conta"><span class="label-compact" aria-hidden="true">Sair</span><span class="label-full">Sair da conta</span></button>
           </div>
         </nav>
 
         <section id="call-bar" class="call-bar" aria-label="Chamada em curso" hidden>
+          <span class="call-bar-icon" aria-hidden="true"></span>
           <div class="call-bar-info">
             <strong id="call-room">—</strong>
             <p class="call-bar-status"><span id="call-phase" role="status"></span><span id="call-mic"></span></p>
           </div>
           <div class="call-bar-actions">
-            <button id="listen-btn" type="button" hidden>Ouvir</button>
-            <button id="mute-btn" type="button" disabled>Mutar</button>
+            <button id="listen-btn" class="round-btn" type="button" hidden>Ouvir</button>
+            <button id="mute-btn" class="round-btn" type="button" disabled>Mutar</button>
+            <button id="sound-toggle-btn" type="button" aria-expanded="false" aria-controls="soundboard" hidden>Sons</button>
+            <!-- Recursos futuros: só apresentação. Sem id lido por main.ts, sem ouvinte, sem pedido de permissão. aria-disabled
+                 mantém o botão no Tab e anunciado como indisponível; o clique não faz nada. -->
+            <div class="future-features" role="group" aria-labelledby="future-features-title">
+              <p id="future-features-title" class="future-features-title">Próximos recursos</p>
+              <button class="future-btn future-screen" type="button" aria-disabled="true" aria-describedby="future-features-note" title="Transmitir tela: em breve">Transmitir tela <span class="soon-badge">Em breve</span></button>
+              <button class="future-btn future-audio" type="button" aria-disabled="true" aria-describedby="future-features-note" title="Configurações avançadas de áudio: em breve">Configurações avançadas de áudio <span class="soon-badge">Em breve</span></button>
+              <p id="future-features-note" class="muted future-features-note">Ainda não disponíveis nesta versão.</p>
+            </div>
+          </div>
+          <div class="call-bar-end">
             <button id="leave-btn" type="button" disabled>Sair da chamada</button>
+          </div>
+        </section>
+
+        <!-- Painel flutuante, aberto pelo botão Sons da barra da chamada. Fora de #shell-main: a navegação não o alcança. -->
+        <section id="soundboard" class="sound-popover" aria-labelledby="soundboard-title" hidden>
+          <div class="panel-head">
+            <h3 id="soundboard-title">Sons da sala</h3>
+            <button id="sound-close-btn" class="ghost-btn" type="button" title="Fechar sons">Fechar sons</button>
+          </div>
+          <p id="soundboard-status" role="status" hidden></p>
+          <form id="sound-form" autocomplete="off" hidden>
+            <details>
+            <summary>Publicar som</summary>
+            <div class="sound-fields">
+            <!-- maxlength conta unidades UTF-16: fica no dobro do limite real, conferido em pontos de código. -->
+            <label>Nome (até 40 caracteres) <input id="sound-name" type="text" maxlength="80" spellcheck="false" required /></label>
+            <label>Arquivo MP3 ou WAV, até 2 MiB e 10 s <input id="sound-file" type="file" accept=".mp3,.wav,audio/mpeg,audio/wav" required /></label>
+            <button id="sound-publish-btn" type="submit">Publicar</button>
+            </div>
+            </details>
+          </form>
+          <div id="soundboard-list"></div>
+          <div class="sound-controls">
+            <label class="sound-volume-label">Volume dos sons <input id="sound-volume" type="range" min="0" max="100" step="1" /></label>
+            <label class="check"><input id="sound-disabled" type="checkbox" /> Desativar sons neste aparelho</label>
           </div>
         </section>
 
         <div id="shell-main" class="shell-main">
           <header class="context-header">
             <button id="shell-menu-btn" class="ghost-btn" type="button" aria-controls="sidebar" aria-expanded="false">Menu</button>
+            <span class="context-icon" aria-hidden="true"></span>
             <div class="context-text">
               <h1 id="context-title" tabindex="-1">Minhas salas</h1>
               <p id="context-detail" class="muted" hidden></p>
             </div>
-            <button id="rooms-refresh-btn" class="ghost-btn" type="button">Atualizar lista</button>
+            <div id="context-actions" class="context-actions">
+              <button id="rooms-refresh-btn" class="ghost-btn" type="button" title="Atualizar lista">Atualizar lista</button>
+            </div>
           </header>
 
         <section id="return-call" hidden>
@@ -107,27 +148,6 @@
         <p id="voice-state"></p>
         <p id="voice-note" hidden></p>
         <div id="participants" hidden></div>
-
-        <section id="soundboard" hidden>
-          <h3>Sons da sala</h3>
-          <p id="soundboard-status" role="status" hidden></p>
-          <div id="soundboard-list"></div>
-          <div class="sound-controls">
-            <label class="sound-volume-label">Volume dos sons <input id="sound-volume" type="range" min="0" max="100" step="1" /></label>
-            <label class="check"><input id="sound-disabled" type="checkbox" /> Desativar sons neste aparelho</label>
-          </div>
-          <form id="sound-form" autocomplete="off" hidden>
-            <details>
-            <summary>Publicar som</summary>
-            <div class="sound-fields">
-            <!-- maxlength conta unidades UTF-16: fica no dobro do limite real, conferido em pontos de código. -->
-            <label>Nome (até 40 caracteres) <input id="sound-name" type="text" maxlength="80" spellcheck="false" required /></label>
-            <label>Arquivo MP3 ou WAV, até 2 MiB e 10 s <input id="sound-file" type="file" accept=".mp3,.wav,audio/mpeg,audio/wav" required /></label>
-            <button id="sound-publish-btn" type="submit">Publicar</button>
-            </div>
-            </details>
-          </form>
-        </section>
 
         </section>
 
@@ -172,13 +192,16 @@
           <div id="chat-messages" class="chat-messages" role="log" aria-live="polite" aria-label="Mensagens da sala" tabindex="0"></div>
           <form id="chat-form" autocomplete="off">
             <!-- maxlength conta unidades UTF-16 (um emoji vale 2): fica no dobro do limite real, conferido em pontos de código. -->
-            <label>Mensagem <textarea id="chat-input" rows="2" maxlength="8000"></textarea></label>
-            <div class="buttons"><button id="chat-send-btn" type="submit">Enviar</button></div>
+            <label><span class="visually-hidden">Mensagem</span> <textarea id="chat-input" rows="1" maxlength="8000" placeholder="Enviar mensagem…"></textarea></label>
+            <div class="buttons"><button id="chat-send-btn" type="submit" title="Enviar">Enviar</button></div>
           </form>
         </section>
 
-        <section id="create-room">
-        <h2>Criar sala</h2>
+        <section id="create-room" hidden>
+        <div class="panel-head">
+          <h2 id="create-room-title">Criar sala</h2>
+          <button id="create-cancel-btn" class="ghost-btn" type="button">Cancelar</button>
+        </div>
         <!-- maxlength conta unidades UTF-16 (um emoji vale 2): fica no dobro do limite real, que é conferido em
              pontos de código, como no banco (40 e 32), com mensagem na tela. -->
         <form id="create-form" autocomplete="off">

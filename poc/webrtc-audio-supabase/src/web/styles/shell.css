@@ -160,7 +160,7 @@ main:has(> #account:not([hidden])) > .brand {
 
 /* Seleção visível também sem cor: a borda à esquerda e o peso do nome. */
 .room-link[aria-current='true'] {
-  background: var(--color-elevated);
+  background: var(--color-accent-soft);
   border-left-color: var(--color-accent);
 }
 
@@ -182,8 +182,15 @@ main:has(> #account:not([hidden])) > .brand {
   font-weight: 600;
 }
 
+/* Sala da chamada: dourado, com "na chamada" escrito. */
 .room-link.room-in-call .room-initials {
-  border-color: var(--color-accent);
+  background: var(--color-gold-soft);
+  border-color: var(--color-gold);
+  color: var(--color-gold);
+}
+
+.room-link.room-in-call .room-meta {
+  color: var(--color-gold);
 }
 
 .room-link.room-closed .room-initials {
@@ -269,6 +276,59 @@ main:has(> #account:not([hidden])) > .brand {
 
 #shell-menu-btn {
   display: none;
+}
+
+/* Painel contextual à direita, em tela larga: o chat, ou os membros quando o chat está fechado. O cabeçalho ocupa as duas
+   colunas; a voz e o resto ficam no centro. */
+@media (min-width: 1200px) {
+  .shell-main:has(> #chat:not([hidden])),
+  .shell-main:has(> #members:not([hidden])) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(340px, 420px);
+    column-gap: var(--space-5);
+    align-items: start;
+  }
+
+  .shell-main:has(> #chat:not([hidden])) > *,
+  .shell-main:has(> #members:not([hidden])) > * {
+    grid-column: 1;
+  }
+
+  .shell-main:has(> #chat:not([hidden])) > .context-header,
+  .shell-main:has(> #members:not([hidden])) > .context-header {
+    grid-column: 1 / -1;
+  }
+
+  /* O :has acima já pesa como um id: estas regras precisam do mesmo seletor para vencer. */
+  .shell-main:has(> #chat:not([hidden])) > #chat,
+  .shell-main:has(> #members:not([hidden])):not(:has(> #chat:not([hidden]))) > #members {
+    grid-column: 2;
+    grid-row: 2 / span 40;
+    position: sticky;
+    top: var(--space-5);
+    box-sizing: border-box;
+    /* Abaixo do cabeçalho (cerca de 112 px): o painel cabe na janela e a página não rola por causa dele. */
+    height: calc(100dvh - 150px);
+    max-height: calc(100dvh - 150px);
+    min-height: 420px;
+  }
+
+  /* Com a barra da chamada, o painel termina acima dela: o campo de envio nunca passa por baixo. */
+  main:has(#call-bar:not([hidden])) .shell-main:has(> #chat:not([hidden])) > #chat,
+  main:has(#call-bar:not([hidden])) .shell-main:has(> #members:not([hidden])):not(:has(> #chat:not([hidden]))) > #members {
+    height: calc(100dvh - 150px - 112px);
+    max-height: calc(100dvh - 150px - 112px);
+    min-height: 360px;
+  }
+
+  .shell-main > #chat .chat-messages {
+    min-height: 120px;
+    max-height: none;
+  }
+
+  .shell-main > #members #members-list {
+    overflow-y: auto;
+  }
 }
 
 /* Avisos da página ficam sempre na tela, sobre o conteúdo. A folga embaixo mantém o fim da página alcançável. */

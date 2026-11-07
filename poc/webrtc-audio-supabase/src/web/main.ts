@@ -127,6 +127,9 @@ const ui = {
   soundName: el<HTMLInputElement>('sound-name'),
   soundFile: el<HTMLInputElement>('sound-file'),
   soundPublishBtn: el<HTMLButtonElement>('sound-publish-btn'),
+  soundToggleBtn: el<HTMLButtonElement>('sound-toggle-btn'),
+  soundCloseBtn: el<HTMLButtonElement>('sound-close-btn'),
+  createCancelBtn: el<HTMLButtonElement>('create-cancel-btn'),
   log: el<HTMLOListElement>('log'),
   app: el<HTMLElement>('app'),
   sidebar: el<HTMLElement>('sidebar'),
@@ -145,6 +148,7 @@ const ui = {
   createRoom: el<HTMLElement>('create-room'),
   callPanel: el<HTMLElement>('call-panel'),
   roomsBlock: el<HTMLElement>('rooms-block'),
+  contextActions: el<HTMLElement>('context-actions'),
   callBar: el<HTMLElement>('call-bar'),
   callPhase: el<HTMLElement>('call-phase'),
   callMic: el<HTMLElement>('call-mic'),
@@ -207,6 +211,12 @@ function setField(name: string, value: string): void {
 
 /** Fase da chamada em texto, a mesma do diagnóstico. */
 let voicePhase = '—';
+/** Painel flutuante de sons aberto pelo botão da barra. Só apresentação: o soundboard segue o da chamada. */
+let soundsOpen = false;
+/** Formulário de criação pedido por "Criar sala". Sem nenhuma sala, ele aparece de qualquer jeito. */
+let createOpen = false;
+/** Salas com "Gerenciar sala" aberto, para o redesenho da lista não recolhê-lo. */
+const adminOpen = new Set<string>();
 
 /** Painel e barra da chamada. Só lê estado: a barra acompanha a chamada, nunca a sala selecionada. */
 function renderVoice(): void {
@@ -291,7 +301,10 @@ function renderPhase(phase: CallPhase, error?: string): void {
   ui.room.disabled = active;
   ui.muteBtn.disabled = !active;
   ui.leaveBtn.disabled = !active;
-  if (!active) ui.muteBtn.textContent = 'Mutar';
+  if (!active) {
+    ui.muteBtn.textContent = 'Mutar';
+    ui.muteBtn.dataset['muted'] = 'false';
+  }
   if (phase === 'ended' && ui.error.className === 'notice' && lastPeerNotice === ui.error.textContent) showNotice(null);
   // A entrada na sala foi aceita: é a sala para a qual a aba pode voltar depois de recarregar.
   if ((phase === 'waiting-peer' || phase === 'negotiating' || phase === 'connected') && callRoomId) callReturn.remember(callRoomId);
@@ -336,7 +349,14 @@ function renderPhase(phase: CallPhase, error?: string): void {
 }
 
 function renderSoundboardPanel(state: SoundboardState): void {
-  ui.soundboard.hidden = state.status === 'closed';
+  const available = state.status !== 'closed';
+  if (!available) soundsOpen = false;
+  // O painel sumiu com a chamada: o foco do teclado não pode sumir com ele.
+  const focusLost = !(available && soundsOpen) && ui.soundboard.contains(document.activeElement);
+  ui.soundboard.hidden = !available || !soundsOpen;
+  ui.soundToggleBtn.hidden = !available;
+  ui.soundToggleBtn.setAttribute('aria-expanded', String(available && soundsOpen));
+  if (focusLost) (available ? ui.soundToggleBtn : ui.contextTitle).focus();
   ui.soundVolume.value = String(Math.round(state.volume * 100));
   ui.soundDisabled.checked = state.disabled;
   ui.soundForm.hidden = !state.isOwner || state.status !== 'ready';
@@ -351,10 +371,22 @@ function renderSoundboardPanel(state: SoundboardState): void {
   );
 }
 
+/** Últimos participantes recebidos: o próprio cartão muda com o mudo sem esperar a malha. */
+let shownParticipants: { list: readonly ParticipantView[]; standby: boolean } = { list: [], standby: false };
+
+/** Só apresentação: papel e lotação vêm da lista de salas, o mudo vem da chamada. */
+function drawParticipants(): void {
+  const { list, standby } = shownParticipants;
+  const room = lobby?.state.rooms.find((r) => r.room_id === callRoomId);
+  const stage = { owner: room?.role === 'owner', muted: call?.muted ?? false, freeSlots: Math.max(0, (room?.max_members ?? 0) - 1 - list.length) };
+  ui.participants.replaceChildren(renderParticipants(document, list, standby, stage));
+}
+
 function renderCallParticipants(list: readonly ParticipantView[], standby: boolean): void {
   soundboard.setStandby(standby);
   ui.participants.hidden = !callActive;
-  ui.participants.replaceChildren(renderParticipants(document, list, standby));
+  shownParticipants = { list, standby };
+  drawParticipants();
   // O par voltou: o aviso de reconexão deixa de valer.
   if (lastPeerNotice !== null && ui.error.textContent === lastPeerNotice && list.every((p) => p.state === 'connected')) {
     showNotice(null);
@@ -455,6 +487,16 @@ async function endCall(): Promise<void> {
 
 // ---------- sons ----------
 
+function setSoundsOpen(open: boolean): void {
+  soundsOpen = open;
+  renderSoundboardPanel(soundboard.state);
+  if (open) ui.soundCloseBtn.focus();
+  else if (!ui.soundToggleBtn.hidden) ui.soundToggleBtn.focus();
+}
+
+ui.soundToggleBtn.addEventListener('click', () => setSoundsOpen(!soundsOpen));
+ui.soundCloseBtn.addEventListener('click', () => setSoundsOpen(false));
+
 ui.soundVolume.addEventListener('input', () => soundboard.setVolume(Number(ui.soundVolume.value) / 100));
 ui.soundDisabled.addEventListener('change', () => soundboard.setDisabled(ui.soundDisabled.checked));
 ui.soundForm.addEventListener('submit', (event) => {
@@ -476,6 +518,8 @@ ui.muteBtn.addEventListener('click', () => {
   if (!call) return;
   call.setMuted(!call.muted);
   ui.muteBtn.textContent = call.muted ? 'Reativar microfone' : 'Mutar';
+  ui.muteBtn.dataset['muted'] = String(call.muted); // só o ícone: o texto segue sendo o nome do botão
+  if (!ui.participants.hidden) drawParticipants();
   setField('mic', call.muted ? 'capturando (mutado)' : 'capturando');
 });
 ui.leaveBtn.addEventListener('click', () => {
@@ -571,6 +615,7 @@ function renderShell(state: ShellState): void {
   ui.shellBackdrop.hidden = !state.drawerOpen;
   ui.shellMain.inert = state.drawerOpen; // o foco fica na navegação enquanto ela cobre o conteúdo
   ui.callBar.inert = state.drawerOpen;
+  ui.soundboard.inert = state.drawerOpen;
   renderRooms();
 }
 
@@ -582,15 +627,19 @@ function renderRooms(): void {
   const busy = s.busy !== null;
   if (s.status === 'ready') shell.reconcile(s.rooms.map((r) => r.room_id));
   const { selectedRoomId } = shell.state;
-  const context = roomContext(s, selectedRoomId);
+  const context = roomContext(s, selectedRoomId, callActive ? callRoomId : null);
   ui.contextTitle.textContent = context.title;
   ui.contextDetail.textContent = context.detail ?? '';
   ui.contextDetail.hidden = context.detail === null;
-  ui.createRoom.hidden = selectedRoomId !== null;
+  ui.contextDetail.dataset['inCall'] = String(callActive && selectedRoomId !== null && callRoomId === selectedRoomId); // só o ponto verde
+  const noRooms = s.status === 'ready' && s.rooms.length === 0;
+  ui.createRoom.hidden = selectedRoomId !== null || !(createOpen || noRooms);
+  ui.createCancelBtn.hidden = noRooms;
   // Sala aberta: as ações dela vêm antes da voz. Na visão geral, a voz vem antes de uma lista que pode ser longa. A troca é
   // no DOM, para o teclado seguir a ordem da tela, e só quando muda, para não tirar o foco de quem está no bloco.
+  // Na sala aberta, as ações dela ficam no cabeçalho, ao lado do nome, e a voz ocupa o centro.
   const roomFirst = selectedRoomId !== null;
-  if (roomFirst && ui.callPanel.previousElementSibling !== ui.roomsBlock) ui.callPanel.before(ui.roomsBlock);
+  if (roomFirst && ui.roomsBlock.parentElement !== ui.contextActions) ui.contextActions.prepend(ui.roomsBlock);
   if (!roomFirst && ui.callPanel.nextElementSibling !== ui.roomsBlock) ui.callPanel.after(ui.roomsBlock);
   renderVoice();
   ui.app.dataset['view'] = selectedRoomId === null ? 'all' : 'room';
@@ -619,6 +668,8 @@ function renderRooms(): void {
       onChat: openChat,
       membersRoomId: members?.state.roomId ?? null,
       onMembers: openMembers,
+      adminOpenRoomIds: adminOpen,
+      onAdminToggle: (roomId, open) => void (open ? adminOpen.add(roomId) : adminOpen.delete(roomId)),
     }),
   );
   ui.roomsError.textContent = s.actionError ?? '';
@@ -633,6 +684,9 @@ function renderRooms(): void {
 /** Abre uma sala ou a visão geral. Só muda o que é mostrado: entrar na chamada segue sendo uma ação à parte. */
 function navigate(roomId: string | null): void {
   const covering = shell.state.drawerOpen;
+  // Chat contextual: o chat aberto acompanha a sala escolhida. Não troca com mensagem pendente, que sumiria da tela.
+  const room = roomId === null ? undefined : lobby.state.rooms.find((r) => r.room_id === roomId);
+  if (room && chat.state.status !== 'closed' && chat.state.roomId !== room.room_id && chat.state.pending.length === 0) chat.open(room.room_id, !room.is_open);
   shell.select(roomId);
   if (covering) ui.contextTitle.focus(); // a navegação saiu da tela, e o foco não pode sumir com ela
 }
@@ -652,11 +706,19 @@ ui.shellMenuBtn.addEventListener('click', () => {
 });
 ui.roomsHomeBtn.addEventListener('click', () => navigate(null));
 ui.createOpenBtn.addEventListener('click', () => {
+  createOpen = true;
   shell.select(null);
   ui.createName.focus();
 });
+ui.createCancelBtn.addEventListener('click', () => {
+  createOpen = false;
+  renderRooms();
+  ui.contextTitle.focus();
+});
 document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape') closeDrawer();
+  if (event.key !== 'Escape') return;
+  if (soundsOpen && !shell.state.drawerOpen) return setSoundsOpen(false);
+  closeDrawer();
 });
 // A janela cresceu com a navegação aberta: na tela grande ela não cobre mais nada.
 window.matchMedia('(max-width: 768px)').addEventListener('change', (event) => {
@@ -667,7 +729,10 @@ ui.refreshBtn.addEventListener('click', () => void lobby.refresh());
 ui.createForm.addEventListener('submit', (event) => {
   event.preventDefault();
   void lobby.create(ui.createName.value, ui.createDisplay.value, Number(ui.createCapacity.value)).then((id) => {
-    if (id) ui.createName.value = '';
+    if (!id) return;
+    ui.createName.value = '';
+    createOpen = false;
+    navigate(id); // a sala nova fica em destaque; entrar na chamada segue sendo uma ação à parte
   });
 });
 
@@ -874,6 +939,8 @@ function showLoggedOut(): void {
   callReturn.reset();
   inviteAccept.accountChanged();
   renderInviteAccept(inviteAccept.state);
+  createOpen = false;
+  adminOpen.clear();
   shell.reset();
   ui.account.hidden = true;
   ui.login.hidden = false;

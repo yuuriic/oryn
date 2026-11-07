@@ -49,7 +49,7 @@ export function renderChatMessages(doc: ViewDocument, state: ChatState, opts: Ch
     root.append(el('p', `${state.skipped} mensagem(ns) fora do padrão não exibida(s).`, 'muted'));
   }
   if (state.status === 'ready' && state.messages.length === 0 && state.pending.length === 0) {
-    root.append(el('p', 'Nenhuma mensagem ainda.', 'muted'));
+    root.append(el('p', 'Nenhuma mensagem ainda.', 'muted chat-empty'), el('p', 'Envie uma mensagem para iniciar a conversa na sala.', 'muted chat-empty-hint'));
   }
 
   const list = el('ul', undefined, 'chat-list');
