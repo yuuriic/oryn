@@ -75,6 +75,14 @@ main[data-view='room'] #rooms .rooms .buttons {
   margin-top: var(--space-3);
 }
 
+#rooms > div > details > summary {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  margin: 0;
+  list-style-position: inside;
+}
+
 #rooms-error {
   margin: 0 0 var(--space-3);
 }
@@ -130,6 +138,18 @@ main[data-view='room'] #rooms .rooms .buttons {
   justify-self: start;
 }
 
+#return-call > p,
+#entry-state > p,
+#invite-accept-pending > p {
+  margin: 0 0 var(--space-3);
+}
+
+#invite-accept-message,
+#invite-share-message,
+#invite-share-status {
+  margin: var(--space-2) 0;
+}
+
 #invite-share .buttons,
 #invite-accept .buttons,
 #return-call .buttons,
@@ -137,6 +157,35 @@ main[data-view='room'] #rooms .rooms .buttons {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
+}
+
+/* O mesmo padrão das salas: uma ação principal por grupo, as demais discretas. */
+#invite-share .buttons button:not(:first-child),
+#invite-accept .buttons button:not(:first-child),
+#return-call .buttons button:not(:first-child),
+#entry-state .buttons button:not(:first-child),
+#invite-close-btn,
+#invite-dismiss-btn {
+  background: transparent;
+  border: 1px solid var(--color-border-control);
+  color: var(--color-text);
+  font-weight: 500;
+}
+
+#invite-share .buttons button:not(:first-child):hover:not(:disabled),
+#invite-accept .buttons button:not(:first-child):hover:not(:disabled),
+#return-call .buttons button:not(:first-child):hover:not(:disabled),
+#entry-state .buttons button:not(:first-child):hover:not(:disabled),
+#invite-close-btn:hover:not(:disabled),
+#invite-dismiss-btn:hover:not(:disabled) {
+  background: var(--color-elevated);
+}
+
+#invite-link,
+#invite-display,
+#room {
+  min-height: 44px;
+  font-size: 1rem;
 }
 
 #invite-share .buttons button,

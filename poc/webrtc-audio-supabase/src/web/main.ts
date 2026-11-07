@@ -143,6 +143,8 @@ const ui = {
   contextTitle: el<HTMLElement>('context-title'),
   contextDetail: el<HTMLParagraphElement>('context-detail'),
   createRoom: el<HTMLElement>('create-room'),
+  callPanel: el<HTMLElement>('call-panel'),
+  roomsBlock: el<HTMLElement>('rooms-block'),
   callBar: el<HTMLElement>('call-bar'),
   callPhase: el<HTMLElement>('call-phase'),
   callMic: el<HTMLElement>('call-mic'),
@@ -585,6 +587,11 @@ function renderRooms(): void {
   ui.contextDetail.textContent = context.detail ?? '';
   ui.contextDetail.hidden = context.detail === null;
   ui.createRoom.hidden = selectedRoomId !== null;
+  // Sala aberta: as ações dela vêm antes da voz. Na visão geral, a voz vem antes de uma lista que pode ser longa. A troca é
+  // no DOM, para o teclado seguir a ordem da tela, e só quando muda, para não tirar o foco de quem está no bloco.
+  const roomFirst = selectedRoomId !== null;
+  if (roomFirst && ui.callPanel.previousElementSibling !== ui.roomsBlock) ui.callPanel.before(ui.roomsBlock);
+  if (!roomFirst && ui.callPanel.nextElementSibling !== ui.roomsBlock) ui.callPanel.after(ui.roomsBlock);
   renderVoice();
   ui.app.dataset['view'] = selectedRoomId === null ? 'all' : 'room';
   if (selectedRoomId === null) ui.roomsHomeBtn.setAttribute('aria-current', 'true');

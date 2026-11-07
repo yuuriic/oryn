@@ -198,6 +198,22 @@ describe('painéis', () => {
   });
 });
 
+describe('ordem da sala e da voz', () => {
+  const render = /function renderRooms[^]*?\n}\n/.exec(main)![0];
+
+  it('sala aberta: ações antes da voz; visão geral: voz antes da lista', () => {
+    expect(render).toMatch(/roomFirst && ui\.callPanel\.previousElementSibling !== ui\.roomsBlock\) ui\.callPanel\.before\(ui\.roomsBlock\)/);
+    expect(render).toMatch(/!roomFirst && ui\.callPanel\.nextElementSibling !== ui\.roomsBlock\) ui\.callPanel\.after\(ui\.roomsBlock\)/);
+  });
+
+  it('a troca move no DOM, sem CSS order, e o bloco não contém mídia nem o painel de voz', () => {
+    const block = element('rooms-block');
+    for (const id of ['rooms', 'rooms-error']) expect(block).toContain(`id="${id}"`);
+    for (const id of ['audio-container', 'call-panel', 'call-bar', 'soundboard']) expect(block).not.toContain(`id="${id}"`);
+    for (const css of ['shell', 'rooms', 'voice', 'panels']) expect(read(`src/web/styles/${css}.css`), css).not.toMatch(/(^|[\s;{])order\s*:/);
+  });
+});
+
 describe('estilo', () => {
   it('esconder o título repetido vale só para a lista de salas: participantes e membros usam a mesma classe', () => {
     const rooms = read('src/web/styles/rooms.css');
