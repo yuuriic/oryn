@@ -52,9 +52,9 @@ enable_anonymous_sign_ins = true
 anonymous_users = 30
 
 [auth.email]
-# Sem cadastro por e-mail/senha: a única identidade da POC é a anônima (D1). O padrão da CLI deixaria o
-# cadastro por e-mail LIGADO e SEM confirmação. Não afeta o login anônimo (enable_anonymous_sign_ins).
-enable_signup = false
+# Piloto: configuração SOMENTE LOCAL. Cadastro com confirmação; produção exige revisão própria.
+enable_signup = true
+enable_confirmations = true
 
 # CAPTCHA (Turnstile): decisão B5 pendente. Quando aprovado, o segredo vem SÓ de env(), nunca literal:
 # [auth.captcha]

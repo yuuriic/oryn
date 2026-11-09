@@ -3,13 +3,14 @@
 // ambiente durante a chamada e a limpeza em `finally`, inclusive em erro. Exige PowerShell 7 (`pwsh`),
 // presente nos runners do GitHub e no ambiente de desenvolvimento.
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-const script = fileURLToPath(new URL('../integration/scripts/oryn-push-step.ps1', import.meta.url));
+const originalScript = fileURLToPath(new URL('../integration/scripts/oryn-push-step.ps1', import.meta.url));
+let script: string;
 const fake = fileURLToPath(new URL('./fixtures/fake-supabase-cli.mjs', import.meta.url));
 const REF = 'abcdefghijklmnopqrst';
 const TEST_PASSWORD = 'senha-ficticia-de-teste'; // fictícia; só existe neste teste
@@ -17,6 +18,18 @@ let work: string;
 
 beforeAll(() => {
   work = mkdtempSync(join(tmpdir(), 'oryn-push-test-'));
+  // O executor continua restrito às sete etapas históricas. Testá-lo contra uma
+  // cópia dessas etapas evita depender de mudanças locais ou liberar a 0800 por acidente.
+  const fixture = join(work, 'fixture');
+  mkdirSync(join(fixture, 'integration', 'scripts'), { recursive: true });
+  mkdirSync(join(fixture, 'supabase', 'migrations'), { recursive: true });
+  script = join(fixture, 'integration', 'scripts', 'oryn-push-step.ps1');
+  cpSync(originalScript, script);
+  const source = fileURLToPath(new URL('../supabase/', import.meta.url));
+  cpSync(join(source, 'config.toml'), join(fixture, 'supabase', 'config.toml'));
+  for (const file of readdirSync(join(source, 'migrations')).filter((f) => f.endsWith('.sql')).sort().slice(0, 7)) {
+    cpSync(join(source, 'migrations', file), join(fixture, 'supabase', 'migrations', file));
+  }
 });
 afterAll(() => rmSync(work, { recursive: true, force: true }));
 
@@ -49,6 +62,7 @@ function run(opts: {
   preset?: boolean;
   version?: string;
   missingCli?: boolean;
+  dirty?: boolean;
 }): Run {
   const log = join(work, `cli-${Math.random().toString(36).slice(2)}.json`);
   const q = (s: string) => `'${s.replaceAll("'", "''")}'`;
@@ -63,6 +77,9 @@ function run(opts: {
   const command = [
     "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)",
     "$ErrorActionPreference = 'Stop'",
+    // Só o status Git da fixture é simulado, dentro deste pwsh descartável. O
+    // executável real e suas travas não são alterados. Nenhum commit é necessário.
+    `function global:git { $global:LASTEXITCODE = 0; ${opts.dirty ? "Write-Output ' M supabase/config.toml'" : ''} }`,
     opts.preset ? "$env:SUPABASE_DB_PASSWORD = 'segredo-preexistente'" : '',
     `$ok = $true; try { & ${q(script)} ${params} } catch { $ok = $false; Write-Host ('ERRO: ' + $_.Exception.Message) }`,
     "Write-Host ('OK=' + $ok)",
@@ -95,6 +112,14 @@ function run(opts: {
 }
 
 describe('oryn-push-step.ps1 (CLI falsa, sem rede)', () => {
+  it('árvore suja é recusada antes de versão, senha ou CLI', () => {
+    const r = run({ step: 1, dirty: true });
+    expect(r.ok).toBe(false);
+    expect(r.out).toMatch(/mudanças não commitadas/);
+    expect(r.calls).toEqual([]);
+    expect(r.versionCalls).toEqual([]);
+    expect(r.envAfter).toBe('False');
+  });
   it('dry-run da Etapa 1: workdir só com a 0100, argumentos exatos, senha só durante a chamada, limpeza total', () => {
     const r = run({ step: 1 });
     expect(r.ok, r.out).toBe(true);

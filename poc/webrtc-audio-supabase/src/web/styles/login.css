@@ -53,13 +53,15 @@ main:has(> #account[hidden]) .brand-tagline {
   font-weight: 600;
 }
 
-#login-form label {
+#login-form label,
+#signup-form label {
   margin: 0 0 var(--space-4);
   font-size: 0.875rem;
   color: var(--color-text-secondary);
 }
 
-#login-form input {
+#login-form input,
+#signup-form input {
   display: block;
   box-sizing: border-box;
   width: 100%;
@@ -68,6 +70,26 @@ main:has(> #account[hidden]) .brand-tagline {
   padding: var(--space-2) var(--space-3);
   font-size: 1rem;
 }
+
+/* Perfil compacto: camada modal nativa, com o mesmo tema e sem interferir no áudio. */
+.identity-panel {
+  box-sizing: border-box;
+  width: min(480px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+  padding: var(--space-5);
+  border: 1px solid var(--color-gold);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+.identity-panel::backdrop { background: #00000099; }
+.identity-panel input { box-sizing: border-box; width: 100%; min-height: 44px; }
+.identity-panel button, #signup-form button, #signup-open-btn { min-height: 44px; }
+.identity-panel h2 { margin: 0; font-size: 1.25rem; }
+.identity-panel .panel-head { flex-wrap: wrap; }
+#signup-form { margin-top: var(--space-4); }
+#create-display[readonly], #invite-display[readonly] { color: var(--color-text-secondary); }
 
 #login-btn {
   display: block;

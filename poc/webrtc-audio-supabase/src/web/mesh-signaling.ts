@@ -184,7 +184,11 @@ export class MeshSignaling extends SupabaseSignaling {
       if (!wantedIds.has(session)) this.dropMeshPeer(session, 'sessão vencida');
     }
     for (const p of wanted) {
-      if (!this.peers.has(p.session_id)) this.adoptMesh(p, oldest.get(p.participant_ref) !== p.session_id);
+      const existing = this.peers.get(p.session_id);
+      // A mesma referência é usada pelos avisos do par. Atualizar só o rótulo
+      // evita nomes antigos nos diagnósticos sem recriar nem renegociar a conexão.
+      if (existing) existing.displayName = p.display_name;
+      else this.adoptMesh(p, oldest.get(p.participant_ref) !== p.session_id);
     }
     // Quem não foi adotado perdeu os sinais guardados: se virar par, precisa pedir que venham de novo.
     for (const session of [...this.parked.keys()]) {

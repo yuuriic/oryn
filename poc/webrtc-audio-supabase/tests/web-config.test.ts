@@ -57,11 +57,12 @@ describe('garantias estáticas do frontend', () => {
     expect(code(web['supabase-backend.ts']!)).toMatch(/functions\.invoke\('signal'/);
   });
 
-  it('sem chave secreta, sem anônimo/cadastro, sem credencial persistida no navegador', () => {
+  it('sem chave secreta/anônimo; cadastro só no módulo de identidade', () => {
     for (const [f, t] of Object.entries(web)) {
       const c = code(t);
       if (f !== 'config.ts') expect(c, f).not.toMatch(/sb_secret_|service_role|sbp_/);
-      expect(c, f).not.toMatch(/signInAnonymously|signUp\(|document\.cookie/);
+      expect(c, f).not.toMatch(/signInAnonymously|document\.cookie/);
+      if (f !== 'identity.ts') expect(c, f).not.toMatch(/\.signUp\(/);
       // Só o cache de sons usa IndexedDB, e guarda só áudio; ver o teste do cache.
       if (f !== 'sound-cache.ts') expect(c, f).not.toMatch(/indexedDB/);
       if (f !== 'auth-session.ts' && f !== 'session-ledger.ts' && f !== 'sound-prefs.ts') expect(c, f).not.toMatch(/localStorage/);

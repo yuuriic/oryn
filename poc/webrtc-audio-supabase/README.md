@@ -11,6 +11,12 @@ POC-02C.0 e 02C.0A (D1 a D4).
 
 ## Estado (último registro documentado: 2026-11-06)
 
+**Trabalho local em 2026-11-09:** identidade por conta, cadastro com nome e edição
+de perfil na branch `feat/profile-display-name`, sem publicação ou migração remota.
+Nome global no Supabase Auth, com fallback dos nomes existentes por sala.
+Implementação, compatibilidade, migração preparada e validação local:
+[`PROFILE-DISPLAY-NAME.md`](../../docs/validation/PROFILE-DISPLAY-NAME.md).
+
 **Produção em 2026-11-07:** cliente do PR #20 (`4c49bf9`), com salas de grupo e Soundboard. A interface Midnight ainda não foi integrada (seção "Interface Midnight").
 
 **Validação real (2026-11-06), com o cliente de então, no commit `f7bae53`:** chamada entre redes diferentes,
