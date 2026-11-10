@@ -22,7 +22,10 @@ user_rpcs(sig) as (values
   ('public.list_room_members(uuid)'), ('public.get_voice_participants(uuid)'),
   ('public.leave_room_membership(uuid)'), ('public.remove_room_member(uuid,text)'),
   ('public.sound_clock()'), ('public.list_sounds(uuid)'), ('public.request_sound_upload(uuid,text,integer)'),
-  ('public.claim_sound_validation(uuid)'), ('public.remove_sound(uuid)'), ('public.list_sound_cleanup(uuid)'), ('public.trigger_sound(uuid,uuid)')),
+  ('public.claim_sound_validation(uuid)'), ('public.remove_sound(uuid)'), ('public.list_sound_cleanup(uuid)'), ('public.trigger_sound(uuid,uuid)'),
+  ('public.list_channels(uuid)'), ('public.create_channel(uuid,text,text)'), ('public.archive_channel(uuid)'),
+  ('public.send_channel_message(uuid,uuid,text)'), ('public.list_channel_messages(uuid,bigint,bigint,integer)'),
+  ('public.join_voice_channel(uuid)'), ('public.get_channel_participants(uuid)')),
 service_rpcs(sig) as (values
   ('public.complete_sound_validation(uuid,boolean,text,integer,integer,text,text)'), ('public.finish_sound_cleanup(uuid[])')),
 storage_predicates(sig) as (values ('oryn_realtime.can_read_sound(text)'), ('oryn_realtime.can_upload_sound(text)')),
@@ -98,7 +101,7 @@ checks(item, expected, actual) as (
   select priv || ' ' || role || ' ' || t, false, pg_catalog.has_table_privilege(role, t, priv)
     from domain_tables, client_roles, table_privs
   union all
-  select 'tabelas de domínio = 12', true, (select pg_catalog.count(*) = 12 from domain_tables)
+  select 'tabelas de domínio = 13', true, (select pg_catalog.count(*) = 13 from domain_tables)
   union all
   select 'RLS ligado em ' || t, true, (select c.relrowsecurity from pg_catalog.pg_class c where c.oid = t::regclass)
     from domain_tables
@@ -128,8 +131,8 @@ checks(item, expected, actual) as (
   union all
   -- Auditoria 02C.1B.0A: o conjunto exposto em public é EXATAMENTE o contrato (num projeto novo, public
   -- começa vazio; qualquer função a mais precisa de revisão antes de seguir).
-  select 'public contém só as 29 RPCs do contrato', true,
-         (select pg_catalog.count(*) = 29 from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+  select 'public contém só as 36 RPCs do contrato', true,
+         (select pg_catalog.count(*) = 36 from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid = p.pronamespace
            where n.nspname = 'public')
          and not exists (select 1 from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid = p.pronamespace
                           where n.nspname = 'public' and not p.prosecdef)
@@ -164,8 +167,12 @@ checks(item, expected, actual) as (
                       where n.nspname = 'oryn' and c.relkind = 'r' and c.relowner <> (select oid from pg_catalog.pg_roles where rolname = current_user))
   union all
   -- 02C.2B (M5): travas por linha que serializam a mesma sessão/usuário sem impasse com as chaves estrangeiras.
+  -- 0900: join_room e join_voice_channel delegam ao núcleo oryn.open_voice_session, onde a trava fica.
   select 'join_room trava a linha de membro (FOR NO KEY UPDATE) antes de contar sessões', true,
-         (select p.prosrc ~* 'from oryn\.room_members m.*for no key update.*count' from pg_catalog.pg_proc p where p.oid = 'public.join_room(uuid)'::regprocedure)
+         (select p.prosrc ~* 'oryn\.open_voice_session\(' from pg_catalog.pg_proc p where p.oid = 'public.join_room(uuid)'::regprocedure)
+         and (select p.prosrc ~* 'oryn\.open_voice_session\(' from pg_catalog.pg_proc p where p.oid = 'public.join_voice_channel(uuid)'::regprocedure)
+         and (select p.prosrc ~* 'from oryn\.room_members m.*for no key update.*for share.*count' from pg_catalog.pg_proc p
+               where p.oid = 'oryn.open_voice_session(uuid,uuid,uuid)'::regprocedure)
   union all
   select 'authorize_signal trava a sessão remetente (FOR NO KEY UPDATE)', true,
          (select p.prosrc ~* 's\.id = p_session_id and s\.user_id = v_uid and s\.revoked_at is null\s+for no key update' from pg_catalog.pg_proc p

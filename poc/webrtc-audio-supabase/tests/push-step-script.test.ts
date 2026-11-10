@@ -25,6 +25,7 @@ beforeAll(() => {
   script = join(fixture, 'integration', 'scripts', 'oryn-push-step.ps1');
   cpSync(originalScript, script);
   cpSync(new URL('../integration/scripts/profile-08-manifest.json', import.meta.url), join(fixture, 'integration', 'scripts', 'profile-08-manifest.json'));
+  cpSync(new URL('../integration/scripts/channels-09-manifest.json', import.meta.url), join(fixture, 'integration', 'scripts', 'channels-09-manifest.json'));
   cpSync(new URL('../integration/sql/', import.meta.url), join(fixture, 'integration', 'sql'), { recursive: true });
   const source = fileURLToPath(new URL('../supabase/', import.meta.url));
   cpSync(join(source, 'config.toml'), join(fixture, 'supabase', 'config.toml'));
@@ -66,6 +67,8 @@ function run(opts: {
   dirty?: boolean;
   profileState?: string;
   migrationMutation?: 'extra' | 'rename' | 'content';
+  /** Arquivo alterado pelas mutações de integridade (padrão: a 0800). */
+  mutationFile?: string;
 }): Run {
   const log = join(work, `cli-${Math.random().toString(36).slice(2)}.json`);
   const q = (s: string) => `'${s.replaceAll("'", "''")}'`;
@@ -100,7 +103,7 @@ function run(opts: {
   delete env['SUPABASE_DB_PASSWORD'];
   env['FAKE_PROFILE_STATE'] = opts.profileState ?? 'ok';
   const migrationDir = join(work, 'fixture', 'supabase', 'migrations');
-  const target = join(migrationDir, '20261109224924_oryn_account_display_name.sql');
+  const target = join(migrationDir, opts.mutationFile ?? '20261109224924_oryn_account_display_name.sql');
   const original = readFileSync(target);
   const extra = join(migrationDir, '20261110000000_unexpected.sql');
   if (opts.migrationMutation === 'extra') writeFileSync(extra, 'select 1;');
@@ -191,6 +194,65 @@ describe('oryn-push-step.ps1 (CLI falsa, sem rede)', () => {
       expect(r.calls).toEqual([]);
     });
   });
+  describe('Etapa 9 (canais): lista fixa, manifesto próprio, pré/pós-voo e recusa de reaplicação', () => {
+    const previous = '20261023000100,20261023000200,20261023000300,20261028000400,20261106000500,20261107000600,20261108000700,20261109224924';
+    const options = { step: 9, applied: previous, apply: true, confirmation: 'APLICAR 20261110000900' };
+    it('aplica somente a 0900 depois de dois pré-voos (30); só anuncia sucesso após o pós-voo (31)', () => {
+      const r = run(options);
+      expect(r.ok, r.out).toBe(true);
+      expect(r.calls.map((c) => c.args.includes('query') ? 'query' : c.args.includes('--dry-run') ? 'dry' : 'push'))
+        .toEqual(['query', 'dry', 'query', 'push', 'dry', 'query']);
+      expect(r.calls[0]!.migrations).toHaveLength(9);
+      const files = r.calls.filter((c) => c.args.includes('query')).map((c) => c.args[c.args.indexOf('--file') + 1]!.split(/[\\/]/).at(-1));
+      expect(files).toEqual(['30_channels_09_preflight.sql', '30_channels_09_preflight.sql', '31_channels_09_postflight.sql']);
+      expect(r.calls.every((c) => c.passwordLength === TEST_PASSWORD.length)).toBe(true);
+      expect(r.calls.every((c) => !c.args.includes('--yes') && !c.args.join(' ').includes(TEST_PASSWORD))).toBe(true);
+      expect(r.out).toMatch(/Etapa 9: postflight confirmado/);
+      expect(r.out).toMatch(/^APLICADO: 20261110000900/m);
+      expect(r.out).not.toContain(TEST_PASSWORD);
+      expect(r.envAfter).toBe('False');
+      expect(existsSync(r.calls[0]!.workdir)).toBe(false);
+    });
+    it('dry-run executa o pré-voo, mas nenhuma escrita', () => {
+      const r = run({ step: 9, applied: previous });
+      expect(r.ok, r.out).toBe(true);
+      expect(r.calls).toHaveLength(2);
+      expect(r.calls[1]!.args).toContain('--dry-run');
+    });
+    it.each(['preflight', 'query-error'])('recusa estado divergente ou consulta indisponível: %s', (profileState) => {
+      const r = run({ ...options, profileState });
+      expect(r.ok).toBe(false);
+      expect(r.calls).toHaveLength(1);
+      expect(r.out).toMatch(/Etapa 9: preflight recusado/);
+      expect(r.envAfter).toBe('False');
+    });
+    it('não anuncia APLICADO se o pós-voo divergir', () => {
+      const r = run({ ...options, profileState: 'postflight' });
+      expect(r.ok).toBe(false);
+      expect(r.out).toMatch(/Etapa 9: postflight recusado/);
+      expect(r.out).not.toMatch(/^APLICADO/m);
+      expect(r.envAfter).toBe('False');
+    });
+    it('recusa reaplicação antes do dry-run e do push', () => {
+      const r = run({ ...options, applied: `${previous},20261110000900` });
+      expect(r.ok).toBe(false);
+      expect(r.calls).toHaveLength(1);
+      expect(r.out).toMatch(/preflight recusado/);
+    });
+    it.each(['extra', 'rename', 'content'] as const)('recusa mudança de integridade da 0900 antes de conectar: %s', (migrationMutation) => {
+      const r = run({ ...options, migrationMutation, mutationFile: '20261110000900_oryn_channels.sql' });
+      expect(r.ok).toBe(false);
+      expect(r.out).toMatch(/migrações inesperadas|integridade divergente/);
+      expect(r.calls).toEqual([]);
+      expect(r.versionCalls).toEqual([]);
+    });
+    it('confirmação da etapa 8 é recusada na 9 antes da consulta', () => {
+      const r = run({ ...options, confirmation: 'APLICAR 20261109224924' });
+      expect(r.ok).toBe(false);
+      expect(r.calls).toEqual([]);
+    });
+  });
+
   it('árvore suja é recusada antes de versão, senha ou CLI', () => {
     const r = run({ step: 1, dirty: true });
     expect(r.ok).toBe(false);

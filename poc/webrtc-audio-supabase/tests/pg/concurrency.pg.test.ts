@@ -53,9 +53,19 @@ async function slow(table: string, timing: 'before' | 'after', seconds = 0.4, ev
 /** Cria `public.<fn>_legacy`: a mesma função, só sem as travas FOR NO KEY UPDATE (versão anterior ao 02C.2B). */
 async function legacy(fn: string, signature: string): Promise<string> {
   const def = (await db.admin<{ d: string }>(`select pg_get_functiondef($1::regprocedure) as d`, [`public.${signature}`]))[0]!.d;
-  const body = def
+  let body = def
     .replace(`FUNCTION public.${fn}(`, `FUNCTION public.${fn}_legacy(`)
     .replace(/\s+for no key update/gi, '');
+  // Desde a 0900, join_room delega ao núcleo oryn.open_voice_session, onde a trava fica: copia o núcleo sem ela.
+  const core = /oryn\.(open_voice_session)\(/.exec(def)?.[1];
+  if (core) {
+    const coreDef = (await db.admin<{ d: string }>(
+      `select pg_get_functiondef(p.oid) as d from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'oryn' and p.proname = $1`, [core]))[0]!.d;
+    const unlockedCore = coreDef.replace(`FUNCTION oryn.${core}(`, `FUNCTION oryn.${core}_legacy(`).replace(/\s+for no key update/gi, '');
+    expect(unlockedCore).not.toMatch(/for no key update/i);
+    await db.asMigrationOwner(unlockedCore);
+    body = body.replace(`oryn.${core}(`, `oryn.${core}_legacy(`);
+  }
   await db.asMigrationOwner(body);
   await db.asMigrationOwner(`grant execute on function public.${fn}_legacy${signature.slice(fn.length)} to authenticated`);
   return `public.${fn}_legacy`;
@@ -64,10 +74,11 @@ async function legacy(fn: string, signature: string): Promise<string> {
 const codes = (results: CallResult<unknown>[]) => results.map((r) => r.error?.message ?? 'ok').sort();
 
 describe('PostgreSQL 17 real: migrações e pós-voo', () => {
-  it('as sete migrações aplicam em PostgreSQL 17 (o mesmo major do Supabase)', async () => {
+  it('as migrações aplicam em PostgreSQL 17 (o mesmo major do Supabase)', async () => {
     const v = (await db.admin<{ v: string }>('select version() as v'))[0]!.v;
     expect(v).toMatch(/^PostgreSQL 17\./);
-    expect((await db.admin<{ n: number }>(`select count(*)::int as n from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public'`))[0]!.n).toBe(29);
+    // 29 RPCs até a 0800 + 7 de canais (0900).
+    expect((await db.admin<{ n: number }>(`select count(*)::int as n from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public'`))[0]!.n).toBe(36);
   });
 
   it('pós-voo em PostgreSQL 17: zero FAIL', async () => {

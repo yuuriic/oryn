@@ -37,6 +37,13 @@ const USER_RPCS: Record<string, string> = {
   remove_sound: 'public.remove_sound(uuid)',
   list_sound_cleanup: 'public.list_sound_cleanup(uuid)',
   trigger_sound: 'public.trigger_sound(uuid,uuid)',
+  list_channels: 'public.list_channels(uuid)',
+  create_channel: 'public.create_channel(uuid,text,text)',
+  archive_channel: 'public.archive_channel(uuid)',
+  send_channel_message: 'public.send_channel_message(uuid,uuid,text)',
+  list_channel_messages: 'public.list_channel_messages(uuid,bigint,bigint,integer)',
+  join_voice_channel: 'public.join_voice_channel(uuid)',
+  get_channel_participants: 'public.get_channel_participants(uuid)',
 };
 const SERVICE_RPCS: Record<string, string> = {
   set_signal_state: 'public.set_signal_state(uuid,text)',
@@ -64,7 +71,9 @@ interface Case {
   error: RegExp | null; // null = não falha, mas também não pode alterar nada
 }
 
-function matrix(s: Scenario, stranger: { uid: string }, inviteToken: string): Case[] {
+interface DefaultChannels { text: string; voice: string }
+
+function matrix(s: Scenario, stranger: { uid: string }, inviteToken: string, ch: DefaultChannels): Case[] {
   const rnd = randomUUID;
   return [
     { label: 'sem convite: resgata convite de criador inexistente', actor: stranger, fn: 'redeem_creator_invite', args: { p_token: randomToken() }, error: /invite-invalid/ },
@@ -134,6 +143,33 @@ function matrix(s: Scenario, stranger: { uid: string }, inviteToken: string): Ca
     { label: 'anon: lista limpeza', actor: 'anon', fn: 'list_sound_cleanup', args: { p_room_id: s.room }, error: /permission denied/ },
     { label: 'estranho: dispara som', actor: stranger, fn: 'trigger_sound', args: { p_session_id: rnd(), p_asset_id: rnd() }, error: /session-invalid/ },
     { label: 'anon: dispara som', actor: 'anon', fn: 'trigger_sound', args: { p_session_id: rnd(), p_asset_id: rnd() }, error: /permission denied/ },
+    // 0900: canais.
+    { label: 'estranho: lista canais', actor: stranger, fn: 'list_channels', args: { p_room_id: s.room }, error: /unauthorized/ },
+    { label: 'sala arbitrária: lista canais', actor: s.member, fn: 'list_channels', args: { p_room_id: rnd() }, error: /unauthorized/ },
+    { label: 'anon: lista canais', actor: 'anon', fn: 'list_channels', args: { p_room_id: s.room }, error: /permission denied/ },
+    { label: 'membro (não dono): cria canal', actor: s.member, fn: 'create_channel', args: { p_room_id: s.room, p_name: 'x', p_kind: 'text' }, error: /unauthorized/ },
+    { label: 'estranho: cria canal', actor: stranger, fn: 'create_channel', args: { p_room_id: s.room, p_name: 'x', p_kind: 'voice' }, error: /unauthorized/ },
+    { label: 'dono: tipo de canal inválido', actor: s.owner, fn: 'create_channel', args: { p_room_id: s.room, p_name: 'x', p_kind: 'video' }, error: /invalid-argument/ },
+    { label: 'dono: nome repetido do padrão', actor: s.owner, fn: 'create_channel', args: { p_room_id: s.room, p_name: 'CONVERSA', p_kind: 'text' }, error: /name-taken/ },
+    { label: 'anon: cria canal', actor: 'anon', fn: 'create_channel', args: { p_room_id: s.room, p_name: 'x', p_kind: 'text' }, error: /permission denied/ },
+    { label: 'membro (não dono): arquiva canal', actor: s.member, fn: 'archive_channel', args: { p_channel_id: ch.text }, error: /unauthorized/ },
+    { label: 'dono: arquiva canal padrão', actor: s.owner, fn: 'archive_channel', args: { p_channel_id: ch.voice }, error: /invalid-argument/ },
+    { label: 'canal arbitrário: arquiva', actor: s.owner, fn: 'archive_channel', args: { p_channel_id: rnd() }, error: /unauthorized/ },
+    { label: 'anon: arquiva canal', actor: 'anon', fn: 'archive_channel', args: { p_channel_id: ch.text }, error: /permission denied/ },
+    { label: 'estranho: envia no canal', actor: stranger, fn: 'send_channel_message', args: { p_channel_id: ch.text, p_client_nonce: rnd(), p_body: 'x' }, error: /unauthorized/ },
+    { label: 'membro: envia no canal de voz', actor: s.member, fn: 'send_channel_message', args: { p_channel_id: ch.voice, p_client_nonce: rnd(), p_body: 'x' }, error: /invalid-argument/ },
+    { label: 'canal arbitrário: envia', actor: s.member, fn: 'send_channel_message', args: { p_channel_id: rnd(), p_client_nonce: rnd(), p_body: 'x' }, error: /unauthorized/ },
+    { label: 'anon: envia no canal', actor: 'anon', fn: 'send_channel_message', args: { p_channel_id: ch.text, p_client_nonce: rnd(), p_body: 'x' }, error: /permission denied/ },
+    { label: 'estranho: lê canal', actor: stranger, fn: 'list_channel_messages', args: { p_channel_id: ch.text }, error: /unauthorized/ },
+    { label: 'membro: lê canal de voz como texto', actor: s.member, fn: 'list_channel_messages', args: { p_channel_id: ch.voice }, error: /invalid-argument/ },
+    { label: 'anon: lê canal', actor: 'anon', fn: 'list_channel_messages', args: { p_channel_id: ch.text }, error: /permission denied/ },
+    { label: 'estranho: entra na voz do canal', actor: stranger, fn: 'join_voice_channel', args: { p_channel_id: ch.voice }, error: /not-member/ },
+    { label: 'membro: entra no canal de texto como voz', actor: s.member, fn: 'join_voice_channel', args: { p_channel_id: ch.text }, error: /invalid-argument/ },
+    { label: 'canal arbitrário: entra', actor: s.member, fn: 'join_voice_channel', args: { p_channel_id: rnd() }, error: /not-member/ },
+    { label: 'anon: entra na voz do canal', actor: 'anon', fn: 'join_voice_channel', args: { p_channel_id: ch.voice }, error: /permission denied/ },
+    { label: 'estranho: participantes do canal', actor: stranger, fn: 'get_channel_participants', args: { p_channel_id: ch.voice }, error: /not-member/ },
+    { label: 'membro: participantes de canal de texto', actor: s.member, fn: 'get_channel_participants', args: { p_channel_id: ch.text }, error: /invalid-argument/ },
+    { label: 'anon: participantes do canal', actor: 'anon', fn: 'get_channel_participants', args: { p_channel_id: ch.voice }, error: /permission denied/ },
   ];
 }
 
@@ -152,7 +188,9 @@ async function runMatrix(db: TestDb): Promise<void> {
   const s = await scenario(db);
   const stranger = await db.newUser();
   const inviteToken = await roomInvite(db, s.owner, s.room);
-  for (const c of matrix(s, stranger, inviteToken)) {
+  const defaults = await db.admin<{ id: string; kind: 'text' | 'voice' }>('select id, kind from oryn.channels where room_id = $1 and is_default', [s.room]);
+  const ch = Object.fromEntries(defaults.map((d) => [d.kind, d.id])) as unknown as DefaultChannels;
+  for (const c of matrix(s, stranger, inviteToken, ch)) {
     const before = await fingerprint(db);
     const error = await db.rpcError(c.actor, `public.${c.fn}`, c.args);
     if (c.error) expect(error, c.label).toMatch(c.error);
