@@ -47,6 +47,17 @@ writeFileSync(process.env['FAKE_CLI_LOG'] ?? 'fake-cli.json', entry);
 appendFileSync(`${process.env['FAKE_CLI_LOG'] ?? 'fake-cli.json'}.calls`, `${entry}\n`);
 
 const mode = process.env['FAKE_CLI_MODE'] ?? 'ok';
+if (args.includes('query')) {
+  const sqlFile = args[args.indexOf('--file') + 1] ?? '';
+  const phase = sqlFile.endsWith('20_profile_08_preflight.sql') ? 'preflight' : 'postflight';
+  const statePath = process.env['FAKE_STATE'];
+  const alreadyApplied = (process.env['FAKE_APPLIED'] ?? '').includes('20261109224924') ||
+    (statePath && existsSync(statePath) && readFileSync(statePath, 'utf8').includes('20261109224924'));
+  const state = process.env['FAKE_PROFILE_STATE'] ?? 'ok';
+  const fail = state === phase || (phase === 'preflight' && alreadyApplied);
+  console.log(JSON.stringify({ rows: [{ result: `oryn-profile-08-${phase}-${fail ? 'FAIL' : 'ok'}` }] }));
+  process.exit(state === 'query-error' ? 1 : 0);
+}
 if (mode === 'fail') {
   console.error('failed to connect to postgres: password authentication failed for user "postgres"');
   process.exit(1);
@@ -87,3 +98,4 @@ if (pending.length === 0) {
   for (const m of pending) console.log(` • ${m}`);
 }
 if (mode === 'extra') console.log(' • 20261023000300_oryn_realtime.sql');
+if (mode === 'unexpected') console.log(' • 20261110000000_unknown.sql');

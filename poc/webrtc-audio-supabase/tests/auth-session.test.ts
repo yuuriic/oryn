@@ -140,6 +140,18 @@ describe('restoreSession', () => {
   });
 });
 
+it('recarga usa o nome atual do servidor, alterado em outro dispositivo, sem trocar tokens nem identidade', async () => {
+  const store = new MemoryStore();
+  await loggedIn(store);
+  const { client, storage } = page(store, (url) => url.includes('/auth/v1/user') ? json(200, { ...USER, user_metadata: { display_name: 'Nome atualizado' } }) : okRoutes(url));
+  const restored = await restoreSession(client, storage);
+  expect(restored.status).toBe('valid');
+  if (restored.status !== 'valid') throw new Error('Sessão não restaurada');
+  expect(restored.session.user.id).toBe(USER.id);
+  expect(restored.session.user.user_metadata['display_name']).toBe('Nome atualizado');
+  expect(restored.session.refresh_token).toBe('refresh-1');
+});
+
 describe('logout', () => {
   it('encerra a sessão no servidor e remove tudo do navegador', async () => {
     const store = new MemoryStore();

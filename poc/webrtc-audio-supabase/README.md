@@ -9,7 +9,21 @@ Prova de conceito **descartável** do Oryn. Substitui o servidor Node de sinaliz
 A mídia continua WebRTC P2P, e o Cloudflare TURN entra só como relay. Contrato e decisões: relatórios
 POC-02C.0 e 02C.0A (D1 a D4).
 
-## Estado (último registro documentado: 2026-11-06)
+## Estado (último registro documentado: 2026-11-10)
+
+**PR #23 em 2026-11-10 (branch `feat/profile-display-name`, HEAD `40273f4`): implementado e validado, não
+publicado.** Identidade por conta: nome de exibição global no Supabase Auth, com fallback dos nomes existentes por
+sala; cadastro com nome, e-mail e senha; edição do nome; recuperação de senha ("Esqueci minha senha").
+- **Validado:** testes automatizados, inspeção visual (desktop e mobile até 320 px) e CI do `40273f4`; recuperação
+  de senha homologada com o Supabase remoto, Gmail SMTP e conta de teste (resultado relatado pelo operador).
+- **Remoto:** migração `20261109224924_oryn_account_display_name` aplicada e auditada em 2026-11-10; SMTP
+  configurado. **Cadastro público desabilitado** no projeto real: as contas continuam criadas pelo operador.
+- **Não publicado:** sem merge nem deploy; o frontend do PR #23 não está em produção. Merge e publicação
+  dependem de autorização própria.
+
+Implementação e validação local:
+[`PROFILE-DISPLAY-NAME.md`](../../docs/validation/PROFILE-DISPLAY-NAME.md). Migração, estado remoto e controles
+da publicação: [`PROFILE-PUBLICATION-08.md`](integration/PROFILE-PUBLICATION-08.md).
 
 **Produção em 2026-11-07:** cliente do PR #20 (`4c49bf9`), com salas de grupo e Soundboard. A interface Midnight ainda não foi integrada (seção "Interface Midnight").
 
@@ -139,8 +153,9 @@ Chamada de voz entre OWNER e MEMBER, nas contas de e-mail e senha já existentes
   servidor confirma a sala e a participação, e "Voltar para a chamada" pede um clique; o microfone não liga antes disso
   (runbook §14.5).
 - **Login:** `signInWithPassword`. A sessão é persistida pelo mecanismo oficial do Auth, em `localStorage`, e sobrevive
-  a F5 e à reabertura do navegador (`src/web/auth-session.ts`; riscos no runbook §14.6). Sem anônimo,
-  sem cadastro.
+  a F5 e à reabertura do navegador (`src/web/auth-session.ts`; riscos no runbook §14.6). Sem anônimo.
+  Cadastro com nome e recuperação de senha existem no cliente (PR #23, `src/web/identity.ts`); o cadastro
+  público segue desabilitado no projeto real.
 - **Sala:** `join_room` → canal privado `oryn:s:{sessão}` → `get_roster`. `hello`/`bye` (publicados pelo banco)
   mostram quem entra e sai. Batimento `touch_session` a cada 30 s; `leave_room` ao sair.
 - **Sinalização:** offer, answer e candidatos ICE, um a um, só pela Edge Function `signal`. Nenhum Broadcast do
@@ -269,7 +284,7 @@ Implantação: checklist de deploy, Etapa 7 ⛔. Operação e riscos: runbook §
 - **Navegação:** `src/web/shell.ts` guarda o estado visual só em memória. Selecionar uma sala não entra na chamada.
 - **Áudio remoto:** `#audio-container` é filho direto de `<main>`, fora de todo painel recolhível. Não mover para dentro de um.
 
-**Piloto Windows/web (Etapa Macro 6), pendente:** P06 (desktop), P07 (carga e custo) e P08 (recuperação), sem evidência; instalador assinado, atualizações, métricas, runbooks do piloto e limitações comunicadas; WebView2 sem evidência. Baselines S2, S3 e S4 seguem com os valores pós-0600, e não há C0 nem C2 até o commit próprio deles.
+**Piloto Windows/web (Etapa Macro 6), pendente:** P06 (desktop), P07 (carga e custo) e P08 (recuperação), sem evidência; instalador assinado, atualizações, métricas, runbooks do piloto e limitações comunicadas; WebView2 sem evidência. Baselines S2, S3 e S4 seguem com os valores pós-0600, e não há C0 nem C2 até o commit próprio deles. O PR #23 contribui para o piloto (contas, nomes e recuperação de senha), mas não encerra a etapa: a recuperação de senha **não** é evidência do P08, que trata de recuperação operacional (Realtime/TURN, banco e rollback).
 
 ## Modelo de segurança
 
@@ -375,7 +390,9 @@ repositório.
   - **Cloudflare Turnstile** (ou CAPTCHA invisível) obrigatório;
   - JWT com expiração curta (proposta: 10 min).
 - **Auth, para o caminho em uso (contas de e-mail e senha, runbook §12.3):** login por e-mail habilitado; contas
-  criadas só pelo operador no painel, sem cadastro pelo cliente.
+  criadas só pelo operador no painel. O cliente do PR #23 tem cadastro, mas o cadastro público continua
+  **desabilitado** no projeto real; habilitá-lo é decisão separada. A recuperação de senha usa o SMTP do Auth e
+  volta para a origem da página, que precisa ser a Site URL ou constar nas Redirect URLs.
 - **Variáveis da Edge Function:**
   - **injetadas pela plataforma**, nunca criadas como secret, porque nomes `SUPABASE_*` são reservados:
     `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEYS`, `SUPABASE_SECRET_KEYS` (e as legadas `SUPABASE_ANON_KEY` e

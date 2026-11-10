@@ -1,4 +1,4 @@
-// Página da integração 02C: login (e-mail e senha em conta EXISTENTE; sem anônimo, sem cadastro), sala,
+// Página da integração 02C: cadastro/login por e-mail, identidade global, sala,
 // chamada de voz em grupo (MeshCall: até 4 contas, uma conexão por par) e sinalização pelo Supabase (MeshSignaling).
 // MVP 01: lobby com as salas da conta (listar, criar com 2 lugares, entrar e encerrar), em rooms.ts e
 // rooms-view.ts; o campo de UUID ficou em "Diagnóstico". Chat por sala, em chat.ts e chat-view.ts, sem nenhuma
@@ -9,7 +9,12 @@
 // o convite de sala (invites.ts) sai da URL ao carregar e fica só em memória; o registro em tela nunca mostra token, SDP,
 // candidato ICE ou senha. A configuração aceita só a chave publicável (config.ts).
 
-import { FunctionsHttpError, createClient, type Session, type SupabaseClient } from '@supabase/supabase-js';
+import { FunctionsHttpError, createClient, type Session, type SupabaseClient, type User } from '@supabase/supabase-js';
+import {
+  LINK_INVALID, NAME_ERROR, PASSWORD_CHANGED, PASSWORD_CHANGED_PARTIAL, RECOVERY_CANCELLED, RECOVERY_EXPIRED,
+  abandonRecovery, accountName, openRecovery, recoveryAuthOptions, recoveryRedirect, registerAccount, requestPasswordReset,
+  saveAccountName, saveNewPassword, takeAuthLink, type RecoveryTokens,
+} from './identity.ts';
 import { isUuid } from '../../supabase/functions/_shared/signal-contract.ts';
 import { authOptions, createAuthStorage, logout, restoreSession, type AuthStorage } from './auth-session.ts';
 import type { CallPhase, CallStats, PeerStates } from './call.ts';
@@ -40,6 +45,8 @@ import { DISCONNECT, DISCONNECT_MESSAGES, JOIN_LIMIT_MESSAGE } from './supabase-
 // Primeiro passo da página: o token do convite não fica na barra de endereço.
 const takeInvite = (): InviteArrival => takeInviteFromLocation(window.location, (url) => window.history.replaceState(window.history.state, '', url));
 const arrivedInvite = takeInvite();
+// Confirmação ou recuperação de senha: as credenciais saem da URL aqui; os tokens de recuperação ficam só em memória.
+const authLink = takeAuthLink(window.location, (url) => window.history.replaceState(window.history.state, '', url));
 
 const el = <T extends HTMLElement>(id: string): T => {
   const node = document.getElementById(id);
@@ -50,10 +57,36 @@ const el = <T extends HTMLElement>(id: string): T => {
 const ui = {
   configError: el<HTMLParagraphElement>('config-error'),
   login: el<HTMLElement>('login'),
+  loginTitle: el<HTMLElement>('login-title'),
   loginForm: el<HTMLFormElement>('login-form'),
   email: el<HTMLInputElement>('email'),
   password: el<HTMLInputElement>('password'),
   loginBtn: el<HTMLButtonElement>('login-btn'),
+  signupOpen: el<HTMLButtonElement>('signup-open-btn'),
+  signupForm: el<HTMLFormElement>('signup-form'),
+  signupName: el<HTMLInputElement>('signup-name'),
+  signupEmail: el<HTMLInputElement>('signup-email'),
+  signupPassword: el<HTMLInputElement>('signup-password'),
+  signupBtn: el<HTMLButtonElement>('signup-btn'),
+  signupCancel: el<HTMLButtonElement>('signup-cancel-btn'),
+  signupStatus: el<HTMLElement>('signup-status'),
+  forgotOpen: el<HTMLButtonElement>('forgot-open-btn'),
+  forgotForm: el<HTMLFormElement>('forgot-form'),
+  forgotEmail: el<HTMLInputElement>('forgot-email'),
+  forgotBtn: el<HTMLButtonElement>('forgot-btn'),
+  forgotCancel: el<HTMLButtonElement>('forgot-cancel-btn'),
+  resetForm: el<HTMLFormElement>('reset-form'),
+  resetPassword: el<HTMLInputElement>('reset-password'),
+  resetConfirm: el<HTMLInputElement>('reset-confirm'),
+  resetBtn: el<HTMLButtonElement>('reset-btn'),
+  resetCancel: el<HTMLButtonElement>('reset-cancel-btn'),
+  profileOpen: el<HTMLButtonElement>('profile-open-btn'),
+  profilePanel: el<HTMLDialogElement>('profile-panel'),
+  profileClose: el<HTMLButtonElement>('profile-close-btn'),
+  profileForm: el<HTMLFormElement>('profile-form'),
+  profileName: el<HTMLInputElement>('profile-name'),
+  profileSave: el<HTMLButtonElement>('profile-save-btn'),
+  profileStatus: el<HTMLElement>('profile-status'),
   account: el<HTMLElement>('account'),
   userLabel: el<HTMLElement>('user-label'),
   logoutBtn: el<HTMLButtonElement>('logout-btn'),
@@ -173,6 +206,8 @@ let client: SupabaseClient;
 let authStorage: AuthStorage;
 /** O logout desta aba está em curso: o SIGNED_OUT que ele causa não é "a sessão terminou". */
 let loggingOut = false;
+/** Não entrar com o usuário em cache antes de restoreSession confirmar os metadados atuais. */
+let restoringAuth = true;
 let selfUserId: string | null = null;
 let call: MeshCall | null = null;
 let signaling: MeshSignaling | null = null;
@@ -198,6 +233,11 @@ let disconnectTicket = 0;
 let lastPeerNotice: string | null = null;
 /** JWT atual, lido de forma síncrona no pagehide. Fica só em memória, como a sessão de login. */
 let accessToken: string | null = null;
+let currentUser: User | null = null;
+let globalName: string | null = null;
+let identityTimer: ReturnType<typeof setInterval> | null = null;
+let identityTicket = 0;
+let identityReading = false;
 
 function setField(name: string, value: string): void {
   const node = document.querySelector<HTMLElement>(`[data-field="${name}"]`);
@@ -717,6 +757,7 @@ ui.createCancelBtn.addEventListener('click', () => {
 });
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
+  if (ui.profilePanel.open) return; // o cancel nativo fecha o perfil, sem agir nos painéis de fundo
   if (soundsOpen && !shell.state.drawerOpen) return setSoundsOpen(false);
   closeDrawer();
 });
@@ -728,9 +769,10 @@ window.matchMedia('(max-width: 768px)').addEventListener('change', (event) => {
 ui.refreshBtn.addEventListener('click', () => void lobby.refresh());
 ui.createForm.addEventListener('submit', (event) => {
   event.preventDefault();
-  void lobby.create(ui.createName.value, ui.createDisplay.value, Number(ui.createCapacity.value)).then((id) => {
+  void lobby.create(ui.createName.value, globalName ?? ui.createDisplay.value, Number(ui.createCapacity.value)).then((id) => {
     if (!id) return;
     ui.createName.value = '';
+    if (globalName !== null) ui.createDisplay.value = globalName;
     createOpen = false;
     navigate(id); // a sala nova fica em destaque; entrar na chamada segue sendo uma ação à parte
   });
@@ -866,6 +908,7 @@ function renderInviteAccept(s: InviteAcceptState): void {
   ui.inviteAcceptBtn.disabled = busy;
   ui.inviteDeclineBtn.disabled = busy;
   ui.inviteDisplay.disabled = busy;
+  if (s.status === 'pending' && globalName !== null) ui.inviteDisplay.value = globalName;
   if (s.status !== 'pending') ui.inviteDisplay.value = '';
   if (s.status === 'result') setMessage(ui.inviteAcceptMessage, { tone: s.tone, text: s.text });
   else setMessage(ui.inviteAcceptMessage, s.status === 'pending' && s.message ? { tone: 'error', text: s.message } : null);
@@ -881,7 +924,7 @@ ui.inviteNewBtn.addEventListener('click', () => {
 ui.inviteCloseBtn.addEventListener('click', () => inviteShare.close());
 ui.inviteAcceptForm.addEventListener('submit', (event) => {
   event.preventDefault();
-  void inviteAccept.accept(ui.inviteDisplay.value);
+  void inviteAccept.accept(globalName ?? ui.inviteDisplay.value);
 });
 ui.inviteDeclineBtn.addEventListener('click', () => inviteAccept.decline());
 ui.inviteDismissBtn.addEventListener('click', () => inviteAccept.dismiss());
@@ -893,15 +936,19 @@ window.addEventListener('hashchange', () => inviteAccept?.receive(takeInvite()))
 function showLoggedIn(email: string | undefined): void {
   ui.login.hidden = true;
   ui.account.hidden = false;
-  ui.userLabel.textContent = email ?? '(conta sem e-mail)';
+  ui.userLabel.textContent = globalName ?? email ?? '(conta sem e-mail)';
   ui.accountBox.title = email ?? '';
   renderInviteAccept(inviteAccept.state);
 }
 
 /** Entrada na conta, por login ou sessão restaurada. Nunca inicia chamada nem pede o microfone. */
 async function enterSession(session: Session): Promise<void> {
-  if (selfUserId === session.user.id) return;
+  if (selfUserId === session.user.id) { applyIdentity(session.user); return; }
   selfUserId = session.user.id;
+  currentUser = session.user;
+  applyIdentity(session.user);
+  const ticket = ++identityTicket;
+  identityTimer = setInterval(() => void refreshIdentity(ticket), 15_000);
   accessToken = session.access_token;
   // Canais privados exigem o JWT do usuário no Realtime antes da inscrição.
   await client.realtime.setAuth(session.access_token);
@@ -922,6 +969,19 @@ function endByAuth(notice: Notice): void {
 }
 
 function showLoggedOut(): void {
+  identityTicket += 1;
+  if (identityTimer !== null) clearInterval(identityTimer);
+  identityTimer = null;
+  identityReading = false;
+  currentUser = null;
+  globalName = null;
+  ui.profileSave.disabled = false;
+  ui.profileName.value = '';
+  ui.createDisplay.readOnly = false;
+  ui.inviteDisplay.readOnly = false;
+  ui.createDisplay.value = '';
+  ui.inviteDisplay.value = '';
+  closeProfile();
   soundboard.leave();
   if (selfUserId !== null) void soundCache.purgeAccount(selfUserId);
   selfUserId = null;
@@ -947,6 +1007,180 @@ function showLoggedOut(): void {
   ui.loginBtn.disabled = false;
 }
 
+function applyIdentity(user: User): void {
+  if (user.id !== selfUserId) return;
+  const previous = globalName;
+  currentUser = user;
+  globalName = accountName(user);
+  ui.userLabel.textContent = globalName ?? user.email ?? '(conta sem e-mail)';
+  // Conta identificada: o nome deixa de ser uma escolha independente por sala.
+  for (const input of [ui.createDisplay, ui.inviteDisplay]) {
+    input.readOnly = globalName !== null;
+    if (globalName !== null) input.value = globalName;
+    else if (previous !== null) input.value = '';
+  }
+  if (previous !== globalName) void chat?.refreshNames();
+}
+
+async function refreshIdentity(ticket: number): Promise<void> {
+  if (identityReading || document.hidden || ticket !== identityTicket || !selfUserId || ui.profileSave.disabled) return;
+  identityReading = true;
+  try {
+    const { data, error } = await client.auth.getUser();
+    if (!error && data.user && ticket === identityTicket) applyIdentity(data.user);
+  } catch { /* A identidade não derruba a chamada em caso de rede indisponível. */ }
+  finally { if (ticket === identityTicket) identityReading = false; }
+}
+
+function closeProfile(): void {
+  if (ui.profilePanel.open) ui.profilePanel.close();
+  ui.profilePanel.hidden = true;
+  ui.profileOpen.setAttribute('aria-expanded', 'false');
+}
+ui.profileOpen.addEventListener('click', () => {
+  closeDrawer();
+  ui.profileName.value = globalName ?? '';
+  setMessage(ui.profileStatus, globalName ? null : { tone: 'info', text: 'Escolha seu nome global. Seus nomes atuais por sala continuam até você salvar.' });
+  ui.profilePanel.hidden = false;
+  ui.profilePanel.showModal();
+  ui.profileOpen.setAttribute('aria-expanded', 'true');
+  ui.profileName.focus();
+});
+ui.profileClose.addEventListener('click', closeProfile);
+ui.profilePanel.addEventListener('cancel', (event) => { event.preventDefault(); closeProfile(); });
+ui.profilePanel.addEventListener('close', () => { ui.profilePanel.hidden = true; ui.profileOpen.setAttribute('aria-expanded', 'false'); });
+ui.profileForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  if (!currentUser || ui.profileSave.disabled) return;
+  const userId = currentUser.id;
+  const ticket = ++identityTicket;
+  identityReading = false;
+  if (identityTimer !== null) clearInterval(identityTimer);
+  identityTimer = setInterval(() => void refreshIdentity(ticket), 15_000);
+  ui.profileSave.disabled = true;
+  void saveAccountName(client.auth, ui.profileName.value).then((result) => {
+    if (ticket !== identityTicket || userId !== selfUserId) return;
+    ui.profileSave.disabled = false;
+    if (result.error) return setMessage(ui.profileStatus, { tone: 'error', text: result.error });
+    applyIdentity(result.user!);
+    ui.profileName.value = globalName ?? '';
+    setMessage(ui.profileStatus, { tone: 'info', text: 'Nome salvo. As outras telas serão atualizadas automaticamente.' });
+  });
+});
+
+type LoginMode = 'login' | 'signup' | 'forgot' | 'reset';
+const LOGIN_TITLES: Record<LoginMode, string> = { login: 'Entrar na sua conta', signup: 'Criar conta', forgot: 'Recuperar senha', reset: 'Criar nova senha' };
+/** Um formulário por vez na área de login; os campos de senha sempre saem limpos. */
+function loginMode(mode: LoginMode): void {
+  ui.loginTitle.textContent = LOGIN_TITLES[mode];
+  ui.loginForm.hidden = mode !== 'login';
+  ui.signupForm.hidden = mode !== 'signup';
+  ui.forgotForm.hidden = mode !== 'forgot';
+  ui.resetForm.hidden = mode !== 'reset';
+  ui.signupOpen.hidden = mode !== 'login';
+  ui.forgotOpen.hidden = mode !== 'login';
+  ui.signupPassword.value = '';
+  ui.resetPassword.value = '';
+  ui.resetConfirm.value = '';
+  ({ login: ui.email, signup: ui.signupName, forgot: ui.forgotEmail, reset: ui.resetPassword })[mode].focus();
+}
+ui.signupOpen.addEventListener('click', () => {
+  setMessage(ui.signupStatus, null); // aviso de outro fluxo (ex.: link de recuperação enviado) não vale para o cadastro
+  loginMode('signup');
+});
+ui.signupCancel.addEventListener('click', () => loginMode('login'));
+ui.signupForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  if (ui.signupBtn.disabled) return;
+  const password = ui.signupPassword.value;
+  ui.signupPassword.value = '';
+  ui.signupBtn.disabled = true;
+  ui.signupCancel.disabled = true;
+  void registerAccount(client.auth, ui.signupEmail.value, password, ui.signupName.value).then(async (result) => {
+    ui.signupBtn.disabled = false;
+    ui.signupCancel.disabled = false;
+    if (result.kind === 'signed-in') { loginMode('login'); await enterSession(result.session); return; }
+    const text = result.kind === 'invalid' ? NAME_ERROR : result.kind === 'failed' ? 'Não foi possível criar a conta. Confira os dados e a disponibilidade do cadastro.' : 'Confira seu e-mail para confirmar a conta. Depois, volte e entre com sua senha.';
+    setMessage(ui.signupStatus, { tone: result.kind === 'confirm' ? 'info' : 'error', text });
+    if (result.kind === 'confirm') { ui.email.value = ui.signupEmail.value.trim(); loginMode('login'); }
+  });
+});
+if (authLink.kind === 'notice') setMessage(ui.signupStatus, authLink.notice);
+
+// ---------- recuperação de senha ----------
+
+ui.forgotOpen.addEventListener('click', () => {
+  ui.forgotEmail.value = ui.email.value.trim();
+  setMessage(ui.signupStatus, null);
+  loginMode('forgot');
+});
+ui.forgotCancel.addEventListener('click', () => loginMode('login'));
+ui.forgotForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  if (ui.forgotBtn.disabled) return;
+  ui.forgotBtn.disabled = true;
+  ui.forgotCancel.disabled = true;
+  void requestPasswordReset(client.auth, ui.forgotEmail.value, recoveryRedirect(window.location)).then((notice) => {
+    ui.forgotBtn.disabled = false;
+    ui.forgotCancel.disabled = false;
+    setMessage(ui.signupStatus, notice);
+    if (notice.tone === 'info') { ui.email.value = ui.forgotEmail.value.trim(); loginMode('login'); }
+  });
+});
+
+/** Cliente temporário da recuperação: nunca grava sessão nem entra na conta desta aba. */
+let recovery: SupabaseClient | null = null;
+
+async function beginRecovery(tokens: RecoveryTokens): Promise<void> {
+  ui.login.hidden = false;
+  loginMode('reset');
+  ui.resetBtn.disabled = true;
+  setMessage(ui.signupStatus, { tone: 'info', text: 'Conferindo o link de recuperação…' });
+  recovery = createClient(cfg.supabaseUrl, cfg.publishableKey, { auth: recoveryAuthOptions() });
+  if (!(await openRecovery(recovery.auth, tokens))) return finishRecovery({ tone: 'error', text: LINK_INVALID });
+  ui.resetBtn.disabled = false;
+  setMessage(ui.signupStatus, { tone: 'info', text: 'Link confirmado. Defina a nova senha.' });
+  ui.resetPassword.focus();
+}
+
+/** Fim da recuperação, com ou sem troca: volta ao login e só então restaura a sessão desta aba, se houver. */
+function finishRecovery(notice: { tone: 'info' | 'error'; text: string }): void {
+  recovery = null;
+  ui.resetBtn.disabled = false;
+  ui.resetCancel.disabled = false;
+  loginMode('login');
+  setMessage(ui.signupStatus, notice);
+  restoreLogin();
+}
+
+ui.resetForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  if (ui.resetBtn.disabled || recovery === null) return;
+  const auth = recovery.auth;
+  const password = ui.resetPassword.value;
+  const confirmation = ui.resetConfirm.value;
+  ui.resetPassword.value = ''; // a senha não fica no DOM
+  ui.resetConfirm.value = '';
+  ui.resetBtn.disabled = true;
+  ui.resetCancel.disabled = true;
+  void saveNewPassword(auth, password, confirmation).then((result) => {
+    if (result.kind === 'retry') {
+      ui.resetBtn.disabled = false;
+      ui.resetCancel.disabled = false;
+      setMessage(ui.signupStatus, { tone: 'error', text: result.text });
+      ui.resetPassword.focus();
+      return;
+    }
+    if (result.kind === 'expired') return finishRecovery({ tone: 'error', text: RECOVERY_EXPIRED });
+    finishRecovery({ tone: 'info', text: result.signedOut ? PASSWORD_CHANGED : PASSWORD_CHANGED_PARTIAL });
+  });
+});
+ui.resetCancel.addEventListener('click', () => {
+  if (recovery === null) return;
+  ui.resetCancel.disabled = true;
+  void abandonRecovery(recovery.auth).then(() => finishRecovery({ tone: 'info', text: RECOVERY_CANCELLED }));
+});
+
 ui.loginForm.addEventListener('submit', (event) => {
   event.preventDefault();
   showError(null);
@@ -957,6 +1191,7 @@ ui.loginForm.addEventListener('submit', (event) => {
   void client.auth.signInWithPassword({ email, password }).then(async ({ data, error }) => {
     ui.loginBtn.disabled = false;
     if (error || !data.session || !data.user) return showError(`Login recusado (${authCode(error?.code)}).`);
+    loginMode('login');
     await enterSession(data.session);
   });
 });
@@ -973,6 +1208,19 @@ ui.logoutBtn.addEventListener('click', () => {
 });
 
 // ---------- inicialização ----------
+
+function restoreLogin(): void {
+  void restoreSession(client, authStorage).then(async (restored) => {
+    restoringAuth = false;
+    if (restored.status === 'valid' || restored.status === 'unverified') return enterSession(restored.session);
+    ui.login.hidden = false;
+    if (restored.status === 'revoked') showNotice(SESSION_ENDED);
+    if (restored.status === 'unavailable') showNotice(SESSION_UNVERIFIED);
+  }).catch(() => {
+    restoringAuth = false;
+    ui.login.hidden = false;
+  });
+}
 
 try {
   cfg = parseWebConfig(import.meta.env as unknown as Record<string, string | undefined>);
@@ -1111,24 +1359,21 @@ try {
       if (event === 'SIGNED_OUT') {
         // Sessão revogada, renovação recusada ou logout em outra aba: a chamada não continua sem identidade válida.
         if (selfUserId !== null && !loggingOut) endByAuth(SESSION_ENDED);
+      } else if (event === 'USER_UPDATED' && session?.user.id === selfUserId) {
+        applyIdentity(session.user);
       } else if (session && selfUserId !== null && session.user.id !== selfUserId) {
         // O armazenamento é do navegador: outra aba entrou com outra conta, e esta aba não pode seguir misturando as duas.
         endByAuth(ACCOUNT_CHANGED);
         void enterSession(session);
-      } else if (event === 'SIGNED_IN' && session && selfUserId === null && !loggingOut) {
+      } else if (event === 'SIGNED_IN' && session && selfUserId === null && !loggingOut && !restoringAuth) {
         void enterSession(session); // login feito em outra aba
       }
     });
   });
   if (cfg.defaultRoomId) ui.room.value = cfg.defaultRoomId;
-  void restoreSession(client, authStorage).then(async (restored) => {
-    if (restored.status === 'valid' || restored.status === 'unverified') return enterSession(restored.session);
-    ui.login.hidden = false;
-    if (restored.status === 'revoked') showNotice(SESSION_ENDED);
-    if (restored.status === 'unavailable') showNotice(SESSION_UNVERIFIED);
-  }).catch(() => {
-    ui.login.hidden = false;
-  });
+  // Com link de recuperação, a sessão guardada só é restaurada depois: o link nunca entra na conta desta aba.
+  if (authLink.kind === 'recovery') void beginRecovery(authLink.tokens);
+  else restoreLogin();
 } catch (error) {
   ui.configError.textContent = `Configuração inválida: ${error instanceof Error ? error.message : 'erro'}. Veja .env.example.`;
   ui.configError.hidden = false;

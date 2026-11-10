@@ -1,0 +1,56 @@
+{
+  "referenceCommit": "b210aec",
+  "normalization": "UTF-8; CRLF converted to LF",
+  "migrations": [
+    {
+      "file": "20261023000100_oryn_schema.sql",
+      "sha256": "15016d19af8c84bfdcf6e371c9764e341b919d17dc3bf685388e2b75d2eb4ec1"
+    },
+    {
+      "file": "20261023000200_oryn_functions.sql",
+      "sha256": "4a55f4ba2ceea1bbcadb177c209c25d12605afc76641d34637fadb5d978939e6"
+    },
+    {
+      "file": "20261023000300_oryn_realtime.sql",
+      "sha256": "9a7777c4e8ce8f4ec3cc3866b552406eb8dff2e80dd1de37150716c33e129699"
+    },
+    {
+      "file": "20261028000400_oryn_room_management.sql",
+      "sha256": "9c4abe4dbc59039c95e427220ee54a181b4052577e10ba646436ecc0d1baaf1b"
+    },
+    {
+      "file": "20261106000500_oryn_room_messages.sql",
+      "sha256": "a45dc1402aa62e13be81fda26dabaef5cf992719183e2c0fdbc87ac69c8bffde"
+    },
+    {
+      "file": "20261107000600_oryn_room_membership.sql",
+      "sha256": "959523c8fc663f289bb88b5ad78b000424c12c7a9a689130cf36e32332276569"
+    },
+    {
+      "file": "20261108000700_oryn_soundboard.sql",
+      "sha256": "623d7b707d7a09d93a1233d51fff57f2f0084f0d602c8d32fba07871587504a0"
+    },
+    {
+      "file": "20261109224924_oryn_account_display_name.sql",
+      "sha256": "d338333116c3866c1240dc987dc84dd3a50f03e5234346b3290200401b8fa060"
+    }
+  ],
+  "checks": [
+    {
+      "file": "integration/sql/20_profile_08_preflight.sql",
+      "sha256": "976bce5604a81b7f97560979df7a5ed494bd7d0df9cf708df2a5de09413ac275"
+    },
+    {
+      "file": "integration/sql/21_profile_08_postflight.sql",
+      "sha256": "428179ab91fe221f65a2c9f8c102a56835536607ded85bb4dae71cc06e791eb5"
+    },
+    {
+      "file": "integration/sql/22_profile_08_recovered.sql",
+      "sha256": "1719a8ca09e71e0a42281d6f39f5dcd75babba403661ec570e8484b2e1de967a"
+    },
+    {
+      "file": "integration/sql/95_recover_profile_08.sql",
+      "sha256": "b69c875b0fed3970a8e5bc5fb5d0cf98f51397d3bc235f3061bc0df499fc5ae9"
+    }
+  ]
+}

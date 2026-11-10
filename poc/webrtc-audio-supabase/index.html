@@ -27,6 +27,30 @@
           <label>Senha <input id="password" type="password" autocomplete="current-password" required /></label>
           <button id="login-btn" type="submit">Entrar</button>
         </form>
+        <button id="signup-open-btn" class="ghost-btn" type="button">Criar conta</button>
+        <form id="signup-form" autocomplete="on" hidden>
+          <label>Nome de exibição (até 32 caracteres) <input id="signup-name" type="text" maxlength="128" autocomplete="nickname" required /></label>
+          <label>E-mail <input id="signup-email" type="email" autocomplete="email" required /></label>
+          <label>Senha <input id="signup-password" type="password" autocomplete="new-password" minlength="8" required /></label>
+          <p class="muted">Use pelo menos 8 caracteres. O nome será usado em todas as suas salas.</p>
+          <button id="signup-btn" type="submit">Criar conta</button>
+          <button id="signup-cancel-btn" class="ghost-btn" type="button">Voltar ao login</button>
+        </form>
+        <button id="forgot-open-btn" class="ghost-btn" type="button">Esqueci minha senha</button>
+        <form id="forgot-form" autocomplete="on" hidden>
+          <label>E-mail da conta <input id="forgot-email" type="email" autocomplete="email" required /></label>
+          <p class="muted">Enviaremos um link para você criar uma nova senha.</p>
+          <button id="forgot-btn" type="submit">Enviar link</button>
+          <button id="forgot-cancel-btn" class="ghost-btn" type="button">Voltar ao login</button>
+        </form>
+        <form id="reset-form" autocomplete="off" hidden>
+          <label>Nova senha <input id="reset-password" type="password" autocomplete="new-password" minlength="8" required /></label>
+          <label>Confirme a nova senha <input id="reset-confirm" type="password" autocomplete="new-password" minlength="8" required /></label>
+          <p class="muted">Use pelo menos 8 caracteres.</p>
+          <button id="reset-btn" type="submit">Salvar nova senha</button>
+          <button id="reset-cancel-btn" class="ghost-btn" type="button">Cancelar</button>
+        </form>
+        <p id="signup-status" role="status" hidden></p>
       </section>
 
       <section id="account" hidden>
@@ -44,6 +68,7 @@
           <button id="create-open-btn" class="nav-btn" type="button" aria-label="Criar sala" title="Criar sala"><span class="label-full">Criar sala</span></button>
           <div id="account-box" class="sidebar-foot">
             <p class="account-line"><span class="user-avatar" aria-hidden="true"></span><span class="account-text"><strong id="user-label"></strong><span class="muted">Conectado</span></span></p>
+            <button id="profile-open-btn" class="nav-btn" type="button" aria-controls="profile-panel" aria-expanded="false">Perfil</button>
             <button id="logout-btn" class="nav-btn" type="button" aria-label="Sair da conta"><span class="label-compact" aria-hidden="true">Sair</span><span class="label-full">Sair da conta</span></button>
           </div>
         </nav>
@@ -98,6 +123,15 @@
         </section>
 
         <div id="shell-main" class="shell-main">
+          <dialog id="profile-panel" class="identity-panel" aria-labelledby="profile-title" hidden>
+            <div class="panel-head"><h2 id="profile-title">Seu perfil</h2><button id="profile-close-btn" class="ghost-btn" type="button">Fechar perfil</button></div>
+            <p class="muted">Seu nome aparece em todas as salas e no histórico de mensagens. Ele não muda suas permissões.</p>
+            <form id="profile-form">
+              <label>Nome de exibição (até 32 caracteres) <input id="profile-name" type="text" maxlength="128" autocomplete="nickname" required /></label>
+              <button id="profile-save-btn" type="submit">Salvar nome</button>
+            </form>
+            <p id="profile-status" role="status" hidden></p>
+          </dialog>
           <header class="context-header">
             <button id="shell-menu-btn" class="ghost-btn" type="button" aria-controls="sidebar" aria-expanded="false">Menu</button>
             <span class="context-icon" aria-hidden="true"></span>

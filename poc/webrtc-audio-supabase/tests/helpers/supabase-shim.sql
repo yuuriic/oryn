@@ -37,6 +37,7 @@ alter default privileges in schema public grant all on sequences to anon, authen
 create schema auth;
 create table auth.users (
   id uuid primary key,
+  raw_user_meta_data jsonb not null default '{}',
   is_anonymous boolean not null default true,
   created_at timestamptz not null default now()
 );
@@ -49,6 +50,7 @@ $$;
 grant usage on schema auth to anon, authenticated, service_role, migration_owner;
 grant execute on function auth.uid() to anon, authenticated, service_role, migration_owner;
 grant references on auth.users to migration_owner; -- chaves estrangeiras para auth.users
+grant select (id, raw_user_meta_data), trigger on auth.users to migration_owner;
 
 -- Storage: só o que a 0700 usa. O dono é outro papel, como no projeto real; a criação de políticas é aproximada como em realtime.messages.
 create role supabase_storage_admin nologin noinherit;

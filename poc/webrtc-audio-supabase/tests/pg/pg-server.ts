@@ -169,7 +169,7 @@ export class PgServer {
   }
 
   /** `serverOptions`: opções extras do servidor (só para o teste do diagnóstico de falha). */
-  static async start(serverOptions: string[] = []): Promise<PgServer> {
+  static async start(serverOptions: string[] = [], migrationCount = Number.POSITIVE_INFINITY): Promise<PgServer> {
     const base = mkdtempSync(join(tmpdir(), 'oryn-pg17-'));
     const dataDir = join(base, 'data');
     const logFile = join(base, 'server.log');
@@ -220,7 +220,7 @@ export class PgServer {
     try {
       await stage('conectar', output, password, () => server.admin('select 1'));
       await stage('aplicar shim', output, password, () => server.admin(SHIM_SQL));
-      for (const [file, sql] of migrationFiles()) await stage(`aplicar ${file}`, output, password, () => server.asMigrationOwner(sql));
+      for (const [file, sql] of migrationFiles().slice(0, migrationCount)) await stage(`aplicar ${file}`, output, password, () => server.asMigrationOwner(sql));
     } catch (error) {
       await server.stop().catch(() => undefined);
       throw error;

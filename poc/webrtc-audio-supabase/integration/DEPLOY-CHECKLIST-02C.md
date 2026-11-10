@@ -7,6 +7,11 @@ arquivo (repositório público): ele é digitado no terminal como `<PROJECT_REF>
 
 Complementa `RUNBOOK-02C.1B.md` (fases 0–6) e `EVIDENCE-02C.1B.md` (matriz dos 18 testes).
 
+**Etapa 8 — PR #23:** preparação local, sem aplicação remota. Procedimento,
+pré/pós-voo, recuperação funcional e autorizações em
+[`PROFILE-PUBLICATION-08.md`](PROFILE-PUBLICATION-08.md). As baselines e os
+rollbacks históricos abaixo não são verificadores nem recuperação da etapa 8.
+
 ## Decisão arquitetural (02C.3B.1)
 
 | Ferramenta | Papel | Motivo |

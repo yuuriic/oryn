@@ -76,6 +76,32 @@ const list = (rows: ChatMessage[]): RpcResult<unknown[]> => ({ data: rows, error
 const fail = (error: string): RpcResult<unknown[]> => ({ data: null, error });
 const seqs = (s: ChatState) => s.messages.map((m) => m.seq);
 
+describe('renomeação com o chat aberto', () => {
+  it('atualiza o histórico sem perder envio pendente, nonce ou cursor de novidades', async () => {
+    const t = await opened({ list_room_messages: () => list([row(1)]) });
+    t.h['send_room_message'] = () => 'hang';
+    t.chat.send('Pendente'); await flush();
+    const pending = t.chat.state.pending;
+    t.h['list_room_messages'] = () => list([row(1, { display_name: 'Novo nome' })]);
+    await t.chat.refreshNames();
+    expect(t.chat.state.messages[0]!.display_name).toBe('Novo nome');
+    expect(t.chat.state.pending).toEqual(pending);
+    t.h['list_room_messages'] = () => list([]);
+    await t.fire(CHAT_POLL_MS);
+    expect(t.listCalls().at(-1)!.args['p_after_seq']).toBe(1);
+  });
+  it('resposta de nomes da conta anterior não reaparece depois do logout', async () => {
+    const t = await opened({ list_room_messages: () => list([row(1)]) });
+    let finish!: (r: RpcResult<unknown[]>) => void;
+    t.h['list_room_messages'] = () => new Promise((resolve) => { finish = resolve; });
+    const refresh = t.chat.refreshNames();
+    t.chat.close(); finish(list([row(1, { display_name: 'Nome antigo' })]));
+    await refresh;
+    expect(t.chat.state.messages).toEqual([]);
+    expect(t.chat.state.status).toBe('closed');
+  });
+});
+
 describe('contrato', () => {
   it('isChatBody segue as regras da migração', () => {
     for (const ok of ['a', 'linha 1\nlinha 2', '\ttab', '😀'.repeat(4000), 'x'.repeat(4000)]) expect(isChatBody(ok), ok.slice(0, 8)).toBe(true);

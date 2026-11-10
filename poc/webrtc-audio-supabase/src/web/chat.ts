@@ -98,6 +98,8 @@ export class ChatController {
   /** Último seq visto, mesmo de linha ignorada: o cursor sempre avança. */
   private cursor = 0;
   private loaded = false;
+  private nameRefresh = false;
+  private nameTicks = 0;
   /** Fila de envio: a ordem digitada é a ordem no servidor. */
   private queue: Promise<void> = Promise.resolve();
 
@@ -154,6 +156,8 @@ export class ChatController {
     this.polling = false;
     this.cursor = 0;
     this.loaded = false;
+    this.nameRefresh = false;
+    this.nameTicks = 0;
     this.queue = Promise.resolve();
   }
 
@@ -169,6 +173,33 @@ export class ChatController {
       this.timer = null;
       if (gen === this.generation) void this.tick();
     }, ms);
+  }
+
+  /** Reconsulta nomes do intervalo já aberto, sem fechar o chat nem perder a fila de envio. */
+  async refreshNames(): Promise<void> {
+    const oldest = this.s.messages[0]?.seq;
+    if (this.nameRefresh || oldest === undefined || this.s.status !== 'ready') return;
+    this.nameRefresh = true;
+    const gen = this.generation;
+    const room = this.s.roomId;
+    let before = (this.s.messages.at(-1)?.seq ?? 0) + 1;
+    const rows: ChatMessage[] = [];
+    try {
+      const pages = Math.ceil(this.s.messages.length / CHAT_CATCH_UP) + 1;
+      for (let i = 0; i < pages; i += 1) {
+        const res = await this.call('list_room_messages', { p_room_id: room, p_before_seq: before, p_limit: CHAT_CATCH_UP });
+        if (gen !== this.generation) return;
+        const parsed = res.error ? null : parseChatRows(res.data);
+        if (!parsed || parsed.rows.length === 0) return;
+        rows.push(...parsed.rows.filter((r) => r.seq >= oldest));
+        const first = parsed.rows[0]!.seq;
+        if (first <= oldest || parsed.count < CHAT_CATCH_UP) break;
+        if (first >= before) return;
+        before = first;
+      }
+      const names = new Map(rows.map((r) => [r.seq, r.display_name]));
+      this.set({ messages: this.s.messages.map((m) => names.has(m.seq) ? { ...m, display_name: names.get(m.seq)! } : m) });
+    } finally { if (gen === this.generation) this.nameRefresh = false; }
   }
 
   private retryDelay(): number {
@@ -227,6 +258,7 @@ export class ChatController {
       this.set({ ...this.merge(parsed.rows), stale: false, skipped: this.s.skipped + parsed.skipped });
     }
     // Resposta cheia: há mais a buscar, sem esperar o intervalo.
+    if (!first && ++this.nameTicks % 5 === 0) void this.refreshNames();
     this.schedule(!first && parsed.count === CHAT_CATCH_UP ? 0 : CHAT_POLL_MS);
   }
 

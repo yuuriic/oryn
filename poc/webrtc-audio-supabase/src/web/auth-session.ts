@@ -73,8 +73,10 @@ export async function restoreSession(client: SupabaseClient, storage: AuthStorag
   const session = data.session;
   if (!session) return { status: 'none' };
   const user = await client.auth.getUser(session.access_token);
-  if (!user.error) return { status: 'valid', session };
-  if (isAuthSessionMissingError(user.error) || user.error.status === 401 || user.error.status === 403) {
+  // getUser já consultou o servidor: reaproveita os metadados atuais, inclusive
+  // quando o nome foi alterado em outro dispositivo desde esta sessão local.
+  if (!user.error && user.data.user) return { status: 'valid', session: { ...session, user: user.data.user } };
+  if (isAuthSessionMissingError(user.error) || user.error?.status === 401 || user.error?.status === 403) {
     await logout(client, storage);
     return { status: 'revoked' };
   }

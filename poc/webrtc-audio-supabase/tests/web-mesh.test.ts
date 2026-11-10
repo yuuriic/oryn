@@ -122,6 +122,26 @@ afterEach(async () => {
 });
 
 describe('quantos participantes', () => {
+  it('nome novo na descoberta preserva PC, captura, mudo e negociação', async () => {
+    const list = await enter(USERS.owner, USERS.member);
+    fullMesh(list);
+    const a = list[0]!; const b = list[1]!;
+    a.call.setMuted(true);
+    const pcs = [...a.pcs, ...b.pcs];
+    const signals = server.published.filter((e) => e.kind === 'offer' || e.kind === 'answer').length;
+    server.members.set(USERS.owner, 'Nome novo');
+    await vi.advanceTimersByTimeAsync(31_000); await settle(2000);
+    expect(b.participants.some((p) => p.displayName === 'Nome novo')).toBe(true);
+    expect([...a.pcs, ...b.pcs]).toEqual(pcs);
+    expect(server.published.filter((e) => e.kind === 'offer' || e.kind === 'answer')).toHaveLength(signals);
+    expect(a.streams).toHaveLength(1);
+    expect(a.streams[0]!.track.enabled).toBe(false);
+    fullMesh(list);
+    const link = pairConnection(b, a);
+    link.connectionState = 'failed'; link.onconnectionstatechange?.();
+    await settle(2000);
+    expect(b.problems.some(([name]) => name === 'Nome novo')).toBe(true);
+  });
   it('1 participante: aguarda, com microfone capturado e nenhuma conexão', async () => {
     const [a] = await enter(USERS.owner);
     expect(a!.call.phase).toBe('waiting-peer');

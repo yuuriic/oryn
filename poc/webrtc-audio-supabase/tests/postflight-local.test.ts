@@ -218,7 +218,9 @@ describe('MVP 01: 08_scope_entries.sql e 91_rollback_0400.sql', () => {
   const beforeStep4 = async () => {
     const db = await TestDb.createBare();
     const files = migrationFiles();
-    expect(files.map(([f]) => f.split('_')[0])).toEqual(['20261023000100', '20261023000200', '20261023000300', '20261028000400', '20261106000500', '20261107000600', '20261108000700']);
+    // Este cenário reconstrói o histórico anterior ao perfil; migrações aditivas
+    // posteriores não fazem parte do rollback da 0400.
+    expect(files.slice(0, 7).map(([f]) => f.split('_')[0])).toEqual(['20261023000100', '20261023000200', '20261023000300', '20261028000400', '20261106000500', '20261107000600', '20261108000700']);
     for (const [, m] of files.slice(0, 3)) await db.migrate(m);
     // Histórico com o mesmo dono das migrações (no projeto, o `postgres` cria e roda o 91).
     await db.migrate(`create schema supabase_migrations; create table supabase_migrations.schema_migrations (version text primary key);
