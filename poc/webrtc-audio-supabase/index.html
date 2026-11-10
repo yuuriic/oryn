@@ -157,7 +157,11 @@
           <div id="invite-accept-pending">
             <p>Você vai aceitar com a conta <strong id="invite-account"></strong>. O convite só pode ser usado uma vez. Se esta não for a conta certa, use "Sair da conta" e entre com a outra: o convite continua nesta aba.</p>
             <form id="invite-accept-form" autocomplete="off">
-              <label>Seu nome na sala (até 32 caracteres) <input id="invite-display" type="text" maxlength="64" spellcheck="false" required /></label>
+              <!-- Quem aceita entra com o nome global do perfil; sem ele, o convite espera nesta aba. -->
+              <div id="invite-identity" class="identity-note" role="status">
+                <span id="invite-identity-text"></span>
+                <button id="invite-profile-btn" class="ghost-btn" type="button">Alterar no perfil</button>
+              </div>
               <div class="buttons">
                 <button id="invite-accept-btn" type="submit">Aceitar convite</button>
                 <button id="invite-decline-btn" type="button">Recusar</button>
@@ -234,21 +238,29 @@
         <section id="create-room" hidden>
         <div class="panel-head">
           <h2 id="create-room-title">Criar sala</h2>
-          <button id="create-cancel-btn" class="ghost-btn" type="button">Cancelar</button>
         </div>
+        <p class="create-lead">Um lugar para conversar por voz e texto. Depois de criar, você convida as pessoas.</p>
         <!-- maxlength conta unidades UTF-16 (um emoji vale 2): fica no dobro do limite real, que é conferido em
-             pontos de código, como no banco (40 e 32), com mensagem na tela. -->
-        <form id="create-form" autocomplete="off">
-          <label>Nome da sala (até 40 caracteres) <input id="create-name" type="text" maxlength="80" spellcheck="false" required /></label>
-          <label>Seu nome na sala (até 32 caracteres) <input id="create-display" type="text" maxlength="64" spellcheck="false" required /></label>
-          <label>Lugares, com você
+             pontos de código, como no banco (40), com mensagem na tela. -->
+        <form id="create-form" autocomplete="off" aria-labelledby="create-room-title">
+          <label>Nome da sala <input id="create-name" type="text" maxlength="80" spellcheck="false" required placeholder="Ex.: Noite de jogos" aria-describedby="create-name-hint" /></label>
+          <p id="create-name-hint" class="create-hint">Até 40 caracteres.</p>
+          <label>Lugares, incluindo você
             <select id="create-capacity">
               <option value="2" selected>2</option>
               <option value="3">3</option>
               <option value="4">4</option>
             </select>
           </label>
-          <button id="create-btn" type="submit">Criar sala</button>
+          <!-- O criador entra com o nome global do perfil: não há nome por sala para digitar. -->
+          <div id="create-identity" class="identity-note" role="status">
+            <span id="create-identity-text"></span>
+            <button id="create-profile-btn" class="ghost-btn" type="button">Alterar no perfil</button>
+          </div>
+          <div class="create-actions">
+            <button id="create-cancel-btn" class="ghost-btn" type="button">Cancelar</button>
+            <button id="create-btn" type="submit">Criar sala</button>
+          </div>
         </form>
         </section>
 

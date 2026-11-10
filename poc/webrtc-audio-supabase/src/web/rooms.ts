@@ -38,7 +38,8 @@ export function validateNewRoom(name: string, displayName: string): NewRoom {
   const n = name.trim();
   const d = displayName.trim();
   if (!isRoomName(n)) return { ok: false, message: 'Nome da sala: de 1 a 40 caracteres, sem caracteres de controle.' };
-  if (!isDisplayName(d)) return { ok: false, message: 'Seu nome na sala: de 1 a 32 caracteres, sem caracteres de controle.' };
+  // O nome vem do perfil (nome global); a regra é a mesma do banco, e o ajuste é feito no Perfil.
+  if (!isDisplayName(d)) return { ok: false, message: 'Seu nome de exibição: de 1 a 32 caracteres, sem caracteres de controle. Ajuste no Perfil.' };
   return { ok: true, name: n, displayName: d };
 }
 

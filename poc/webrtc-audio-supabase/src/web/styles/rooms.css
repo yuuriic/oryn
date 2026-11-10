@@ -152,17 +152,73 @@ main[data-view='room'] #rooms .rooms .buttons {
   font-weight: 600;
 }
 
+/* Criação em uma coluna: nome da sala em destaque, lugares, quem entra e as ações no fim. */
+#create-room {
+  max-width: 34rem;
+}
+
+#create-room .create-lead {
+  margin: var(--space-1) 0 var(--space-5);
+  color: var(--color-text-secondary);
+}
+
 #create-form {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr)) max-content;
-  align-items: end;
-  gap: var(--space-3);
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
 }
 
 #create-form label {
   margin: 0;
   font-size: 0.875rem;
+  font-weight: 600;
   color: var(--color-text-secondary);
+}
+
+#create-form .create-hint {
+  margin: calc(var(--space-3) * -1) 0 0;
+  font-size: 0.8125rem;
+  color: var(--color-text-secondary);
+}
+
+#create-capacity {
+  max-width: 10rem;
+}
+
+/* Quem entra (criação e aceite de convite): nome global do perfil e atalho para o Perfil. */
+.identity-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-md);
+  background: var(--color-elevated);
+  font-size: 0.9375rem;
+}
+
+.identity-note button {
+  min-height: 44px;
+  margin: 0;
+}
+
+#invite-accept-form .identity-note {
+  margin: 0 0 var(--space-3);
+}
+
+.identity-note strong {
+  color: var(--color-text);
+  overflow-wrap: anywhere;
+}
+
+#create-form .create-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  margin-top: var(--space-1);
 }
 
 #create-form input,
@@ -178,8 +234,6 @@ main[data-view='room'] #rooms .rooms .buttons {
 #create-form button {
   min-height: 44px;
   margin: 0;
-  grid-column: 1 / -1;
-  justify-self: start;
 }
 
 #return-call > p,
@@ -226,7 +280,6 @@ main[data-view='room'] #rooms .rooms .buttons {
 }
 
 #invite-link,
-#invite-display,
 #room {
   min-height: 44px;
   font-size: 1rem;
@@ -241,7 +294,11 @@ main[data-view='room'] #rooms .rooms .buttons {
 }
 
 @media (max-width: 768px) {
-  #create-form {
-    grid-template-columns: minmax(0, 1fr);
+  #create-room {
+    max-width: none;
+  }
+
+  #create-form .create-actions button {
+    flex: 1 1 auto;
   }
 }
