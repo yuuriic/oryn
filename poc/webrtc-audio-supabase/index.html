@@ -36,6 +36,20 @@
           <button id="signup-btn" type="submit">Criar conta</button>
           <button id="signup-cancel-btn" class="ghost-btn" type="button">Voltar ao login</button>
         </form>
+        <button id="forgot-open-btn" class="ghost-btn" type="button">Esqueci minha senha</button>
+        <form id="forgot-form" autocomplete="on" hidden>
+          <label>E-mail da conta <input id="forgot-email" type="email" autocomplete="email" required /></label>
+          <p class="muted">Enviaremos um link para você criar uma nova senha.</p>
+          <button id="forgot-btn" type="submit">Enviar link</button>
+          <button id="forgot-cancel-btn" class="ghost-btn" type="button">Voltar ao login</button>
+        </form>
+        <form id="reset-form" autocomplete="off" hidden>
+          <label>Nova senha <input id="reset-password" type="password" autocomplete="new-password" minlength="8" required /></label>
+          <label>Confirme a nova senha <input id="reset-confirm" type="password" autocomplete="new-password" minlength="8" required /></label>
+          <p class="muted">Use pelo menos 8 caracteres.</p>
+          <button id="reset-btn" type="submit">Salvar nova senha</button>
+          <button id="reset-cancel-btn" class="ghost-btn" type="button">Cancelar</button>
+        </form>
         <p id="signup-status" role="status" hidden></p>
       </section>
 

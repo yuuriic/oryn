@@ -10,7 +10,11 @@
 // candidato ICE ou senha. A configuração aceita só a chave publicável (config.ts).
 
 import { FunctionsHttpError, createClient, type Session, type SupabaseClient, type User } from '@supabase/supabase-js';
-import { accountName, NAME_ERROR, registerAccount, saveAccountName, takeConfirmation } from './identity.ts';
+import {
+  LINK_INVALID, NAME_ERROR, PASSWORD_CHANGED, PASSWORD_CHANGED_PARTIAL, RECOVERY_CANCELLED, RECOVERY_EXPIRED,
+  abandonRecovery, accountName, openRecovery, recoveryAuthOptions, recoveryRedirect, registerAccount, requestPasswordReset,
+  saveAccountName, saveNewPassword, takeAuthLink, type RecoveryTokens,
+} from './identity.ts';
 import { isUuid } from '../../supabase/functions/_shared/signal-contract.ts';
 import { authOptions, createAuthStorage, logout, restoreSession, type AuthStorage } from './auth-session.ts';
 import type { CallPhase, CallStats, PeerStates } from './call.ts';
@@ -41,7 +45,8 @@ import { DISCONNECT, DISCONNECT_MESSAGES, JOIN_LIMIT_MESSAGE } from './supabase-
 // Primeiro passo da página: o token do convite não fica na barra de endereço.
 const takeInvite = (): InviteArrival => takeInviteFromLocation(window.location, (url) => window.history.replaceState(window.history.state, '', url));
 const arrivedInvite = takeInvite();
-const confirmationNotice = takeConfirmation(window.location, (url) => window.history.replaceState(window.history.state, '', url));
+// Confirmação ou recuperação de senha: as credenciais saem da URL aqui; os tokens de recuperação ficam só em memória.
+const authLink = takeAuthLink(window.location, (url) => window.history.replaceState(window.history.state, '', url));
 
 const el = <T extends HTMLElement>(id: string): T => {
   const node = document.getElementById(id);
@@ -65,6 +70,16 @@ const ui = {
   signupBtn: el<HTMLButtonElement>('signup-btn'),
   signupCancel: el<HTMLButtonElement>('signup-cancel-btn'),
   signupStatus: el<HTMLElement>('signup-status'),
+  forgotOpen: el<HTMLButtonElement>('forgot-open-btn'),
+  forgotForm: el<HTMLFormElement>('forgot-form'),
+  forgotEmail: el<HTMLInputElement>('forgot-email'),
+  forgotBtn: el<HTMLButtonElement>('forgot-btn'),
+  forgotCancel: el<HTMLButtonElement>('forgot-cancel-btn'),
+  resetForm: el<HTMLFormElement>('reset-form'),
+  resetPassword: el<HTMLInputElement>('reset-password'),
+  resetConfirm: el<HTMLInputElement>('reset-confirm'),
+  resetBtn: el<HTMLButtonElement>('reset-btn'),
+  resetCancel: el<HTMLButtonElement>('reset-cancel-btn'),
   profileOpen: el<HTMLButtonElement>('profile-open-btn'),
   profilePanel: el<HTMLDialogElement>('profile-panel'),
   profileClose: el<HTMLButtonElement>('profile-close-btn'),
@@ -1053,16 +1068,27 @@ ui.profileForm.addEventListener('submit', (event) => {
   });
 });
 
-function signupMode(open: boolean): void {
-  ui.loginTitle.textContent = open ? 'Criar conta' : 'Entrar na sua conta';
-  ui.loginForm.hidden = open;
-  ui.signupForm.hidden = !open;
-  ui.signupOpen.hidden = open;
+type LoginMode = 'login' | 'signup' | 'forgot' | 'reset';
+const LOGIN_TITLES: Record<LoginMode, string> = { login: 'Entrar na sua conta', signup: 'Criar conta', forgot: 'Recuperar senha', reset: 'Criar nova senha' };
+/** Um formulário por vez na área de login; os campos de senha sempre saem limpos. */
+function loginMode(mode: LoginMode): void {
+  ui.loginTitle.textContent = LOGIN_TITLES[mode];
+  ui.loginForm.hidden = mode !== 'login';
+  ui.signupForm.hidden = mode !== 'signup';
+  ui.forgotForm.hidden = mode !== 'forgot';
+  ui.resetForm.hidden = mode !== 'reset';
+  ui.signupOpen.hidden = mode !== 'login';
+  ui.forgotOpen.hidden = mode !== 'login';
   ui.signupPassword.value = '';
-  (open ? ui.signupName : ui.email).focus();
+  ui.resetPassword.value = '';
+  ui.resetConfirm.value = '';
+  ({ login: ui.email, signup: ui.signupName, forgot: ui.forgotEmail, reset: ui.resetPassword })[mode].focus();
 }
-ui.signupOpen.addEventListener('click', () => signupMode(true));
-ui.signupCancel.addEventListener('click', () => signupMode(false));
+ui.signupOpen.addEventListener('click', () => {
+  setMessage(ui.signupStatus, null); // aviso de outro fluxo (ex.: link de recuperação enviado) não vale para o cadastro
+  loginMode('signup');
+});
+ui.signupCancel.addEventListener('click', () => loginMode('login'));
 ui.signupForm.addEventListener('submit', (event) => {
   event.preventDefault();
   if (ui.signupBtn.disabled) return;
@@ -1073,13 +1099,87 @@ ui.signupForm.addEventListener('submit', (event) => {
   void registerAccount(client.auth, ui.signupEmail.value, password, ui.signupName.value).then(async (result) => {
     ui.signupBtn.disabled = false;
     ui.signupCancel.disabled = false;
-    if (result.kind === 'signed-in') { signupMode(false); await enterSession(result.session); return; }
+    if (result.kind === 'signed-in') { loginMode('login'); await enterSession(result.session); return; }
     const text = result.kind === 'invalid' ? NAME_ERROR : result.kind === 'failed' ? 'Não foi possível criar a conta. Confira os dados e a disponibilidade do cadastro.' : 'Confira seu e-mail para confirmar a conta. Depois, volte e entre com sua senha.';
     setMessage(ui.signupStatus, { tone: result.kind === 'confirm' ? 'info' : 'error', text });
-    if (result.kind === 'confirm') { ui.email.value = ui.signupEmail.value.trim(); signupMode(false); }
+    if (result.kind === 'confirm') { ui.email.value = ui.signupEmail.value.trim(); loginMode('login'); }
   });
 });
-if (confirmationNotice) setMessage(ui.signupStatus, { tone: 'info', text: confirmationNotice });
+if (authLink.kind === 'notice') setMessage(ui.signupStatus, authLink.notice);
+
+// ---------- recuperação de senha ----------
+
+ui.forgotOpen.addEventListener('click', () => {
+  ui.forgotEmail.value = ui.email.value.trim();
+  setMessage(ui.signupStatus, null);
+  loginMode('forgot');
+});
+ui.forgotCancel.addEventListener('click', () => loginMode('login'));
+ui.forgotForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  if (ui.forgotBtn.disabled) return;
+  ui.forgotBtn.disabled = true;
+  ui.forgotCancel.disabled = true;
+  void requestPasswordReset(client.auth, ui.forgotEmail.value, recoveryRedirect(window.location)).then((notice) => {
+    ui.forgotBtn.disabled = false;
+    ui.forgotCancel.disabled = false;
+    setMessage(ui.signupStatus, notice);
+    if (notice.tone === 'info') { ui.email.value = ui.forgotEmail.value.trim(); loginMode('login'); }
+  });
+});
+
+/** Cliente temporário da recuperação: nunca grava sessão nem entra na conta desta aba. */
+let recovery: SupabaseClient | null = null;
+
+async function beginRecovery(tokens: RecoveryTokens): Promise<void> {
+  ui.login.hidden = false;
+  loginMode('reset');
+  ui.resetBtn.disabled = true;
+  setMessage(ui.signupStatus, { tone: 'info', text: 'Conferindo o link de recuperação…' });
+  recovery = createClient(cfg.supabaseUrl, cfg.publishableKey, { auth: recoveryAuthOptions() });
+  if (!(await openRecovery(recovery.auth, tokens))) return finishRecovery({ tone: 'error', text: LINK_INVALID });
+  ui.resetBtn.disabled = false;
+  setMessage(ui.signupStatus, { tone: 'info', text: 'Link confirmado. Defina a nova senha.' });
+  ui.resetPassword.focus();
+}
+
+/** Fim da recuperação, com ou sem troca: volta ao login e só então restaura a sessão desta aba, se houver. */
+function finishRecovery(notice: { tone: 'info' | 'error'; text: string }): void {
+  recovery = null;
+  ui.resetBtn.disabled = false;
+  ui.resetCancel.disabled = false;
+  loginMode('login');
+  setMessage(ui.signupStatus, notice);
+  restoreLogin();
+}
+
+ui.resetForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  if (ui.resetBtn.disabled || recovery === null) return;
+  const auth = recovery.auth;
+  const password = ui.resetPassword.value;
+  const confirmation = ui.resetConfirm.value;
+  ui.resetPassword.value = ''; // a senha não fica no DOM
+  ui.resetConfirm.value = '';
+  ui.resetBtn.disabled = true;
+  ui.resetCancel.disabled = true;
+  void saveNewPassword(auth, password, confirmation).then((result) => {
+    if (result.kind === 'retry') {
+      ui.resetBtn.disabled = false;
+      ui.resetCancel.disabled = false;
+      setMessage(ui.signupStatus, { tone: 'error', text: result.text });
+      ui.resetPassword.focus();
+      return;
+    }
+    if (result.kind === 'expired') return finishRecovery({ tone: 'error', text: RECOVERY_EXPIRED });
+    finishRecovery({ tone: 'info', text: result.signedOut ? PASSWORD_CHANGED : PASSWORD_CHANGED_PARTIAL });
+  });
+});
+ui.resetCancel.addEventListener('click', () => {
+  if (recovery === null) return;
+  ui.resetCancel.disabled = true;
+  void abandonRecovery(recovery.auth).then(() => finishRecovery({ tone: 'info', text: RECOVERY_CANCELLED }));
+});
 
 ui.loginForm.addEventListener('submit', (event) => {
   event.preventDefault();
@@ -1091,7 +1191,7 @@ ui.loginForm.addEventListener('submit', (event) => {
   void client.auth.signInWithPassword({ email, password }).then(async ({ data, error }) => {
     ui.loginBtn.disabled = false;
     if (error || !data.session || !data.user) return showError(`Login recusado (${authCode(error?.code)}).`);
-    signupMode(false);
+    loginMode('login');
     await enterSession(data.session);
   });
 });
@@ -1108,6 +1208,19 @@ ui.logoutBtn.addEventListener('click', () => {
 });
 
 // ---------- inicialização ----------
+
+function restoreLogin(): void {
+  void restoreSession(client, authStorage).then(async (restored) => {
+    restoringAuth = false;
+    if (restored.status === 'valid' || restored.status === 'unverified') return enterSession(restored.session);
+    ui.login.hidden = false;
+    if (restored.status === 'revoked') showNotice(SESSION_ENDED);
+    if (restored.status === 'unavailable') showNotice(SESSION_UNVERIFIED);
+  }).catch(() => {
+    restoringAuth = false;
+    ui.login.hidden = false;
+  });
+}
 
 try {
   cfg = parseWebConfig(import.meta.env as unknown as Record<string, string | undefined>);
@@ -1258,16 +1371,9 @@ try {
     });
   });
   if (cfg.defaultRoomId) ui.room.value = cfg.defaultRoomId;
-  void restoreSession(client, authStorage).then(async (restored) => {
-    restoringAuth = false;
-    if (restored.status === 'valid' || restored.status === 'unverified') return enterSession(restored.session);
-    ui.login.hidden = false;
-    if (restored.status === 'revoked') showNotice(SESSION_ENDED);
-    if (restored.status === 'unavailable') showNotice(SESSION_UNVERIFIED);
-  }).catch(() => {
-    restoringAuth = false;
-    ui.login.hidden = false;
-  });
+  // Com link de recuperação, a sessão guardada só é restaurada depois: o link nunca entra na conta desta aba.
+  if (authLink.kind === 'recovery') void beginRecovery(authLink.tokens);
+  else restoreLogin();
 } catch (error) {
   ui.configError.textContent = `Configuração inválida: ${error instanceof Error ? error.message : 'erro'}. Veja .env.example.`;
   ui.configError.hidden = false;

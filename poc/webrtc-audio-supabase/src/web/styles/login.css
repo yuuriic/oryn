@@ -54,14 +54,18 @@ main:has(> #account[hidden]) .brand-tagline {
 }
 
 #login-form label,
-#signup-form label {
+#signup-form label,
+#forgot-form label,
+#reset-form label {
   margin: 0 0 var(--space-4);
   font-size: 0.875rem;
   color: var(--color-text-secondary);
 }
 
 #login-form input,
-#signup-form input {
+#signup-form input,
+#forgot-form input,
+#reset-form input {
   display: block;
   box-sizing: border-box;
   width: 100%;
@@ -85,10 +89,14 @@ main:has(> #account[hidden]) .brand-tagline {
 }
 .identity-panel::backdrop { background: #00000099; }
 .identity-panel input { box-sizing: border-box; width: 100%; min-height: 44px; }
-.identity-panel button, #signup-form button, #signup-open-btn { min-height: 44px; }
+.identity-panel button, #signup-form button, #signup-open-btn,
+#forgot-form button, #reset-form button, #forgot-open-btn { min-height: 44px; }
 .identity-panel h2 { margin: 0; font-size: 1.25rem; }
 .identity-panel .panel-head { flex-wrap: wrap; }
-#signup-form { margin-top: var(--space-4); }
+#signup-form, #forgot-form, #reset-form { margin-top: var(--space-4); }
+/* Ações secundárias do login: afastadas do "Entrar" e entre si quando quebram de linha (telas estreitas). */
+#signup-open-btn, #forgot-open-btn { margin-top: var(--space-3); }
+#signup-open-btn { margin-right: var(--space-2); } /* + o espaço inline ≈ os 12px da vertical */
 #create-display[readonly], #invite-display[readonly] { color: var(--color-text-secondary); }
 
 #login-btn {
