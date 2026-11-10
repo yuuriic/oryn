@@ -1,19 +1,42 @@
 # PR #23 — publicação da identidade da conta
 
-Preparação local sobre `b210aec`, branch `feat/profile-display-name`. Este documento
-não autoriza publicação, alterações de Auth, commit ou push. A migração funcional
+Branch `feat/profile-display-name`. Preparado sobre `b210aec`; migração aplicada a
+partir de `e3db322`; recuperação de senha em `40273f4`. Este documento não autoriza
+merge, publicação, alterações de Auth, commit ou push. A migração funcional
 `20261109224924_oryn_account_display_name.sql` permanece intacta.
+
+## Estado em 2026-11-10
+
+| Item | Estado | Origem da evidência |
+|---|---|---|
+| Migração `20261109224924` | **Aplicada** no remoto em 2026-11-10T02:14:41Z, a partir de `e3db322`. Pós-voo `21` OK, histórico com oito versões, `oryn_scope` de 93 para 96 entradas (três helpers novos e seis RPCs alteradas) | Registro da aplicação e auditoria daquela sessão |
+| SMTP do Auth | Gmail SMTP configurado; envio de e-mail comprovado (convite e recuperação) | Relatado pelo operador |
+| Site URL e Redirect URLs | Configurados conforme evidências anteriores; Site URL não alterada nesta etapa | Relatado pelo operador; não relido nesta atualização |
+| Recuperação de senha | Homologada com Supabase remoto e conta de teste: e-mail recebido, link aberto no ambiente local, senha alterada, nova senha aceita, senha anterior recusada, reutilização do link recusada, sessões anteriores encerradas | Relatado pelo operador; testes automatizados, inspeção visual e CI do `40273f4` verificados |
+| Ambiente temporário | Servidor local `127.0.0.1:5174` encerrado; Redirect URL temporária `http://127.0.0.1:5174/` removida | Encerramento verificado; remoção relatada pelo operador |
+| Cadastro público | **Desabilitado** no projeto real | Relatado pelo operador |
+| Merge e publicação | **Não autorizados**; o frontend do PR #23 não está em produção | Estado do PR e do Git |
+
+O backup lógico pré-migração é privado e fica fora do repositório (contém dados
+pessoais do Auth). No plano atual, sem backups gerenciados/PITR, a recuperação primária
+do banco é a `95` (seção "Falhas e recuperação").
+
+Este PR contribui para a Etapa Macro 6 (piloto Windows/web), mas não a encerra. A
+recuperação de senha não é evidência do P08 (recuperação operacional), definido em
+`ARCHITECTURE.md` §14 e exigido pela Etapa 6 em §17.
 
 ## Estado de referência e limites
 
-O pré-voo remoto anterior encontrou sete migrações, nenhum helper/gatilho do perfil,
-seis RPCs coincidentes com o SQL anterior e `oryn_scope` com 93 entradas / MD5
-`0ad4a054e64e1a2122c27e58021e8838`. É um registro anterior, não uma leitura feita
-nesta preparação. Reconfirmar imediatamente antes da aplicação.
+Registro histórico do pré-voo, anterior à aplicação: sete migrações, nenhum
+helper/gatilho do perfil, seis RPCs coincidentes com o SQL anterior e `oryn_scope`
+com 93 entradas / MD5 `0ad4a054e64e1a2122c27e58021e8838`. Depois da aplicação, o
+histórico já tem a oitava versão: o executor recusa a etapa 8 no pré-voo, e a
+migração **não deve ser reaplicada**.
 
-Cadastro, confirmação, SMTP, Site URL e redirects remotos continuam **não verificados**.
-O CI aprovado não comprova esses ajustes nem a entrega de e-mails. Não aplicar
-`config.toml` local ao serviço remoto. Cadastro não concede direito de criar salas.
+O CI não comprova configurações remotas nem a entrega de e-mails; essas evidências vêm
+da homologação acima. Templates de confirmação de cadastro no remoto não foram
+homologados, porque o cadastro público segue desabilitado. Não aplicar `config.toml`
+local ao serviço remoto. Cadastro não concede direito de criar salas.
 
 ## Artefatos e executor
 
@@ -49,10 +72,15 @@ saídas contraditórias ou outras versões são recusadas. Depois do push, exige
 banco em dia **e** pós-voo correto para anunciar APLICADO. Histórico já com a
 oitava versão é recusado no pré-voo, inclusive após recuperação.
 
-## Sequência futura, mediante autorizações específicas
+## Sequência da publicação
+
+Os passos 1 a 6 foram cumpridos (artefatos em `e3db322`, aplicação e pós-voo em
+2026-11-10) e ficam como registro do procedimento; **não repetir**. No passo 7, SMTP,
+Site URL e redirects foram tratados conforme a tabela acima; a confirmação de cadastro
+continua pendente até a decisão de habilitar o cadastro. Resta o passo 8.
 
 1. Revisar e registrar estes artefatos em commit assinado pelo fluxo do usuário;
-   atualizar o PR e obter CI apropriado. Não há commit nesta preparação.
+   atualizar o PR e obter CI apropriado.
 2. Confirmar projeto alvo, commit e manifesto. Reservar operador único e janela
    de baixo uso, sem outros executores/migradores ou alterações concorrentes de
    schema. As consultas e o push usam sessões distintas; não há trava distribuída
@@ -83,9 +111,13 @@ oitava versão é recusado no pré-voo, inclusive após recuperação.
 7. Aprovar separadamente configuração de SMTP/remetente, confirmação, Site URL e
    redirects. Coordenar habilitação do cadastro com a publicação do frontend.
    Confirmar também templates de confirmação compatíveis com o retorno à aplicação.
-8. Só então autorizar integração/publicação e smoke funcional com contas controladas.
-   Cadastro, confirmação, edição de nome, salas e chat escrevem dados: precisam
-   de autorização própria. Não repetir a regressão remota completa.
+8. **Pendente.** Só então autorizar integração/publicação e smoke funcional com contas
+   controladas. O merge do PR #23 pode disparar o deploy automático em produção:
+   tratar merge como publicação. Antes dele, reconfirmar o estado remoto por leitura
+   e que a origem de produção é a Site URL ou consta nas Redirect URLs (a recuperação
+   de senha volta para a origem da página). Cadastro, confirmação, edição de nome,
+   salas e chat escrevem dados: precisam de autorização própria. Habilitar o cadastro
+   público é decisão separada. Não repetir a regressão remota completa.
 
 ## Falhas e recuperação
 
