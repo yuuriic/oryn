@@ -228,6 +228,11 @@ export class LobbyController {
     this.set({ status: 'ready', rooms: list.rooms, skipped: list.skipped, listError: null });
   }
 
+  /** Descarta o erro da última ação (ex.: ao abrir ou fechar a criação), sem mexer na lista nem numa ação em curso. */
+  clearActionError(): void {
+    if (this.s.actionError !== null) this.set({ actionError: null });
+  }
+
   /** Cria a sala e recarrega a lista. Devolve o id criado, ou null. */
   async create(name: string, displayName: string, capacity: number = ROOM_MAX_MEMBERS): Promise<string | null> {
     if (this.s.busy) return null;

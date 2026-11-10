@@ -127,7 +127,6 @@ main[data-view='room'] #rooms .rooms .buttons {
   margin: 0 0 var(--space-3);
 }
 
-#create-room,
 #invite-share,
 #invite-accept,
 #return-call,
@@ -139,11 +138,6 @@ main[data-view='room'] #rooms .rooms .buttons {
   border-radius: var(--radius-md);
 }
 
-#create-room .panel-head h2 {
-  margin: 0;
-}
-
-#create-room h2,
 #call-panel > h2,
 #invite-share h3,
 #invite-accept h2 {
@@ -152,14 +146,36 @@ main[data-view='room'] #rooms .rooms .buttons {
   font-weight: 600;
 }
 
-/* Criação em uma coluna: nome da sala em destaque, lugares, quem entra e as ações no fim. */
-#create-room {
-  max-width: 34rem;
+/* Criação em modal (mesma camada do Perfil): nome da sala em destaque, lugares e as ações no fim. */
+#create-dialog .panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: nowrap;
 }
 
-#create-room .create-lead {
-  margin: var(--space-1) 0 var(--space-5);
+#create-dialog .create-close {
+  flex: none;
+  width: 44px;
+  min-width: 44px;
+  padding: 0;
+  font-size: 1.5rem;
+  line-height: 1;
+}
+
+#create-dialog .create-lead {
+  margin: var(--space-2) 0 var(--space-5);
   color: var(--color-text-secondary);
+}
+
+#create-error {
+  margin: 0;
+}
+
+#create-empty-btn {
+  min-height: 44px;
+  margin: var(--space-3) 0 0;
 }
 
 #create-form {
@@ -294,10 +310,6 @@ main[data-view='room'] #rooms .rooms .buttons {
 }
 
 @media (max-width: 768px) {
-  #create-room {
-    max-width: none;
-  }
-
   #create-form .create-actions button {
     flex: 1 1 auto;
   }

@@ -235,6 +235,22 @@ describe('LobbyController: criação', () => {
     expect(h.lobby.state.busy).toBeNull();
   });
 
+  it('clearActionError: descarta o erro da criação (modal fechado ou reaberto) sem tocar na lista nem no estado ocupado', async () => {
+    const h = harness([room(1)]);
+    await h.lobby.refresh();
+    h.server.fail.set('create_room', 'unauthorized');
+    expect(await h.lobby.create('Sala', 'Ana')).toBeNull();
+    expect(h.lobby.state.actionError).toMatch(/não tem permissão para criar salas/);
+    const before = h.states.length;
+    h.lobby.clearActionError();
+    expect(h.lobby.state.actionError).toBeNull();
+    expect(h.lobby.state.rooms).toHaveLength(1);
+    expect(h.lobby.state.busy).toBeNull();
+    h.lobby.clearActionError(); // sem erro: não notifica de novo
+    expect(h.states.length).toBe(before + 1);
+    expect(h.calls.filter((c) => c.fn === 'create_room')).toHaveLength(1); // nenhuma chamada extra
+  });
+
   it('não dispara duas criações ao mesmo tempo', async () => {
     const h = harness([]);
     const a = h.lobby.create('A', 'Ana');
