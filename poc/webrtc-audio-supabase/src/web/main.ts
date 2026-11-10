@@ -99,7 +99,8 @@ const ui = {
   inviteAcceptPending: el<HTMLElement>('invite-accept-pending'),
   inviteAccount: el<HTMLElement>('invite-account'),
   inviteAcceptForm: el<HTMLFormElement>('invite-accept-form'),
-  inviteDisplay: el<HTMLInputElement>('invite-display'),
+  inviteIdentityText: el<HTMLElement>('invite-identity-text'),
+  inviteProfileBtn: el<HTMLButtonElement>('invite-profile-btn'),
   inviteAcceptBtn: el<HTMLButtonElement>('invite-accept-btn'),
   inviteDeclineBtn: el<HTMLButtonElement>('invite-decline-btn'),
   inviteAcceptMessage: el<HTMLParagraphElement>('invite-accept-message'),
@@ -140,7 +141,8 @@ const ui = {
   chatCloseBtn: el<HTMLButtonElement>('chat-close-btn'),
   createForm: el<HTMLFormElement>('create-form'),
   createName: el<HTMLInputElement>('create-name'),
-  createDisplay: el<HTMLInputElement>('create-display'),
+  createIdentityText: el<HTMLElement>('create-identity-text'),
+  createProfileBtn: el<HTMLButtonElement>('create-profile-btn'),
   createBtn: el<HTMLButtonElement>('create-btn'),
   callRoom: el<HTMLElement>('call-room'),
   room: el<HTMLInputElement>('room'),
@@ -715,10 +717,28 @@ function renderRooms(): void {
   ui.roomsError.textContent = s.actionError ?? '';
   ui.roomsError.hidden = s.actionError === null;
   ui.refreshBtn.disabled = busy || s.status === 'loading';
-  ui.createBtn.disabled = busy;
   ui.createName.disabled = busy;
-  ui.createDisplay.disabled = busy;
   ui.createCapacity.disabled = busy;
+  ui.createProfileBtn.disabled = busy;
+  renderCreateIdentity();
+}
+
+/** O criador entra com o nome global do perfil (o mesmo de convites, membros, voz e chat). Sem ele, a criação
+ * espera: o caminho é definir o nome no perfil, nunca digitar outro nome só para esta sala. */
+function renderCreateIdentity(): void {
+  const busy = lobby?.state.busy != null;
+  ui.createBtn.disabled = busy || globalName === null;
+  identityNote(ui.createIdentityText, ui.createProfileBtn, 'Defina seu nome no perfil para criar uma sala.');
+}
+
+/** Linha "Você entra como…" da criação e do convite. O nome entra como texto, nunca como HTML. */
+function identityNote(target: HTMLElement, button: HTMLButtonElement, missing: string): void {
+  target.replaceChildren(
+    ...(globalName === null
+      ? [document.createTextNode(missing)]
+      : [document.createTextNode('Você entra como '), Object.assign(document.createElement('strong'), { textContent: globalName }), document.createTextNode('.')]),
+  );
+  button.textContent = globalName === null ? 'Definir nome' : 'Alterar no perfil';
 }
 
 /** Abre uma sala ou a visão geral. Só muda o que é mostrado: entrar na chamada segue sendo uma ação à parte. */
@@ -769,10 +789,11 @@ window.matchMedia('(max-width: 768px)').addEventListener('change', (event) => {
 ui.refreshBtn.addEventListener('click', () => void lobby.refresh());
 ui.createForm.addEventListener('submit', (event) => {
   event.preventDefault();
-  void lobby.create(ui.createName.value, globalName ?? ui.createDisplay.value, Number(ui.createCapacity.value)).then((id) => {
+  if (globalName === null) return; // o botão já fica desabilitado; Enter no campo também não cria sem nome
+  // p_display_name segue no contrato do create_room: vira o nome legado da sala, e a leitura prefere o global.
+  void lobby.create(ui.createName.value, globalName, Number(ui.createCapacity.value)).then((id) => {
     if (!id) return;
     ui.createName.value = '';
-    if (globalName !== null) ui.createDisplay.value = globalName;
     createOpen = false;
     navigate(id); // a sala nova fica em destaque; entrar na chamada segue sendo uma ação à parte
   });
@@ -903,13 +924,13 @@ function renderInviteAccept(s: InviteAcceptState): void {
   ui.inviteLoginHint.hidden = hint === null;
   ui.inviteAccept.hidden = selfUserId === null || s.status === 'none';
   ui.inviteAcceptPending.hidden = s.status !== 'pending';
-  ui.inviteAccount.textContent = ui.userLabel.textContent;
+  ui.inviteAccount.textContent = ui.accountBox.title || ui.userLabel.textContent; // a conta (e-mail); o nome vai na linha abaixo
   const busy = s.status === 'pending' && s.busy;
-  ui.inviteAcceptBtn.disabled = busy;
+  // Sem nome global o convite não é recusado nem consumido: espera nesta aba até o nome ser salvo no Perfil.
+  ui.inviteAcceptBtn.disabled = busy || globalName === null;
   ui.inviteDeclineBtn.disabled = busy;
-  ui.inviteDisplay.disabled = busy;
-  if (s.status === 'pending' && globalName !== null) ui.inviteDisplay.value = globalName;
-  if (s.status !== 'pending') ui.inviteDisplay.value = '';
+  ui.inviteProfileBtn.disabled = busy;
+  identityNote(ui.inviteIdentityText, ui.inviteProfileBtn, 'Defina seu nome no perfil para aceitar. O convite continua nesta aba.');
   if (s.status === 'result') setMessage(ui.inviteAcceptMessage, { tone: s.tone, text: s.text });
   else setMessage(ui.inviteAcceptMessage, s.status === 'pending' && s.message ? { tone: 'error', text: s.message } : null);
   ui.inviteDismissBtn.hidden = s.status !== 'result';
@@ -924,8 +945,10 @@ ui.inviteNewBtn.addEventListener('click', () => {
 ui.inviteCloseBtn.addEventListener('click', () => inviteShare.close());
 ui.inviteAcceptForm.addEventListener('submit', (event) => {
   event.preventDefault();
-  void inviteAccept.accept(globalName ?? ui.inviteDisplay.value);
+  if (globalName === null) return; // o botão já fica desabilitado; Enter também não aceita sem nome
+  void inviteAccept.accept(globalName); // p_display_name do redeem_room_invite: vira o nome legado; a leitura prefere o global
 });
+ui.inviteProfileBtn.addEventListener('click', () => ui.profileOpen.click()); // mesmo painel e regras do Perfil
 ui.inviteDeclineBtn.addEventListener('click', () => inviteAccept.decline());
 ui.inviteDismissBtn.addEventListener('click', () => inviteAccept.dismiss());
 // O link aberto numa aba que já está na página não recarrega: só o fragmento muda.
@@ -977,10 +1000,7 @@ function showLoggedOut(): void {
   globalName = null;
   ui.profileSave.disabled = false;
   ui.profileName.value = '';
-  ui.createDisplay.readOnly = false;
-  ui.inviteDisplay.readOnly = false;
-  ui.createDisplay.value = '';
-  ui.inviteDisplay.value = '';
+  renderCreateIdentity();
   closeProfile();
   soundboard.leave();
   if (selfUserId !== null) void soundCache.purgeAccount(selfUserId);
@@ -1014,11 +1034,8 @@ function applyIdentity(user: User): void {
   globalName = accountName(user);
   ui.userLabel.textContent = globalName ?? user.email ?? '(conta sem e-mail)';
   // Conta identificada: o nome deixa de ser uma escolha independente por sala.
-  for (const input of [ui.createDisplay, ui.inviteDisplay]) {
-    input.readOnly = globalName !== null;
-    if (globalName !== null) input.value = globalName;
-    else if (previous !== null) input.value = '';
-  }
+  renderCreateIdentity();
+  if (inviteAccept) renderInviteAccept(inviteAccept.state); // nome salvo no Perfil libera o convite pendente
   if (previous !== globalName) void chat?.refreshNames();
 }
 
@@ -1046,6 +1063,7 @@ ui.profileOpen.addEventListener('click', () => {
   ui.profileOpen.setAttribute('aria-expanded', 'true');
   ui.profileName.focus();
 });
+ui.createProfileBtn.addEventListener('click', () => ui.profileOpen.click()); // mesmo painel e regras do Perfil
 ui.profileClose.addEventListener('click', closeProfile);
 ui.profilePanel.addEventListener('cancel', (event) => { event.preventDefault(); closeProfile(); });
 ui.profilePanel.addEventListener('close', () => { ui.profilePanel.hidden = true; ui.profileOpen.setAttribute('aria-expanded', 'false'); });

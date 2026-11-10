@@ -14,7 +14,7 @@ dl { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-1) 
 dt { color: var(--color-text-secondary); }
 dd { margin: 0; overflow-wrap: anywhere; }
 .log { font-family: var(--font-mono); font-size: 0.8em; max-height: 240px; overflow-y: auto; color: var(--color-text-secondary); padding-left: 2em; }
-#invite-link, #invite-display, #chat-input { display: block; width: 100%; box-sizing: border-box; margin-top: var(--space-1); }
+#invite-link, #chat-input { display: block; width: 100%; box-sizing: border-box; margin-top: var(--space-1); }
 @media (max-width: 480px) {
   main { padding: var(--space-2); }
   section { padding: var(--space-3); }

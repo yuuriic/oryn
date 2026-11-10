@@ -288,6 +288,44 @@ describe('Hybrid Midnight Gold: criação sob demanda e chat contextual', () => 
   const main = read('src/web/main.ts');
   const fn = (name: string): string => new RegExp(`function ${name}[^]*?\n}\n`).exec(main)![0];
 
+  it('criar sala não pede nome por sala: o criador entra com o nome global do perfil', () => {
+    const section = /<section id="create-room"[^]*?<\/section>/.exec(html)![0];
+    expect(section).not.toMatch(/create-display|Seu nome na sala/);
+    expect(section).toMatch(/id="create-name"/);
+    expect(section).toMatch(/id="create-capacity"/);
+    expect(section).toMatch(/id="create-identity-text"/);
+    expect(section).toMatch(/<button id="create-profile-btn"[^>]*type="button"/);
+    expect(main).not.toMatch(/createDisplay|create-display/);
+    // Envio: sempre o nome global, e nada sem ele (o contrato p_display_name do create_room não muda).
+    expect(main).toMatch(/if \(globalName === null\) return;[^\n]*\n[^\n]*\n\s*void lobby\.create\(ui\.createName\.value, globalName, Number\(ui\.createCapacity\.value\)\)/);
+    expect(fn('renderCreateIdentity')).toContain('ui.createBtn.disabled = busy || globalName === null');
+    const note = fn('identityNote');
+    expect(note).toContain("'Definir nome' : 'Alterar no perfil'");
+    expect(note).not.toMatch(/innerHTML/); // o nome entra como texto, nunca como HTML
+    // Reaproveita o painel de Perfil existente; a identidade é reaplicada a cada leitura e no logout.
+    expect(main).toContain("ui.createProfileBtn.addEventListener('click', () => ui.profileOpen.click())");
+    expect(fn('applyIdentity')).toContain('renderCreateIdentity()');
+    expect(fn('showLoggedOut')).toContain('renderCreateIdentity()');
+    expect(fn('renderRooms')).toContain('renderCreateIdentity()');
+  });
+
+  it('aceitar convite não pede nome por sala: usa o nome global e, sem ele, o convite espera nesta aba', () => {
+    const section = /<section id="invite-accept"[^]*?<\/section>/.exec(html)![0];
+    expect(section).not.toMatch(/invite-display|Seu nome na sala|<input/);
+    expect(section).toMatch(/id="invite-identity-text"/);
+    expect(section).toMatch(/<button id="invite-profile-btn"[^>]*type="button"/);
+    expect(main).not.toMatch(/inviteDisplay|invite-display/);
+    expect(main).toMatch(/if \(globalName === null\) return;[^\n]*\n\s*void inviteAccept\.accept\(globalName\);/);
+    const render = fn('renderInviteAccept');
+    expect(render).toContain('ui.inviteAcceptBtn.disabled = busy || globalName === null');
+    expect(render).toContain('ui.inviteDeclineBtn.disabled = busy'); // recusar continua possível sem nome
+    expect(render).toContain('identityNote(ui.inviteIdentityText, ui.inviteProfileBtn,');
+    expect(render).toContain('O convite continua nesta aba.');
+    expect(main).toContain("ui.inviteProfileBtn.addEventListener('click', () => ui.profileOpen.click())");
+    // Salvar o nome no Perfil libera o convite pendente sem recarregar.
+    expect(fn('applyIdentity')).toContain('renderInviteAccept(inviteAccept.state)');
+  });
+
   it('criar sala começa oculto, com Cancelar, e só abre por "Criar sala" ou sem nenhuma sala', () => {
     expect(html).toMatch(/<section id="create-room" hidden>/);
     expect(html).toMatch(/id="create-cancel-btn"/);

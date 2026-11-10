@@ -480,14 +480,14 @@ describe('M1: comprimento em pontos de código, como o char_length do PostgreSQL
   it('formulário: aceita os limites exatos com emojis e recusa acima deles (com mensagem)', () => {
     expect(validateNewRoom(emoji.repeat(40), emoji.repeat(32))).toEqual({ ok: true, name: emoji.repeat(40), displayName: emoji.repeat(32) });
     expect(validateNewRoom(emoji.repeat(41), 'Ana')).toMatchObject({ ok: false, message: expect.stringMatching(/Nome da sala/) });
-    expect(validateNewRoom('Sala', emoji.repeat(33))).toMatchObject({ ok: false, message: expect.stringMatching(/Seu nome/) });
+    expect(validateNewRoom('Sala', emoji.repeat(33))).toMatchObject({ ok: false, message: expect.stringMatching(/nome de exibição.*Perfil/) });
   });
 
   it('o maxlength do HTML (unidades UTF-16) não corta um valor válido no banco: comporta o pior caso (2 por ponto de código)', () => {
     const html = readFileSync(fileURLToPath(new URL('../index.html', import.meta.url)), 'utf8');
     const max = (input: string) => Number(new RegExp(`id="${input}"[^>]*maxlength="(\\d+)"`).exec(html)![1]);
     expect(max('create-name')).toBeGreaterThanOrEqual(emoji.repeat(40).length);
-    expect(max('create-display')).toBeGreaterThanOrEqual(emoji.repeat(32).length);
+    expect(max('profile-name')).toBeGreaterThanOrEqual(emoji.repeat(32).length); // o nome agora só se digita no Perfil
   });
 
   it('parsing e listagem de salas com nomes Unicode válidos (o caso que antes derrubava a lista)', async () => {
