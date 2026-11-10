@@ -75,6 +75,22 @@ describe('matriz de privilégios efetivos', () => {
       'send_room_message(uuid,uuid,text)': userRpc,
       'set_signal_state(uuid,text)': '--S',
       'touch_session(uuid)': userRpc,
+      // 0900: canais. 7 RPCs de usuário e 8 funções internas sem EXECUTE de cliente.
+      'list_channels(uuid)': userRpc,
+      'create_channel(uuid,text,text)': userRpc,
+      'archive_channel(uuid)': userRpc,
+      'send_channel_message(uuid,uuid,text)': userRpc,
+      'list_channel_messages(uuid,bigint,bigint,integer)': userRpc,
+      'join_voice_channel(uuid)': userRpc,
+      'get_channel_participants(uuid)': userRpc,
+      'oryn.default_channel(uuid,text)': '---',
+      'oryn.create_default_channels()': '---',
+      'oryn.fill_message_channel()': '---',
+      'oryn.fill_session_channel()': '---',
+      'oryn.publish_channel_control(uuid,uuid,text,jsonb)': '---',
+      'oryn.open_voice_session(uuid,uuid,uuid)': '---',
+      'oryn.post_message(uuid,uuid,uuid,uuid,text)': '---',
+      'oryn.channel_messages(uuid,uuid,uuid,bigint,bigint,integer)': '---',
       'oryn.admin_issue_creator_invite(integer,integer)': '---',
       'oryn.account_display_name(uuid,text)': '---',
       'oryn.normalize_account_name(text)': '---',
@@ -102,7 +118,7 @@ describe('matriz de privilégios efetivos', () => {
     const owners = await db.admin<{ owner: string; n: number }>(`
       select pg_get_userbyid(p.proowner) as owner, count(*)::int as n from pg_proc p join pg_namespace n on n.oid = p.pronamespace
        where n.nspname in ('oryn', 'oryn_realtime') group by 1`);
-    expect(owners).toEqual([{ owner: 'migration_owner', n: 19 }]);
+    expect(owners).toEqual([{ owner: 'migration_owner', n: 27 }]); // 19 + as 8 internas da 0900
     const tables = await db.admin<{ owner: string }>(`select distinct tableowner as owner from pg_tables where schemaname = 'oryn'`);
     expect(tables).toEqual([{ owner: 'migration_owner' }]);
     for (const client of ['anon', 'authenticated', 'service_role']) {

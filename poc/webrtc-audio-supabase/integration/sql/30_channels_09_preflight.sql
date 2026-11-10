@@ -1,0 +1,42 @@
+-- Etapa 9 (canais, 0900): SELECT somente leitura; não chama RPCs nem lê conteúdo de usuários (só agregados).
+-- Gerado por channels-09-artifacts.mjs. Qualquer FAIL impede prosseguir.
+WITH expected(signature,identity_args,full_args,result_type,body_md5,volatility,definer,client_execute) AS (VALUES
+('public.join_room(uuid)','p_room_id uuid','p_room_id uuid','TABLE(session_id uuid, topic text)','a4d04cced690ae711110145fe13c2be0','v',true,true),
+('public.get_roster(uuid)','p_room_id uuid','p_room_id uuid','TABLE(session_id uuid, display_name text, is_self boolean, joined_at timestamp with time zone)','d7ecf1a75d78faea2e8fe0388a1c515c','s',true,true),
+('public.get_voice_participants(uuid)','p_room_id uuid','p_room_id uuid','TABLE(session_id uuid, participant_ref text, display_name text, is_self boolean, joined_at timestamp with time zone)','3cc6a8d82c6bae115d7e00951b349e15','s',true,true),
+('public.leave_room(uuid)','p_session_id uuid','p_session_id uuid','void','d5190811aacc7dfbc03c20a9702d9157','v',true,true),
+('public.authorize_signal(uuid,uuid,uuid,text,integer,integer)','p_session_id uuid, p_to_session_id uuid, p_client_msg_id uuid, p_kind text, p_pair_epoch integer, p_payload_bytes integer','p_session_id uuid, p_to_session_id uuid, p_client_msg_id uuid, p_kind text, p_pair_epoch integer, p_payload_bytes integer','TABLE(msg_id uuid, seq bigint, from_user uuid, room_id uuid, state text, duplicate boolean, accepted_at timestamp with time zone)','abbd567f14392bc89aa1931bf11faf10','v',true,true),
+('public.send_room_message(uuid,uuid,text)','p_room_id uuid, p_client_nonce uuid, p_body text','p_room_id uuid, p_client_nonce uuid, p_body text','TABLE(seq bigint, display_name text, is_mine boolean, client_nonce uuid, body text, created_at timestamp with time zone)','af50e983d502e53fd6349f870ad2e287','v',true,true),
+('public.list_room_messages(uuid,bigint,bigint,integer)','p_room_id uuid, p_before_seq bigint, p_after_seq bigint, p_limit integer','p_room_id uuid, p_before_seq bigint DEFAULT NULL::bigint, p_after_seq bigint DEFAULT NULL::bigint, p_limit integer DEFAULT 50','TABLE(seq bigint, display_name text, is_mine boolean, client_nonce uuid, body text, created_at timestamp with time zone)','6e54038f91a61f1016181d49e43a29c1','s',true,true)
+), checks AS (SELECT
+  (SELECT array_agg(version || '_' || name ORDER BY version) FROM supabase_migrations.schema_migrations) = ARRAY['20261023000100_oryn_schema','20261023000200_oryn_functions','20261023000300_oryn_realtime','20261028000400_oryn_room_management','20261106000500_oryn_room_messages','20261107000600_oryn_room_membership','20261108000700_oryn_soundboard','20261109224924_oryn_account_display_name']::text[] AS history_ok,
+  (SELECT count(*) = 7 AND bool_and(
+    p.oid IS NOT NULL AND pg_get_userbyid(p.proowner) = current_user
+    AND pg_get_function_identity_arguments(p.oid) = e.identity_args
+    AND pg_get_function_arguments(p.oid) = e.full_args
+    AND pg_get_function_result(p.oid) = e.result_type
+    AND md5(p.prosrc) = e.body_md5 AND p.provolatile::text = e.volatility
+    AND p.prosecdef = e.definer AND p.proconfig = ARRAY['search_path=""']::text[]
+    AND has_function_privilege('authenticated',p.oid,'EXECUTE') = e.client_execute
+    AND NOT has_function_privilege('anon',p.oid,'EXECUTE')
+    AND NOT has_function_privilege('service_role',p.oid,'EXECUTE')
+    AND NOT EXISTS (SELECT FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a
+      WHERE a.grantee NOT IN (p.proowner, CASE WHEN e.client_execute THEN 'authenticated'::regrole::oid ELSE p.proowner END)
+         OR a.privilege_type <> 'EXECUTE' OR a.is_grantable)
+  ) FROM expected e LEFT JOIN pg_proc p ON p.oid=to_regprocedure(e.signature)) AS functions_ok,
+  (to_regclass('oryn.channels') IS NULL
+    AND NOT EXISTS (SELECT FROM pg_attribute a WHERE a.attname='channel_id' AND NOT a.attisdropped
+      AND a.attrelid IN (to_regclass('oryn.room_messages'), to_regclass('oryn.room_sessions')))
+    AND NOT EXISTS (SELECT FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+      WHERE (n.nspname, p.proname) IN (('public','list_channels'), ('public','create_channel'), ('public','archive_channel'), ('public','send_channel_message'), ('public','list_channel_messages'), ('public','join_voice_channel'), ('public','get_channel_participants'), ('oryn','default_channel'), ('oryn','create_default_channels'), ('oryn','fill_message_channel'), ('oryn','fill_session_channel'), ('oryn','publish_channel_control'), ('oryn','open_voice_session'), ('oryn','post_message'), ('oryn','channel_messages')))) AS structure_ok,
+  true AS data_ok,
+  has_schema_privilege(current_user,'oryn','USAGE')
+    AND has_schema_privilege(current_user,'oryn','CREATE')
+    AND has_schema_privilege(current_user,'public','USAGE')
+    AND has_schema_privilege(current_user,'public','CREATE')
+    AND has_table_privilege(current_user,'supabase_migrations.schema_migrations','INSERT')
+    AND NOT EXISTS (SELECT FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+      WHERE n.nspname='oryn' AND c.relkind='r' AND c.relowner <> (SELECT oid FROM pg_roles WHERE rolname=current_user)) AS permissions_ok
+)
+SELECT CASE WHEN history_ok AND functions_ok AND structure_ok AND data_ok AND permissions_ok
+  THEN 'oryn-channels-09-preflight-ok' ELSE 'oryn-channels-09-preflight-FAIL' END AS result, checks.* FROM checks;

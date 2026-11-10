@@ -29,7 +29,11 @@
     diferente das sete versões anteriores, reaplicação e deriva dos seis contratos/ACLs/owners.
     Executa SELECTs específicos pela Management API antes do plano, antes da escrita e depois dela.
     Indisponibilidade da consulta ou resultado desconhecido impede confirmar sucesso.
-  NÃO faz backup nem dump. Etapas 1–7 mantêm verificações SQL separadas. Para a 8, ver PROFILE-PUBLICATION-08.md.
+  - Etapa 9 (canais, 0900): mesmo procedimento da 8, com o manifesto channels-09-manifest.json (as nove
+    migrações) e os SELECTs 30 (pré-voo) e 31 (pós-voo). Recusa histórico diferente das oito versões anteriores,
+    reaplicação e deriva dos contratos, ACLs, estrutura e agregados dos canais.
+  NÃO faz backup nem dump. Etapas 1–7 mantêm verificações SQL separadas. Para a 8, ver PROFILE-PUBLICATION-08.md;
+  para a 9, CHANNELS-PUBLICATION-09.md.
 
 .EXAMPLE
   pwsh -File integration/scripts/oryn-push-step.ps1 -Step 1            # dry-run da 0100
@@ -37,7 +41,7 @@
 #>
 [CmdletBinding()]
 param(
-  [Parameter(Mandatory)] [ValidateRange(1, 8)] [int] $Step,
+  [Parameter(Mandatory)] [ValidateRange(1, 9)] [int] $Step,
   [switch] $Apply,
   # Para testes locais com uma CLI falsa: executável e argumentos fixos antes dos da CLI.
   [string] $SupabaseCli = 'supabase',
@@ -60,30 +64,43 @@ $allowed = @(
   '20261023000100_oryn_schema.sql', '20261023000200_oryn_functions.sql',
   '20261023000300_oryn_realtime.sql', '20261028000400_oryn_room_management.sql',
   '20261106000500_oryn_room_messages.sql', '20261107000600_oryn_room_membership.sql',
-  '20261108000700_oryn_soundboard.sql', '20261109224924_oryn_account_display_name.sql'
+  '20261108000700_oryn_soundboard.sql', '20261109224924_oryn_account_display_name.sql',
+  '20261110000900_oryn_channels.sql'
 )
 $expected = @(Get-ChildItem -Path $migrationsDir -Filter '*.sql' | Sort-Object Name)
-if ($expected.Count -notin @(7, 8) -or $expected.Count -lt $Step -or
+if ($expected.Count -notin @(7, 8, 9) -or $expected.Count -lt $Step -or
     ($expected.Name -join ',') -cne (($allowed | Select-Object -First $expected.Count) -join ',')) {
-  throw 'migrações inesperadas ou ausentes: somente as sete históricas e a oitava aprovada são aceitas'
+  throw 'migrações inesperadas ou ausentes: somente as sete históricas, a oitava e a nona aprovadas são aceitas'
 }
-# Hashes fixados no artefato revisado. Normalizar CRLF evita depender do autocrlf do checkout.
+# Hashes fixados nos artefatos revisados. Normalizar CRLF evita depender do autocrlf do checkout.
 function Get-CanonicalHash([string] $Path) {
   $bytes = [Text.Encoding]::UTF8.GetBytes([IO.File]::ReadAllText($Path).Replace("`r`n", "`n"))
   return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
 }
-$manifest = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'profile-08-manifest.json') -Raw | ConvertFrom-Json
-if (($manifest.migrations.file -join ',') -cne ($allowed -join ',')) { throw 'manifesto de migrações divergente' }
+# Dois manifestos: o da etapa 8 fixa as oito primeiras; o da 9, as nove. Todo arquivo presente confere com todos
+# os manifestos que o citam (os oito primeiros hashes são os mesmos nos dois).
+$profileManifest = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'profile-08-manifest.json') -Raw | ConvertFrom-Json
+$channelsManifest = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'channels-09-manifest.json') -Raw | ConvertFrom-Json
+if (($profileManifest.migrations.file -join ',') -cne (($allowed | Select-Object -First 8) -join ',')) { throw 'manifesto de migrações divergente' }
+if (($channelsManifest.migrations.file -join ',') -cne ($allowed -join ',')) { throw 'manifesto de migrações divergente' }
 foreach ($m in $expected) {
-  $pin = @($manifest.migrations | Where-Object file -CEQ $m.Name)
-  if ($pin.Count -ne 1 -or (Get-CanonicalHash $m.FullName) -cne $pin[0].sha256) {
+  $pins = @(@($profileManifest.migrations) + @($channelsManifest.migrations) | Where-Object file -CEQ $m.Name)
+  $actual = Get-CanonicalHash $m.FullName
+  if ($pins.Count -lt 1 -or @($pins | Where-Object { $_.sha256 -cne $actual }).Count -gt 0) {
     throw "integridade divergente: $($m.Name)"
   }
 }
-if ($Step -eq 8) {
-  $checkFiles = @('integration/sql/20_profile_08_preflight.sql', 'integration/sql/21_profile_08_postflight.sql', 'integration/sql/22_profile_08_recovered.sql', 'integration/sql/95_recover_profile_08.sql')
-  if (($manifest.checks.file -join ',') -cne ($checkFiles -join ',')) { throw 'manifesto das verificações divergente' }
-  foreach ($check in $manifest.checks) {
+# Etapas com verificação SQL própria (pré-voo, pós-voo, recuperação), fixada no manifesto da etapa.
+$stage = switch ($Step) {
+  8 { @{ Manifest = $profileManifest; Prefix = 'oryn-profile-08-'; Pre = '20_profile_08_preflight.sql'; Post = '21_profile_08_postflight.sql'
+         Files = @('integration/sql/20_profile_08_preflight.sql', 'integration/sql/21_profile_08_postflight.sql', 'integration/sql/22_profile_08_recovered.sql', 'integration/sql/95_recover_profile_08.sql') } }
+  9 { @{ Manifest = $channelsManifest; Prefix = 'oryn-channels-09-'; Pre = '30_channels_09_preflight.sql'; Post = '31_channels_09_postflight.sql'
+         Files = @('integration/sql/30_channels_09_preflight.sql', 'integration/sql/31_channels_09_postflight.sql', 'integration/sql/32_channels_09_recovered.sql', 'integration/sql/96_recover_channels_09.sql') } }
+  default { $null }
+}
+if ($stage) {
+  if (($stage.Manifest.checks.file -join ',') -cne ($stage.Files -join ',')) { throw 'manifesto das verificações divergente' }
+  foreach ($check in $stage.Manifest.checks) {
     if ((Get-CanonicalHash (Join-Path $poc $check.file)) -cne $check.sha256) { throw "integridade divergente: $($check.file)" }
   }
 }
@@ -153,8 +170,8 @@ try {
     $orig = Join-Path $migrationsDir $c.Name
     if ((Get-FileHash $c.FullName -Algorithm SHA256).Hash -ne (Get-FileHash $orig -Algorithm SHA256).Hash) { throw "SHA-256 divergente: $($c.Name)" }
   }
-  if ($Step -eq 8) {
-    foreach ($check in $manifest.checks) {
+  if ($stage) {
+    foreach ($check in $stage.Manifest.checks) {
       $destination = Join-Path $workdir ([IO.Path]::GetFileName($check.file))
       Copy-Item -LiteralPath (Join-Path $poc $check.file) -Destination $destination
       if ((Get-CanonicalHash $destination) -cne $check.sha256) { throw 'integridade da cópia SQL divergente' }
@@ -179,18 +196,18 @@ try {
   $plain = [System.Net.NetworkCredential]::new('', $Password).Password
   $env:SUPABASE_DB_PASSWORD = $plain
 
-  # Etapa 8: a consulta usa Management API (--linked), não cria papel CLI de login.
-  # Só SELECT de catálogo/histórico; saída bruta não é impressa. Sem leitura de usuários.
-  function Assert-ProfileState([string] $Phase) {
-    $sqlFile = if ($Phase -eq 'preflight') { '20_profile_08_preflight.sql' } else { '21_profile_08_postflight.sql' }
+  # Etapas 8 e 9: a consulta usa Management API (--linked), não cria papel CLI de login.
+  # Só SELECT de catálogo/histórico (e, na 9, agregados); saída bruta não é impressa. Sem conteúdo de usuários.
+  function Assert-StageState([string] $Phase) {
+    $sqlFile = if ($Phase -eq 'preflight') { $stage.Pre } else { $stage.Post }
     $result = @(& $SupabaseCli @SupabaseCliPrefix --workdir $workdir db query --linked --project-ref $ProjectRef --file (Join-Path $workdir $sqlFile) --output json 2>&1 | ForEach-Object { "$_" })
     $queryCode = $LASTEXITCODE
-    if ($queryCode -ne 0 -or ($result -join "`n") -notmatch ('"result"\s*:\s*"oryn-profile-08-' + $Phase + '-ok"')) {
-      throw "Etapa 8: $Phase recusado (histórico, objetos, permissões ou consulta divergentes). Não reaplicar; conferir SQL específico."
+    if ($queryCode -ne 0 -or ($result -join "`n") -notmatch ('"result"\s*:\s*"' + $stage.Prefix + $Phase + '-ok"')) {
+      throw "Etapa ${Step}: $Phase recusado (histórico, objetos, permissões ou consulta divergentes). Não reaplicar; conferir SQL específico."
     }
-    Write-Host "Etapa 8: $Phase confirmado."
+    Write-Host "Etapa ${Step}: $Phase confirmado."
   }
-  if ($Step -eq 8) { Assert-ProfileState 'preflight' }
+  if ($stage) { Assert-StageState 'preflight' }
 
   # 5. Dry-run: nunca aplica. No -Apply, também decide se há o que aplicar.
   $output = & $SupabaseCli @SupabaseCliPrefix @dryRunArgs 2>&1 | ForEach-Object { "$_" }
@@ -204,13 +221,13 @@ try {
     if ($plan -ne 'pending') { throw "o dry-run não lista ${targetVersion}: interromper" }
     Write-Host "DRY-RUN OK: só $($target.Name). Agora rode integration/sql/06_cli_side_effects.sql (esperado: nada mudou)."
   } elseif ($plan -eq 'up-to-date') {
-    if ($Step -eq 8) { throw 'Etapa 8 já aplicada: reaplicação recusada' }
+    if ($stage) { throw "Etapa $Step já aplicada: reaplicação recusada" }
     Write-Host "NADA APLICADO: o banco já está em dia, inclusive com $($target.Name). Confira em 06_cli_side_effects.sql."
   } elseif ($plan -ne 'pending') {
     throw "o dry-run não lista ${targetVersion} nem informa banco em dia: nada foi aplicado; interromper"
   } else {
     # Reconfere imediatamente antes da escrita; evita usar só um pré-voo antigo.
-    if ($Step -eq 8) { Assert-ProfileState 'preflight' }
+    if ($stage) { Assert-StageState 'preflight' }
     # Direto no terminal: o prompt de confirmação da própria CLI precisa aparecer (sem --yes).
     & $SupabaseCli @SupabaseCliPrefix @pushArgs
     $code = $LASTEXITCODE
@@ -224,7 +241,7 @@ try {
     $plan = Get-PushPlan ($output -join "`n")
     if ($plan -eq 'pending') { throw "NÃO APLICADO: $($target.Name) continua pendente (recusada no prompt, ou a CLI não a aplicou)." }
     if ($plan -ne 'up-to-date') { throw "resultado não confirmado: a conferência não informa banco em dia; rode 06_cli_side_effects.sql" }
-    if ($Step -eq 8) { Assert-ProfileState 'postflight' }
+    if ($stage) { Assert-StageState 'postflight' }
     Write-Host "APLICADO: $($target.Name). Confira as verificações SQL específicas da etapa no checklist."
   }
 }

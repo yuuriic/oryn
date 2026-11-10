@@ -117,9 +117,14 @@ describe('Chat por sala — send_room_message sob concorrência (PostgreSQL 17 r
 
   it('controle: sem a trava da sala, a mesma corrida viola o contrato (o teste detecta o problema)', async () => {
     const r = await newRoom();
+    // Desde a 0900, a trava da sala fica no núcleo oryn.post_message: a cópia sem trava é a do núcleo.
     const def = (await db.admin<{ d: string }>(`select pg_get_functiondef('public.send_room_message(uuid,uuid,text)'::regprocedure) as d`))[0]!.d;
-    const unlocked = def.replace('FUNCTION public.send_room_message(', 'FUNCTION public.send_room_message_unlocked(').replace(/\s+for no key update/gi, '');
-    expect(unlocked).not.toBe(def);
+    const core = (await db.admin<{ d: string }>(`select pg_get_functiondef('oryn.post_message(uuid,uuid,uuid,uuid,text)'::regprocedure) as d`))[0]!.d;
+    const unlockedCore = core.replace('FUNCTION oryn.post_message(', 'FUNCTION oryn.post_message_unlocked(').replace(/\s+for no key update/gi, '');
+    expect(unlockedCore).toMatch(/oryn\.rooms r where r\.id = p_room;/); // a trava saiu
+    const unlocked = def.replace('FUNCTION public.send_room_message(', 'FUNCTION public.send_room_message_unlocked(').replace('oryn.post_message(', 'oryn.post_message_unlocked(');
+    expect(unlocked).toContain('oryn.post_message_unlocked(');
+    await db.asMigrationOwner(unlockedCore);
     await db.asMigrationOwner(unlocked);
     await db.asMigrationOwner('grant execute on function public.send_room_message_unlocked(uuid,uuid,text) to authenticated');
     const undo = await slowInsert(0.2);
@@ -130,6 +135,7 @@ describe('Chat por sala — send_room_message sob concorrência (PostgreSQL 17 r
     } finally {
       await undo();
       await db.asMigrationOwner('drop function public.send_room_message_unlocked(uuid,uuid,text)');
+      await db.asMigrationOwner('drop function oryn.post_message_unlocked(uuid,uuid,uuid,uuid,text)');
     }
   }, 60_000);
 });

@@ -1,5 +1,5 @@
 -- POC-02C.2B — VERIFICAÇÃO ENTRE MIGRAÇÕES, SOMENTE LEITURA. Rodar depois de CADA passo da aplicação
--- (0100, depois 0200, depois 0300, depois 0400, depois 0500, depois 0600, depois 0700), antes do próximo. Tolera objetos que ainda não existem.
+-- (0100, depois 0200, depois 0300, depois 0400, depois 0500, depois 0600, depois 0700, depois 0900), antes do próximo. Tolera objetos que ainda não existem.
 -- Saída: step, item, status (PASS/FAIL/PENDING). PENDING = pertence a um passo ainda não aplicado.
 -- Critério do passo N: nenhuma linha FAIL e nenhuma linha PENDING com step <= N.
 -- O pós-voo completo (01_postflight.sql) vem depois do passo 3 e de novo depois do passo 4.
@@ -32,10 +32,19 @@ fns_0700(sig) as (values ('public.sound_clock()'), ('public.list_sounds(uuid)'),
 fns_0700_service(sig) as (values ('public.complete_sound_validation(uuid,boolean,text,integer,integer,text,text)'), ('public.finish_sound_cleanup(uuid[])')),
 fns_0700_predicate(sig) as (values ('oryn_realtime.can_read_sound(text)'), ('oryn_realtime.can_upload_sound(text)')),
 has_0700 as (select pg_catalog.to_regprocedure('public.trigger_sound(uuid,uuid)') is not null as ok),
+-- Canais (0900): 1 tabela, 7 RPCs, 8 funções internas, 3 gatilhos e channel_id obrigatório em mensagens e sessões.
+fns_0900(sig) as (values ('public.list_channels(uuid)'), ('public.create_channel(uuid,text,text)'), ('public.archive_channel(uuid)'),
+                         ('public.send_channel_message(uuid,uuid,text)'), ('public.list_channel_messages(uuid,bigint,bigint,integer)'),
+                         ('public.join_voice_channel(uuid)'), ('public.get_channel_participants(uuid)')),
+fns_0900_internal(sig) as (values ('oryn.default_channel(uuid,text)'), ('oryn.create_default_channels()'), ('oryn.fill_message_channel()'),
+                                  ('oryn.fill_session_channel()'), ('oryn.publish_channel_control(uuid,uuid,text,jsonb)'),
+                                  ('oryn.open_voice_session(uuid,uuid,uuid)'), ('oryn.post_message(uuid,uuid,uuid,uuid,text)'),
+                                  ('oryn.channel_messages(uuid,uuid,uuid,bigint,bigint,integer)')),
+has_0900 as (select pg_catalog.to_regclass('oryn.channels') is not null as ok),
 c(step, item, ok, present) as (
   -- Passo 1 (0100): schema, tabelas, RLS, nenhum acesso de cliente.
   select 1, 'oryn: 8 tabelas (fora a da 0500)',
-         (select pg_catalog.count(*) filter (where k.relname not in ('room_messages', 'room_message_counters', 'sound_assets', 'sound_trigger_state')) = 8 from pg_catalog.pg_class k join pg_catalog.pg_namespace n on n.oid = k.relnamespace
+         (select pg_catalog.count(*) filter (where k.relname not in ('room_messages', 'room_message_counters', 'sound_assets', 'sound_trigger_state', 'channels')) = 8 from pg_catalog.pg_class k join pg_catalog.pg_namespace n on n.oid = k.relnamespace
            where n.nspname = 'oryn' and k.relkind = 'r'), (select ok from has_oryn)
   union all
   select 1, 'oryn.' || t || ': RLS ligado e dono = ' || current_user,
@@ -59,7 +68,7 @@ c(step, item, ok, present) as (
   -- Passo 2 (0200): exatamente as 12 RPCs, EXECUTE do contrato, search_path vazio. As da 0400 (passo 4)
   -- ficam fora da contagem, para o item continuar valendo depois do passo 4.
   select 2, 'public: exatamente 12 funções (fora as da 0400), todas SECURITY DEFINER com search_path vazio',
-         (select pg_catalog.count(*) filter (where p.proname not in ('list_my_rooms', 'close_room', 'send_room_message', 'list_room_messages', 'list_room_members', 'get_voice_participants', 'leave_room_membership', 'remove_room_member', 'sound_clock', 'list_sounds', 'request_sound_upload', 'claim_sound_validation', 'remove_sound', 'list_sound_cleanup', 'trigger_sound', 'complete_sound_validation', 'finish_sound_cleanup')) = 12
+         (select pg_catalog.count(*) filter (where p.proname not in ('list_my_rooms', 'close_room', 'send_room_message', 'list_room_messages', 'list_room_members', 'get_voice_participants', 'leave_room_membership', 'remove_room_member', 'sound_clock', 'list_sounds', 'request_sound_upload', 'claim_sound_validation', 'remove_sound', 'list_sound_cleanup', 'trigger_sound', 'complete_sound_validation', 'finish_sound_cleanup', 'list_channels', 'create_channel', 'archive_channel', 'send_channel_message', 'list_channel_messages', 'join_voice_channel', 'get_channel_participants')) = 12
                  and pg_catalog.bool_and(p.prosecdef and 'search_path=""' = any (coalesce(p.proconfig, '{}')))
             from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public'),
          (select ok from has_fns)
@@ -95,7 +104,7 @@ c(step, item, ok, present) as (
   union all
   -- Passo 4 (0400, MVP 01): 2 RPCs novas, mesmas regras; nada mais muda (14 funções em public, fora as da 0500).
   select 4, 'public: exatamente 14 funções (fora as da 0500), todas SECURITY DEFINER com search_path vazio',
-         (select pg_catalog.count(*) filter (where p.proname not in ('send_room_message', 'list_room_messages', 'list_room_members', 'get_voice_participants', 'leave_room_membership', 'remove_room_member', 'sound_clock', 'list_sounds', 'request_sound_upload', 'claim_sound_validation', 'remove_sound', 'list_sound_cleanup', 'trigger_sound', 'complete_sound_validation', 'finish_sound_cleanup')) = 14
+         (select pg_catalog.count(*) filter (where p.proname not in ('send_room_message', 'list_room_messages', 'list_room_members', 'get_voice_participants', 'leave_room_membership', 'remove_room_member', 'sound_clock', 'list_sounds', 'request_sound_upload', 'claim_sound_validation', 'remove_sound', 'list_sound_cleanup', 'trigger_sound', 'complete_sound_validation', 'finish_sound_cleanup', 'list_channels', 'create_channel', 'archive_channel', 'send_channel_message', 'list_channel_messages', 'join_voice_channel', 'get_channel_participants')) = 14
                  and pg_catalog.bool_and(p.prosecdef and 'search_path=""' = any (coalesce(p.proconfig, '{}')))
             from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public'),
          (select ok from has_0400)
@@ -122,7 +131,7 @@ c(step, item, ok, present) as (
     from (values ('oryn.room_messages'), ('oryn.room_message_counters')) as chat_tables(t)
   union all
   select 5, 'public: exatamente 16 funções (fora as da 0600), todas SECURITY DEFINER com search_path vazio',
-         (select pg_catalog.count(*) filter (where p.proname not in ('list_room_members', 'get_voice_participants', 'leave_room_membership', 'remove_room_member', 'sound_clock', 'list_sounds', 'request_sound_upload', 'claim_sound_validation', 'remove_sound', 'list_sound_cleanup', 'trigger_sound', 'complete_sound_validation', 'finish_sound_cleanup')) = 16
+         (select pg_catalog.count(*) filter (where p.proname not in ('list_room_members', 'get_voice_participants', 'leave_room_membership', 'remove_room_member', 'sound_clock', 'list_sounds', 'request_sound_upload', 'claim_sound_validation', 'remove_sound', 'list_sound_cleanup', 'trigger_sound', 'complete_sound_validation', 'finish_sound_cleanup', 'list_channels', 'create_channel', 'archive_channel', 'send_channel_message', 'list_channel_messages', 'join_voice_channel', 'get_channel_participants')) = 16
                  and pg_catalog.bool_and(p.prosecdef and 'search_path=""' = any (coalesce(p.proconfig, '{}')))
             from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public'),
          (select ok from has_0500)
@@ -140,7 +149,7 @@ c(step, item, ok, present) as (
   union all
   -- Passo 6 (0600, salas de grupo): 4 RPCs novas (20 funções em public), internas sem EXECUTE de cliente e 2 gatilhos ativos.
   select 6, 'public: exatamente 20 funções (fora as da 0700), todas SECURITY DEFINER com search_path vazio',
-         (select pg_catalog.count(*) filter (where p.proname not in ('sound_clock', 'list_sounds', 'request_sound_upload', 'claim_sound_validation', 'remove_sound', 'list_sound_cleanup', 'trigger_sound', 'complete_sound_validation', 'finish_sound_cleanup')) = 20 and pg_catalog.bool_and(p.prosecdef and 'search_path=""' = any (coalesce(p.proconfig, '{}')))
+         (select pg_catalog.count(*) filter (where p.proname not in ('sound_clock', 'list_sounds', 'request_sound_upload', 'claim_sound_validation', 'remove_sound', 'list_sound_cleanup', 'trigger_sound', 'complete_sound_validation', 'finish_sound_cleanup', 'list_channels', 'create_channel', 'archive_channel', 'send_channel_message', 'list_channel_messages', 'join_voice_channel', 'get_channel_participants')) = 20 and pg_catalog.bool_and(p.prosecdef and 'search_path=""' = any (coalesce(p.proconfig, '{}')))
             from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public'),
          (select ok from has_0600)
   union all
@@ -171,7 +180,7 @@ c(step, item, ok, present) as (
   union all
   -- Passo 7 (0700, soundboard): 29 funções em public, tabelas sem acesso direto, bucket privado e só 2 políticas no Storage.
   select 7, 'public: exatamente 29 funções, todas SECURITY DEFINER com search_path vazio',
-         (select pg_catalog.count(*) = 29 and pg_catalog.bool_and(p.prosecdef and 'search_path=""' = any (coalesce(p.proconfig, '{}')))
+         (select pg_catalog.count(*) filter (where p.proname not in ('list_channels', 'create_channel', 'archive_channel', 'send_channel_message', 'list_channel_messages', 'join_voice_channel', 'get_channel_participants')) = 29 and pg_catalog.bool_and(p.prosecdef and 'search_path=""' = any (coalesce(p.proconfig, '{}')))
             from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public'),
          (select ok from has_0700)
   union all
@@ -224,6 +233,56 @@ c(step, item, ok, present) as (
                  and pg_catalog.bool_and(roles = array['authenticated']::name[])
             from pg_catalog.pg_policies where schemaname = 'storage' and tablename = 'objects' and policyname like 'oryn\_%'),
          (select ok from has_0700)
+  union all
+  -- Passo 9 (0900, canais): 36 funções em public, tabela de canais privada, internas sem EXECUTE de cliente,
+  -- 3 gatilhos ativos, channel_id obrigatório e chaves compostas (sala, canal) em mensagens e sessões.
+  select 9, 'public: exatamente 36 funções, todas SECURITY DEFINER com search_path vazio',
+         (select pg_catalog.count(*) = 36 and pg_catalog.bool_and(p.prosecdef and 'search_path=""' = any (coalesce(p.proconfig, '{}')))
+            from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public'),
+         (select ok from has_0900)
+  union all
+  select 9, sig || ': EXECUTE só para authenticated (anon, service_role e PUBLIC não)',
+         case when pg_catalog.to_regprocedure(sig) is not null then
+           pg_catalog.has_function_privilege('authenticated', sig, 'EXECUTE')
+           and not pg_catalog.has_function_privilege('anon', sig, 'EXECUTE')
+           and not pg_catalog.has_function_privilege('service_role', sig, 'EXECUTE')
+           and not exists (select 1 from pg_catalog.pg_proc p, pg_catalog.aclexplode(coalesce(p.proacl, pg_catalog.acldefault('f', p.proowner))) a
+                            where p.oid = pg_catalog.to_regprocedure(sig) and a.grantee = 0 and a.privilege_type = 'EXECUTE')
+         else false end,
+         (select ok from has_0900)
+    from fns_0900
+  union all
+  select 9, sig || ': nenhum papel de cliente executa',
+         case when pg_catalog.to_regprocedure(sig) is not null then
+           not pg_catalog.has_function_privilege('authenticated', sig, 'EXECUTE')
+           and not pg_catalog.has_function_privilege('anon', sig, 'EXECUTE')
+           and not pg_catalog.has_function_privilege('service_role', sig, 'EXECUTE')
+         else false end,
+         (select ok from has_0900)
+    from fns_0900_internal
+  union all
+  select 9, 'oryn.channels: RLS ligado, sem política e sem privilégio de cliente',
+         case when (select ok from has_0900) then
+           (select c.relrowsecurity from pg_catalog.pg_class c where c.oid = pg_catalog.to_regclass('oryn.channels'))
+           and not exists (select 1 from pg_catalog.pg_policies p where p.schemaname = 'oryn' and p.tablename = 'channels')
+           and not exists (select 1 from pg_catalog.pg_class c, pg_catalog.aclexplode(coalesce(c.relacl, pg_catalog.acldefault('r', c.relowner))) a
+                            where c.oid = pg_catalog.to_regclass('oryn.channels') and a.grantee <> c.relowner)
+         else false end,
+         (select ok from has_0900)
+  union all
+  select 9, 'gatilhos oryn_room_default_channels, oryn_message_channel e oryn_session_channel ativos',
+         (select pg_catalog.count(*) = 3 from pg_catalog.pg_trigger t
+           where not t.tgisinternal and t.tgenabled = 'O' and t.tgname in ('oryn_room_default_channels', 'oryn_message_channel', 'oryn_session_channel')),
+         (select ok from has_0900)
+  union all
+  select 9, t || '.channel_id: NOT NULL e chave composta (room_id, channel_id) para oryn.channels',
+         case when (select ok from has_0900) then
+           exists (select 1 from pg_catalog.pg_attribute a where a.attrelid = pg_catalog.to_regclass(t) and a.attname = 'channel_id' and a.attnotnull and not a.attisdropped)
+           and exists (select 1 from pg_catalog.pg_constraint k where k.conrelid = pg_catalog.to_regclass(t) and k.contype = 'f'
+                        and k.confrelid = pg_catalog.to_regclass('oryn.channels') and pg_catalog.array_length(k.conkey, 1) = 2)
+         else false end,
+         (select ok from has_0900)
+    from (values ('oryn.room_messages'), ('oryn.room_sessions')) as channel_tables(t)
 )
 select step, item, case when not present then 'PENDING' when ok then 'PASS' else 'FAIL' end as status
   from c

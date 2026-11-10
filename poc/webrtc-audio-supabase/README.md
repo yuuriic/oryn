@@ -11,6 +11,10 @@ POC-02C.0 e 02C.0A (D1 a D4).
 
 ## Estado (último registro documentado: 2026-11-10)
 
+**Canais (I-1, migração 0900), branch `feat/channels-0900`: só local, não aplicada nem publicada.** Cada sala é um
+espaço com canais persistentes de texto e voz (dois padrões por sala); as RPCs atuais continuam compatíveis com o
+cliente publicado. Contratos, testes, publicação e recuperação: [`CHANNELS-PUBLICATION-09.md`](integration/CHANNELS-PUBLICATION-09.md).
+
 **PR #23 em 2026-11-10 (branch `feat/profile-display-name`, HEAD `40273f4`): implementado e validado, não
 publicado.** Identidade por conta: nome de exibição global no Supabase Auth, com fallback dos nomes existentes por
 sala; cadastro com nome, e-mail e senha; edição do nome; recuperação de senha ("Esqueci minha senha").
