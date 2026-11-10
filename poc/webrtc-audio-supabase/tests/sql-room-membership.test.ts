@@ -1,7 +1,7 @@
 // Salas de grupo e ciclo de vida de membros (migração 0600) no Postgres real em memória (PGlite + shim). Cenários pelos
 // fluxos reais (RPCs). A concorrência está em tests/pg/room-membership.pg.test.ts.
 import { randomUUID } from 'node:crypto';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TestDb, type Actor } from './helpers/db.ts';
 import { createRoom, joinWithInvite, makeCreator, openSession, roomInvite, scenario, type Scenario } from './helpers/fixtures.ts';
 
@@ -244,14 +244,45 @@ describe('remove_room_member', () => {
     expect(await redeem(s.member, revoked)).toMatch(/^invite-invalid$/);
   });
 
-  it('convite emitido depois da remoção permite voltar, com o histórico anterior', async () => {
+  it.each([false, true])('convite emitido depois da remoção permite voltar, com o histórico anterior (nome global: %s)', async (globalName) => {
+    if (globalName) await db.admin(`update auth.users set raw_user_meta_data = '{"display_name":"Nome global"}' where id = $1`, [s.member.uid]);
     await send(s.member, 'primeira vez');
-    expect(await remove(s.owner, await refOf('Amigo'))).toBeNull();
-    const fresh = await roomInvite(db, s.owner, s.room);
-    expect(await redeem(s.member, fresh, 'Voltei')).toBeNull();
-    expect((await members(s.owner)).map((m) => m.display_name)).toEqual(['Dono', 'Voltei']);
-    expect(await history(s.member)).toEqual([['Voltei', 'primeira vez']]);
-    expect(await db.rpcError(s.member, 'public.join_room', { p_room_id: s.room })).toBeNull();
+    const name = globalName ? 'Nome global' : 'Amigo';
+    const after = globalName ? 'Nome global' : 'Voltei';
+    // O relógio de parede do PGlite vem de Date.now(), com resolução de 1 ms.
+    // Chamadas sequenciais não garantem timestamps distintos. O cenário exige
+    // convite ESTRITAMENTE posterior: controla o relógio, sem sleep nem retry.
+    const time = Date.now() + 1_000;
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(time);
+    try {
+      expect(await remove(s.owner, await refOf(name))).toBeNull();
+      clock.mockReturnValue(time + 1);
+      const fresh = await roomInvite(db, s.owner, s.room);
+      const [order] = await db.admin<{ after: boolean }>(`select i.created_at > m.removed_at as after
+        from oryn.room_invites i join oryn.room_members m on m.room_id = i.room_id
+        where i.token_hash = oryn.token_hash($1) and m.user_id = $2`, [fresh, s.member.uid]);
+      expect(order!.after).toBe(true);
+      expect(await redeem(s.member, fresh, 'Voltei')).toBeNull();
+      expect((await members(s.owner)).map((m) => m.display_name)).toEqual(['Dono', after]);
+      expect(await history(s.member)).toEqual([[after, 'primeira vez']]);
+      expect(await db.rpcError(s.member, 'public.join_room', { p_room_id: s.room })).toBeNull();
+    } finally { clock.mockRestore(); }
+  });
+
+  it('convite com timestamp igual ao da remoção não reativa o membro nem é consumido', async () => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 1_000);
+    try {
+      expect(await remove(s.owner, await refOf('Amigo'))).toBeNull();
+      const fresh = await roomInvite(db, s.owner, s.room);
+      const [order] = await db.admin<{ equal: boolean }>(`select i.created_at = m.removed_at as equal
+        from oryn.room_invites i join oryn.room_members m on m.room_id = i.room_id
+        where i.token_hash = oryn.token_hash($1) and m.user_id = $2`, [fresh, s.member.uid]);
+      expect(order!.equal).toBe(true);
+      expect(await redeem(s.member, fresh)).toBe('invite-invalid');
+      expect((await members(s.owner)).map((m) => m.display_name)).toEqual(['Dono']);
+      expect((await db.admin<{ used: boolean }>('select used_at is not null as used from oryn.room_invites where token_hash = oryn.token_hash($1)', [fresh]))[0]!.used).toBe(false);
+      expect(await sessionReason(s.memberSession)).toBe('removed');
+    } finally { clock.mockRestore(); }
   });
 
   it('só o dono remove; qualquer outro recebe a mesma recusa, sem efeito', async () => {
