@@ -1,8 +1,11 @@
 # Identidade e nome de exibição — validação local
 
 Estado em 2026-11-09: implementação na branch `feat/profile-display-name`, base
-`882ee13` (Hybrid Midnight Gold integrado). Não commitada, integrada ou publicada.
-Nenhuma alteração no Supabase remoto, push, PR, merge ou deploy nesta entrega.
+`882ee13` (Hybrid Midnight Gold integrado). Registro original da validação local.
+Atualização operacional: implementação no PR #23, HEAD de referência `b210aec`,
+CI aprovado e PR em Draft no último pré-voo. Procedimento de publicação da oitava
+migração em `poc/webrtc-audio-supabase/integration/PROFILE-PUBLICATION-08.md`.
+Esta preparação não aplica mudanças remotas, integra ou publica o frontend.
 
 ## Contrato de identidade
 
@@ -75,10 +78,10 @@ Aplicada e exercitada apenas no contêiner `supabase_db_oryn-e2e-local`, Postgre
 17.11. Testes de bootstrap também a aplicam como dono não superusuário no shim.
 As sete migrações anteriores não foram editadas.
 
-O executor remoto `oryn-push-step.ps1` permanece deliberadamente limitado às
-sete etapas anteriores e recusa encontrar oito arquivos. Não foi habilitada
-publicação desta migração por esse executor. Seus testes usam uma fixture isolada
-das sete etapas com CLI falsa; preservam a recusa de árvore suja, sem fazer commits.
+O executor remoto `oryn-push-step.ps1` foi preparado localmente para a oitava etapa,
+com lista exata, manifesto de integridade e verificações específicas de catálogo e
+histórico antes/depois. Isso não autoriza sua execução remota. Seus testes usam
+fixture isolada e CLI falsa; preservam a recusa de árvore suja, sem fazer commits.
 Testes de rollback histórico continuam verificando apenas suas etapas originais.
 
 ## Execução e evidências

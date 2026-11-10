@@ -25,7 +25,11 @@
     só o banco em dia autoriza imprimir APLICADO. Código 0 da CLI nunca basta: ele também sai quando não há nada a
     aplicar.
 
-  NÃO faz backup nem dump. NÃO roda verificações SQL (são feitas à parte, ver DEPLOY-CHECKLIST-02C.md).
+  - Etapa 8 aceita somente o arquivo de perfil aprovado, com manifesto SHA-256 fixado. Recusa histórico
+    diferente das sete versões anteriores, reaplicação e deriva dos seis contratos/ACLs/owners.
+    Executa SELECTs específicos pela Management API antes do plano, antes da escrita e depois dela.
+    Indisponibilidade da consulta ou resultado desconhecido impede confirmar sucesso.
+  NÃO faz backup nem dump. Etapas 1–7 mantêm verificações SQL separadas. Para a 8, ver PROFILE-PUBLICATION-08.md.
 
 .EXAMPLE
   pwsh -File integration/scripts/oryn-push-step.ps1 -Step 1            # dry-run da 0100
@@ -33,7 +37,7 @@
 #>
 [CmdletBinding()]
 param(
-  [Parameter(Mandatory)] [ValidateRange(1, 7)] [int] $Step,
+  [Parameter(Mandatory)] [ValidateRange(1, 8)] [int] $Step,
   [switch] $Apply,
   # Para testes locais com uma CLI falsa: executável e argumentos fixos antes dos da CLI.
   [string] $SupabaseCli = 'supabase',
@@ -52,8 +56,37 @@ $RequiredCliVersion = '2.122.0'
 
 $poc = (Resolve-Path (Join-Path $PSScriptRoot '..' '..')).Path
 $migrationsDir = Join-Path $poc 'supabase' 'migrations'
+$allowed = @(
+  '20261023000100_oryn_schema.sql', '20261023000200_oryn_functions.sql',
+  '20261023000300_oryn_realtime.sql', '20261028000400_oryn_room_management.sql',
+  '20261106000500_oryn_room_messages.sql', '20261107000600_oryn_room_membership.sql',
+  '20261108000700_oryn_soundboard.sql', '20261109224924_oryn_account_display_name.sql'
+)
 $expected = @(Get-ChildItem -Path $migrationsDir -Filter '*.sql' | Sort-Object Name)
-if ($expected.Count -ne 7) { throw "esperadas 7 migrações em supabase/migrations; encontradas $($expected.Count)" }
+if ($expected.Count -notin @(7, 8) -or $expected.Count -lt $Step -or
+    ($expected.Name -join ',') -cne (($allowed | Select-Object -First $expected.Count) -join ',')) {
+  throw 'migrações inesperadas ou ausentes: somente as sete históricas e a oitava aprovada são aceitas'
+}
+# Hashes fixados no artefato revisado. Normalizar CRLF evita depender do autocrlf do checkout.
+function Get-CanonicalHash([string] $Path) {
+  $bytes = [Text.Encoding]::UTF8.GetBytes([IO.File]::ReadAllText($Path).Replace("`r`n", "`n"))
+  return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+}
+$manifest = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'profile-08-manifest.json') -Raw | ConvertFrom-Json
+if (($manifest.migrations.file -join ',') -cne ($allowed -join ',')) { throw 'manifesto de migrações divergente' }
+foreach ($m in $expected) {
+  $pin = @($manifest.migrations | Where-Object file -CEQ $m.Name)
+  if ($pin.Count -ne 1 -or (Get-CanonicalHash $m.FullName) -cne $pin[0].sha256) {
+    throw "integridade divergente: $($m.Name)"
+  }
+}
+if ($Step -eq 8) {
+  $checkFiles = @('integration/sql/20_profile_08_preflight.sql', 'integration/sql/21_profile_08_postflight.sql', 'integration/sql/22_profile_08_recovered.sql', 'integration/sql/95_recover_profile_08.sql')
+  if (($manifest.checks.file -join ',') -cne ($checkFiles -join ',')) { throw 'manifesto das verificações divergente' }
+  foreach ($check in $manifest.checks) {
+    if ((Get-CanonicalHash (Join-Path $poc $check.file)) -cne $check.sha256) { throw "integridade divergente: $($check.file)" }
+  }
+}
 $selected = @($expected | Select-Object -First $Step)
 $target = $selected[-1]
 $targetVersion = $target.Name.Split('_')[0]
@@ -65,19 +98,26 @@ $UpToDatePattern = '"upToDate"\s*:\s*true|Remote database is up to date'
 # Lê a saída de um --dry-run: 'pending' (o alvo será aplicado), 'up-to-date' (nada a aplicar) ou 'unknown'.
 # Citar outra migração interrompe em qualquer caso.
 function Get-PushPlan([string] $Text) {
+  foreach ($entry in [regex]::Matches($Text, '(?<!\d)\d{14}(?!\d)')) {
+    $version = $entry.Value
+    if ($version -cne $targetVersion) { throw "o dry-run cita $version, fora desta etapa: interromper" }
+  }
   foreach ($o in $others) {
     if ($Text -match [regex]::Escape($o.Name.Split('_')[0])) { throw "o dry-run cita $($o.Name), fora desta etapa: interromper" }
   }
-  if ($Text -match [regex]::Escape($targetVersion)) { return 'pending' }
+  if ($Text -match [regex]::Escape($targetVersion)) {
+    if ($Text -match $UpToDatePattern) { throw 'dry-run contraditório: interromper' }
+    return 'pending'
+  }
   if ($Text -match $UpToDatePattern) { return 'up-to-date' }
   return 'unknown'
 }
 
 # 1. Pré-condições locais.
 if (Test-Path Env:SUPABASE_DB_PASSWORD) { throw 'SUPABASE_DB_PASSWORD já está definida neste processo: limpe-a antes (Remove-Item Env:SUPABASE_DB_PASSWORD).' }
-$dirty = & git -C $poc status --porcelain -- supabase
+$dirty = & git -C $poc status --porcelain -- supabase integration/scripts integration/sql
 if ($LASTEXITCODE -ne 0) { throw 'git status falhou' }
-if ($dirty) { throw "há mudanças não commitadas em supabase/: $dirty" }
+  if ($dirty) { throw "há mudanças não commitadas em supabase/ ou nos artefatos operacionais: $dirty" }
 
 # 1b. Versão exata da CLI, ANTES do workdir, das credenciais e de qualquer conexão com o projeto. O
 #     `--version` não recebe ref nem senha (pode só consultar se há versão nova, sem tocar no projeto).
@@ -113,6 +153,13 @@ try {
     $orig = Join-Path $migrationsDir $c.Name
     if ((Get-FileHash $c.FullName -Algorithm SHA256).Hash -ne (Get-FileHash $orig -Algorithm SHA256).Hash) { throw "SHA-256 divergente: $($c.Name)" }
   }
+  if ($Step -eq 8) {
+    foreach ($check in $manifest.checks) {
+      $destination = Join-Path $workdir ([IO.Path]::GetFileName($check.file))
+      Copy-Item -LiteralPath (Join-Path $poc $check.file) -Destination $destination
+      if ((Get-CanonicalHash $destination) -cne $check.sha256) { throw 'integridade da cópia SQL divergente' }
+    }
+  }
   Write-Host "Etapa $Step — alvo: $($target.Name) (workdir temporário com $($copied.Count) migração(ões), SHA-256 conferido)"
 
   # 3. Credenciais (nunca exibidas).
@@ -132,6 +179,19 @@ try {
   $plain = [System.Net.NetworkCredential]::new('', $Password).Password
   $env:SUPABASE_DB_PASSWORD = $plain
 
+  # Etapa 8: a consulta usa Management API (--linked), não cria papel CLI de login.
+  # Só SELECT de catálogo/histórico; saída bruta não é impressa. Sem leitura de usuários.
+  function Assert-ProfileState([string] $Phase) {
+    $sqlFile = if ($Phase -eq 'preflight') { '20_profile_08_preflight.sql' } else { '21_profile_08_postflight.sql' }
+    $result = @(& $SupabaseCli @SupabaseCliPrefix --workdir $workdir db query --linked --project-ref $ProjectRef --file (Join-Path $workdir $sqlFile) --output json 2>&1 | ForEach-Object { "$_" })
+    $queryCode = $LASTEXITCODE
+    if ($queryCode -ne 0 -or ($result -join "`n") -notmatch ('"result"\s*:\s*"oryn-profile-08-' + $Phase + '-ok"')) {
+      throw "Etapa 8: $Phase recusado (histórico, objetos, permissões ou consulta divergentes). Não reaplicar; conferir SQL específico."
+    }
+    Write-Host "Etapa 8: $Phase confirmado."
+  }
+  if ($Step -eq 8) { Assert-ProfileState 'preflight' }
+
   # 5. Dry-run: nunca aplica. No -Apply, também decide se há o que aplicar.
   $output = & $SupabaseCli @SupabaseCliPrefix @dryRunArgs 2>&1 | ForEach-Object { "$_" }
   $code = $LASTEXITCODE
@@ -144,10 +204,13 @@ try {
     if ($plan -ne 'pending') { throw "o dry-run não lista ${targetVersion}: interromper" }
     Write-Host "DRY-RUN OK: só $($target.Name). Agora rode integration/sql/06_cli_side_effects.sql (esperado: nada mudou)."
   } elseif ($plan -eq 'up-to-date') {
+    if ($Step -eq 8) { throw 'Etapa 8 já aplicada: reaplicação recusada' }
     Write-Host "NADA APLICADO: o banco já está em dia, inclusive com $($target.Name). Confira em 06_cli_side_effects.sql."
   } elseif ($plan -ne 'pending') {
     throw "o dry-run não lista ${targetVersion} nem informa banco em dia: nada foi aplicado; interromper"
   } else {
+    # Reconfere imediatamente antes da escrita; evita usar só um pré-voo antigo.
+    if ($Step -eq 8) { Assert-ProfileState 'preflight' }
     # Direto no terminal: o prompt de confirmação da própria CLI precisa aparecer (sem --yes).
     & $SupabaseCli @SupabaseCliPrefix @pushArgs
     $code = $LASTEXITCODE
@@ -161,7 +224,8 @@ try {
     $plan = Get-PushPlan ($output -join "`n")
     if ($plan -eq 'pending') { throw "NÃO APLICADO: $($target.Name) continua pendente (recusada no prompt, ou a CLI não a aplicou)." }
     if ($plan -ne 'up-to-date') { throw "resultado não confirmado: a conferência não informa banco em dia; rode 06_cli_side_effects.sql" }
-    Write-Host "APLICADO: $($target.Name). Agora rode 05_step_checks.sql e 06_cli_side_effects.sql (Etapa $Step do checklist)."
+    if ($Step -eq 8) { Assert-ProfileState 'postflight' }
+    Write-Host "APLICADO: $($target.Name). Confira as verificações SQL específicas da etapa no checklist."
   }
 }
 finally {
@@ -169,5 +233,11 @@ finally {
   Remove-Item Env:SUPABASE_DB_PASSWORD -ErrorAction SilentlyContinue
   $plain = $null
   $Password = $null
-  if (Test-Path $base) { Remove-Item -Recurse -Force $base -ErrorAction SilentlyContinue }
+  if (Test-Path -LiteralPath $base) {
+    $resolvedBase = (Resolve-Path -LiteralPath $base).Path
+    $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+    if (-not $resolvedBase.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase) -or
+        [IO.Path]::GetFileName($resolvedBase) -notlike 'oryn-push-*') { throw 'limpeza recusada: caminho temporário inesperado' }
+    Remove-Item -LiteralPath $resolvedBase -Recurse -Force -ErrorAction SilentlyContinue
+  }
 }

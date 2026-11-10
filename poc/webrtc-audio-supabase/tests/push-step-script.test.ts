@@ -3,7 +3,7 @@
 // ambiente durante a chamada e a limpeza em `finally`, inclusive em erro. Exige PowerShell 7 (`pwsh`),
 // presente nos runners do GitHub e no ambiente de desenvolvimento.
 import { execFileSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,16 +18,17 @@ let work: string;
 
 beforeAll(() => {
   work = mkdtempSync(join(tmpdir(), 'oryn-push-test-'));
-  // O executor continua restrito às sete etapas históricas. Testá-lo contra uma
-  // cópia dessas etapas evita depender de mudanças locais ou liberar a 0800 por acidente.
+  // Fixture isolada: nunca chama Git, CLI real ou projeto remoto.
   const fixture = join(work, 'fixture');
   mkdirSync(join(fixture, 'integration', 'scripts'), { recursive: true });
   mkdirSync(join(fixture, 'supabase', 'migrations'), { recursive: true });
   script = join(fixture, 'integration', 'scripts', 'oryn-push-step.ps1');
   cpSync(originalScript, script);
+  cpSync(new URL('../integration/scripts/profile-08-manifest.json', import.meta.url), join(fixture, 'integration', 'scripts', 'profile-08-manifest.json'));
+  cpSync(new URL('../integration/sql/', import.meta.url), join(fixture, 'integration', 'sql'), { recursive: true });
   const source = fileURLToPath(new URL('../supabase/', import.meta.url));
   cpSync(join(source, 'config.toml'), join(fixture, 'supabase', 'config.toml'));
-  for (const file of readdirSync(join(source, 'migrations')).filter((f) => f.endsWith('.sql')).sort().slice(0, 7)) {
+  for (const file of readdirSync(join(source, 'migrations')).filter((f) => f.endsWith('.sql')).sort()) {
     cpSync(join(source, 'migrations', file), join(fixture, 'supabase', 'migrations', file));
   }
 });
@@ -63,6 +64,8 @@ function run(opts: {
   version?: string;
   missingCli?: boolean;
   dirty?: boolean;
+  profileState?: string;
+  migrationMutation?: 'extra' | 'rename' | 'content';
 }): Run {
   const log = join(work, `cli-${Math.random().toString(36).slice(2)}.json`);
   const q = (s: string) => `'${s.replaceAll("'", "''")}'`;
@@ -95,7 +98,20 @@ function run(opts: {
     FAKE_CLI_VERSION: opts.version ?? 'ok',
   };
   delete env['SUPABASE_DB_PASSWORD'];
-  const out = execFileSync('pwsh', ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8', env });
+  env['FAKE_PROFILE_STATE'] = opts.profileState ?? 'ok';
+  const migrationDir = join(work, 'fixture', 'supabase', 'migrations');
+  const target = join(migrationDir, '20261109224924_oryn_account_display_name.sql');
+  const original = readFileSync(target);
+  const extra = join(migrationDir, '20261110000000_unexpected.sql');
+  if (opts.migrationMutation === 'extra') writeFileSync(extra, 'select 1;');
+  if (opts.migrationMutation === 'rename') { rmSync(target); writeFileSync(extra, original); }
+  if (opts.migrationMutation === 'content') writeFileSync(target, Buffer.concat([original, Buffer.from('\n-- changed')]));
+  let out: string;
+  try {
+    out = execFileSync('pwsh', ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8', env });
+  } finally {
+    if (opts.migrationMutation) { writeFileSync(target, original); rmSync(extra, { force: true }); }
+  }
   const versionLog = `${log}.version`;
   return {
     ok: /OK=True/.test(out),
@@ -112,6 +128,69 @@ function run(opts: {
 }
 
 describe('oryn-push-step.ps1 (CLI falsa, sem rede)', () => {
+  describe('Etapa 8: lista fixa, pré/pós-voo e recusa de reaplicação', () => {
+    const previous = '20261023000100,20261023000200,20261023000300,20261028000400,20261106000500,20261107000600,20261108000700';
+    const options = { step: 8, applied: previous, apply: true, confirmation: 'APLICAR 20261109224924' };
+    it('aplica somente o alvo depois de dois pré-voos; só anuncia sucesso após pós-voo', () => {
+      const r = run(options);
+      expect(r.ok, r.out).toBe(true);
+      expect(r.calls.map((c) => c.args.includes('query') ? 'query' : c.args.includes('--dry-run') ? 'dry' : 'push'))
+        .toEqual(['query', 'dry', 'query', 'push', 'dry', 'query']);
+      expect(r.calls[0]!.migrations).toHaveLength(8);
+      expect(r.calls[0]!.args).toContain('--linked');
+      expect(r.calls.every((c) => c.passwordLength === TEST_PASSWORD.length)).toBe(true);
+      expect(r.calls.every((c) => !c.args.includes('--yes') && !c.args.join(' ').includes(TEST_PASSWORD))).toBe(true);
+      expect(r.out).toMatch(/postflight confirmado/);
+      expect(r.out).toMatch(/^APLICADO: 20261109224924/m);
+      expect(r.out).not.toContain(TEST_PASSWORD);
+      expect(r.envAfter).toBe('False');
+      expect(existsSync(r.calls[0]!.workdir)).toBe(false);
+    });
+    it('dry-run executa pré-voo, mas nenhuma escrita', () => {
+      const r = run({ step: 8, applied: previous });
+      expect(r.ok, r.out).toBe(true);
+      expect(r.calls).toHaveLength(2);
+      expect(r.calls[1]!.args).toContain('--dry-run');
+    });
+    it.each(['preflight', 'query-error'])('recusa estado divergente ou consulta indisponível: %s', (profileState) => {
+      const r = run({ ...options, profileState });
+      expect(r.ok).toBe(false);
+      expect(r.calls).toHaveLength(1);
+      expect(r.out).toMatch(/preflight recusado/);
+      expect(r.envAfter).toBe('False');
+    });
+    it('não anuncia APLICADO se pós-voo divergir', () => {
+      const r = run({ ...options, profileState: 'postflight' });
+      expect(r.ok).toBe(false);
+      expect(r.out).toMatch(/postflight recusado/);
+      expect(r.out).not.toMatch(/^APLICADO/m);
+      expect(r.envAfter).toBe('False');
+    });
+    it('recusa reaplicação antes do dry-run e do push', () => {
+      const r = run({ ...options, applied: `${previous},20261109224924` });
+      expect(r.ok).toBe(false);
+      expect(r.calls).toHaveLength(1);
+      expect(r.out).toMatch(/preflight recusado/);
+    });
+    it.each(['extra', 'rename', 'content'] as const)('recusa mudança de integridade antes de conectar: %s', (migrationMutation) => {
+      const r = run({ ...options, migrationMutation });
+      expect(r.ok).toBe(false);
+      expect(r.out).toMatch(/migrações inesperadas|integridade divergente/);
+      expect(r.calls).toEqual([]);
+      expect(r.versionCalls).toEqual([]);
+    });
+    it('recusa versão desconhecida no plano, mesmo com o alvo presente', () => {
+      const r = run({ ...options, mode: 'unexpected' });
+      expect(r.ok).toBe(false);
+      expect(r.out).toMatch(/20261110000000, fora desta etapa/);
+      expect(r.calls).toHaveLength(2);
+    });
+    it('confirmação de outra etapa é recusada antes da consulta', () => {
+      const r = run({ ...options, confirmation: 'APLICAR 20261108000700' });
+      expect(r.ok).toBe(false);
+      expect(r.calls).toEqual([]);
+    });
+  });
   it('árvore suja é recusada antes de versão, senha ou CLI', () => {
     const r = run({ step: 1, dirty: true });
     expect(r.ok).toBe(false);
