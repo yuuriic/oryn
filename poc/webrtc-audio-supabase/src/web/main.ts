@@ -141,7 +141,11 @@ const ui = {
   chatCloseBtn: el<HTMLButtonElement>('chat-close-btn'),
   createForm: el<HTMLFormElement>('create-form'),
   createName: el<HTMLInputElement>('create-name'),
-  createIdentityText: el<HTMLElement>('create-identity-text'),
+  createDialog: el<HTMLDialogElement>('create-dialog'),
+  createCloseBtn: el<HTMLButtonElement>('create-close-btn'),
+  createMissingName: el<HTMLElement>('create-missing-name'),
+  createError: el<HTMLParagraphElement>('create-error'),
+  createEmptyBtn: el<HTMLButtonElement>('create-empty-btn'),
   createProfileBtn: el<HTMLButtonElement>('create-profile-btn'),
   createBtn: el<HTMLButtonElement>('create-btn'),
   callRoom: el<HTMLElement>('call-room'),
@@ -180,7 +184,6 @@ const ui = {
   accountBox: el<HTMLElement>('account-box'),
   contextTitle: el<HTMLElement>('context-title'),
   contextDetail: el<HTMLParagraphElement>('context-detail'),
-  createRoom: el<HTMLElement>('create-room'),
   callPanel: el<HTMLElement>('call-panel'),
   roomsBlock: el<HTMLElement>('rooms-block'),
   contextActions: el<HTMLElement>('context-actions'),
@@ -255,8 +258,8 @@ function setField(name: string, value: string): void {
 let voicePhase = '—';
 /** Painel flutuante de sons aberto pelo botão da barra. Só apresentação: o soundboard segue o da chamada. */
 let soundsOpen = false;
-/** Formulário de criação pedido por "Criar sala". Sem nenhuma sala, ele aparece de qualquer jeito. */
-let createOpen = false;
+/** Botão que abriu o modal de criação, para devolver o foco a ele ao fechar. */
+let createOpener: HTMLElement | null = null;
 /** Salas com "Gerenciar sala" aberto, para o redesenho da lista não recolhê-lo. */
 const adminOpen = new Set<string>();
 
@@ -675,8 +678,7 @@ function renderRooms(): void {
   ui.contextDetail.hidden = context.detail === null;
   ui.contextDetail.dataset['inCall'] = String(callActive && selectedRoomId !== null && callRoomId === selectedRoomId); // só o ponto verde
   const noRooms = s.status === 'ready' && s.rooms.length === 0;
-  ui.createRoom.hidden = selectedRoomId !== null || !(createOpen || noRooms);
-  ui.createCancelBtn.hidden = noRooms;
+  ui.createEmptyBtn.hidden = selectedRoomId !== null || !noRooms; // sem nenhuma sala, o convite à primeira
   // Sala aberta: as ações dela vêm antes da voz. Na visão geral, a voz vem antes de uma lista que pode ser longa. A troca é
   // no DOM, para o teclado seguir a ordem da tela, e só quando muda, para não tirar o foco de quem está no bloco.
   // Na sala aberta, as ações dela ficam no cabeçalho, ao lado do nome, e a voz ocupa o centro.
@@ -714,21 +716,28 @@ function renderRooms(): void {
       onAdminToggle: (roomId, open) => void (open ? adminOpen.add(roomId) : adminOpen.delete(roomId)),
     }),
   );
-  ui.roomsError.textContent = s.actionError ?? '';
-  ui.roomsError.hidden = s.actionError === null;
+  // Com o modal aberto, o erro (da criação) aparece nele, e não atrás da camada.
+  const inDialog = ui.createDialog.open;
+  ui.roomsError.textContent = inDialog ? '' : s.actionError ?? '';
+  ui.roomsError.hidden = inDialog || s.actionError === null;
+  ui.createError.textContent = inDialog ? s.actionError ?? '' : '';
+  ui.createError.hidden = !inDialog || s.actionError === null;
   ui.refreshBtn.disabled = busy || s.status === 'loading';
   ui.createName.disabled = busy;
   ui.createCapacity.disabled = busy;
   ui.createProfileBtn.disabled = busy;
+  // Envio em curso: o modal não fecha (o resultado sempre aparece nele) e não há segundo envio.
+  ui.createCancelBtn.disabled = busy;
+  ui.createCloseBtn.disabled = busy;
   renderCreateIdentity();
 }
 
 /** O criador entra com o nome global do perfil (o mesmo de convites, membros, voz e chat). Sem ele, a criação
- * espera: o caminho é definir o nome no perfil, nunca digitar outro nome só para esta sala. */
+ * espera: o caminho é definir o nome no Perfil, nunca digitar outro nome só para esta sala. */
 function renderCreateIdentity(): void {
   const busy = lobby?.state.busy != null;
   ui.createBtn.disabled = busy || globalName === null;
-  identityNote(ui.createIdentityText, ui.createProfileBtn, 'Defina seu nome no perfil para criar uma sala.');
+  ui.createMissingName.hidden = globalName !== null;
 }
 
 /** Linha "Você entra como…" da criação e do convite. O nome entra como texto, nunca como HTML. */
@@ -765,19 +774,76 @@ ui.shellMenuBtn.addEventListener('click', () => {
   ui.sidebarClose.focus();
 });
 ui.roomsHomeBtn.addEventListener('click', () => navigate(null));
-ui.createOpenBtn.addEventListener('click', () => {
-  createOpen = true;
-  shell.select(null);
-  ui.createName.focus();
-});
-ui.createCancelBtn.addEventListener('click', () => {
-  createOpen = false;
+// ---------- criação de sala (modal) ----------
+
+const creating = (): boolean => lobby?.state.busy?.kind === 'create';
+
+/** Abre o modal limpo, com foco no nome da sala. Todo botão "Criar sala" chega aqui. */
+function openCreate(opener: HTMLElement): void {
+  if (ui.createDialog.open) return;
+  // Gaveta aberta (tela estreita): o conteúdo, onde o modal mora, fica inerte. Fecha a gaveta antes, como o Perfil;
+  // ao fechar o modal, o foco volta ao "Menu", o controle visível que leva de volta à navegação.
+  if (shell.state.drawerOpen) {
+    shell.closeDrawer();
+    opener = ui.shellMenuBtn;
+  }
+  createOpener = opener;
+  ui.createName.value = '';
+  ui.createCapacity.value = '2';
+  lobby.clearActionError(); // erro antigo de outra ação não aparece no modal novo
+  ui.createDialog.hidden = false;
+  ui.createDialog.showModal();
   renderRooms();
-  ui.contextTitle.focus();
+  ui.createName.focus();
+}
+
+/** Fecha sem criar. Nunca durante o envio: o resultado precisa aparecer no modal. */
+function closeCreate(restoreFocus = true): void {
+  if (!ui.createDialog.open || creating()) return;
+  ui.createDialog.close();
+  ui.createDialog.hidden = true;
+  lobby.clearActionError(); // o erro da criação não fica para trás, na página
+  renderRooms();
+  const opener = createOpener;
+  createOpener = null;
+  if (!restoreFocus) return;
+  // O botão de origem pode ter sumido (ex.: o do estado vazio); então o foco vai para o título da tela.
+  if (opener?.isConnected && !opener.closest('[hidden]') && opener.offsetParent !== null) opener.focus();
+  else ui.contextTitle.focus();
+}
+
+ui.createOpenBtn.addEventListener('click', () => openCreate(ui.createOpenBtn));
+ui.createEmptyBtn.addEventListener('click', () => openCreate(ui.createEmptyBtn));
+ui.createCancelBtn.addEventListener('click', () => closeCreate());
+ui.createCloseBtn.addEventListener('click', () => closeCreate());
+// Escape (cancel nativo): fecha pelo mesmo caminho; durante o envio, nada acontece.
+ui.createDialog.addEventListener('cancel', (event) => { event.preventDefault(); closeCreate(); });
+// Fechamento forçado pelo navegador (ex.: Escape repetido): o estado acompanha, e um erro volta para a página.
+ui.createDialog.addEventListener('close', () => { ui.createDialog.hidden = true; renderRooms(); });
+// Clique na camada escura, fora da caixa: fecha só sem envio em andamento.
+ui.createDialog.addEventListener('click', (event) => {
+  if (event.target !== ui.createDialog) return;
+  const r = ui.createDialog.getBoundingClientRect();
+  const outside = event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom;
+  if (outside) closeCreate();
 });
+// Tab circula só dentro do modal (o modal nativo deixaria o foco escapar para a barra do navegador).
+ui.createDialog.addEventListener('keydown', (event) => {
+  if (event.key !== 'Tab') return;
+  const items = [...ui.createDialog.querySelectorAll<HTMLElement>('button, input, select, textarea, [href], [tabindex]:not([tabindex="-1"])')]
+    .filter((n) => !(n as HTMLButtonElement).disabled && n.offsetParent !== null);
+  if (items.length === 0) return;
+  const first = items[0]!;
+  const last = items[items.length - 1]!;
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+});
+// Sem nome global: o Perfil fica fora deste modal (o mesmo painel de sempre).
+ui.createProfileBtn.addEventListener('click', () => { closeCreate(false); ui.profileOpen.click(); });
+
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
-  if (ui.profilePanel.open) return; // o cancel nativo fecha o perfil, sem agir nos painéis de fundo
+  if (ui.profilePanel.open || ui.createDialog.open) return; // o cancel nativo fecha a camada, sem agir nos painéis de fundo
   if (soundsOpen && !shell.state.drawerOpen) return setSoundsOpen(false);
   closeDrawer();
 });
@@ -789,13 +855,13 @@ window.matchMedia('(max-width: 768px)').addEventListener('change', (event) => {
 ui.refreshBtn.addEventListener('click', () => void lobby.refresh());
 ui.createForm.addEventListener('submit', (event) => {
   event.preventDefault();
-  if (globalName === null) return; // o botão já fica desabilitado; Enter no campo também não cria sem nome
+  if (globalName === null || creating()) return; // sem nome não cria; com envio em curso, não repete (Enter duplo)
   // p_display_name segue no contrato do create_room: vira o nome legado da sala, e a leitura prefere o global.
   void lobby.create(ui.createName.value, globalName, Number(ui.createCapacity.value)).then((id) => {
-    if (!id) return;
-    ui.createName.value = '';
-    createOpen = false;
+    if (!id) return ui.createName.focus(); // erro (permissão, limite, rede) fica no modal, que segue aberto
+    closeCreate(false);
     navigate(id); // a sala nova fica em destaque; entrar na chamada segue sendo uma ação à parte
+    ui.contextTitle.focus(); // o foco acompanha a sala criada, cujo nome está no título
   });
 });
 
@@ -1019,7 +1085,9 @@ function showLoggedOut(): void {
   callReturn.reset();
   inviteAccept.accountChanged();
   renderInviteAccept(inviteAccept.state);
-  createOpen = false;
+  if (ui.createDialog.open) ui.createDialog.close(); // logout fecha a criação, mesmo com envio em curso
+  ui.createDialog.hidden = true;
+  createOpener = null;
   adminOpen.clear();
   shell.reset();
   ui.account.hidden = true;

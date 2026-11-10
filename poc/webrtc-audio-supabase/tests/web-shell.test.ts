@@ -288,25 +288,60 @@ describe('Hybrid Midnight Gold: criação sob demanda e chat contextual', () => 
   const main = read('src/web/main.ts');
   const fn = (name: string): string => new RegExp(`function ${name}[^]*?\n}\n`).exec(main)![0];
 
-  it('criar sala não pede nome por sala: o criador entra com o nome global do perfil', () => {
-    const section = /<section id="create-room"[^]*?<\/section>/.exec(html)![0];
-    expect(section).not.toMatch(/create-display|Seu nome na sala/);
-    expect(section).toMatch(/id="create-name"/);
-    expect(section).toMatch(/id="create-capacity"/);
-    expect(section).toMatch(/id="create-identity-text"/);
-    expect(section).toMatch(/<button id="create-profile-btn"[^>]*type="button"/);
-    expect(main).not.toMatch(/createDisplay|create-display/);
-    // Envio: sempre o nome global, e nada sem ele (o contrato p_display_name do create_room não muda).
-    expect(main).toMatch(/if \(globalName === null\) return;[^\n]*\n[^\n]*\n\s*void lobby\.create\(ui\.createName\.value, globalName, Number\(ui\.createCapacity\.value\)\)/);
+  it('criar sala é um modal: sem nome por sala, sem "Você entra como", com X, Cancelar e Criar sala', () => {
+    expect(html).not.toMatch(/<section id="create-room"/); // nada fixo em "Minhas salas"
+    const dialog = /<dialog id="create-dialog"[^]*?<\/dialog>/.exec(html)![0];
+    expect(dialog).toMatch(/<dialog id="create-dialog" class="identity-panel create-dialog" aria-labelledby="create-room-title"[^>]*hidden>/);
+    expect(dialog).not.toMatch(/create-display|Seu nome na sala|create-identity|Você entra como|Alterar no perfil/);
+    expect(dialog).toMatch(/id="create-name"/);
+    expect(dialog).toMatch(/<select id="create-capacity">\s*<option value="2" selected>2<\/option>\s*<option value="3">3<\/option>\s*<option value="4">4<\/option>\s*<\/select>/);
+    expect(dialog).toMatch(/<button id="create-close-btn"[^>]*type="button" aria-label="Fechar">/);
+    expect(dialog).toMatch(/<button id="create-cancel-btn"[^>]*type="button">Cancelar<\/button>\s*<button id="create-btn" type="submit">Criar sala<\/button>/);
+    expect(dialog).toMatch(/id="create-error" class="error" role="alert"/);
+    expect(main).not.toMatch(/createDisplay|create-display|createIdentityText|ui\.createRoom\b/);
+    // Envio: sempre o nome global; nada sem ele nem em duplicidade (o contrato p_display_name do create_room não muda).
+    expect(main).toMatch(/if \(globalName === null \|\| creating\(\)\) return;[^\n]*\n[^\n]*\n\s*void lobby\.create\(ui\.createName\.value, globalName, Number\(ui\.createCapacity\.value\)\)/);
     expect(fn('renderCreateIdentity')).toContain('ui.createBtn.disabled = busy || globalName === null');
-    const note = fn('identityNote');
-    expect(note).toContain("'Definir nome' : 'Alterar no perfil'");
-    expect(note).not.toMatch(/innerHTML/); // o nome entra como texto, nunca como HTML
-    // Reaproveita o painel de Perfil existente; a identidade é reaplicada a cada leitura e no logout.
-    expect(main).toContain("ui.createProfileBtn.addEventListener('click', () => ui.profileOpen.click())");
+    expect(fn('renderCreateIdentity')).toContain('ui.createMissingName.hidden = globalName !== null');
+    // Sem nome global: orienta e leva ao Perfil existente, fora do modal (nenhum editor novo).
+    expect(dialog).toMatch(/<div id="create-missing-name"[^>]*hidden>[^]*Defina seu nome de exibição no Perfil[^]*<button id="create-profile-btn"[^>]*type="button">Abrir Perfil<\/button>/);
+    expect(main).toContain("ui.createProfileBtn.addEventListener('click', () => { closeCreate(false); ui.profileOpen.click(); })");
     expect(fn('applyIdentity')).toContain('renderCreateIdentity()');
     expect(fn('showLoggedOut')).toContain('renderCreateIdentity()');
     expect(fn('renderRooms')).toContain('renderCreateIdentity()');
+    expect(fn('identityNote')).not.toMatch(/innerHTML/); // o convite segue com a linha de identidade, em texto
+  });
+
+  it('modal de criação: abre por qualquer "Criar sala", fecha por X/Cancelar/Escape/fora, sem fechar durante o envio', () => {
+    expect(main).toContain("ui.createOpenBtn.addEventListener('click', () => openCreate(ui.createOpenBtn))");
+    expect(main).toContain("ui.createEmptyBtn.addEventListener('click', () => openCreate(ui.createEmptyBtn))");
+    const open = fn('openCreate');
+    expect(open).toContain('createOpener = opener');
+    expect(open).toContain('ui.createDialog.showModal()');
+    expect(open).toContain('ui.createName.focus()');
+    // Gaveta aberta deixa o conteúdo (onde o modal mora) inerte: fecha antes e devolve o foco ao "Menu".
+    expect(open).toMatch(/if \(shell\.state\.drawerOpen\) \{\n\s*shell\.closeDrawer\(\);\n\s*opener = ui\.shellMenuBtn;/);
+    expect(open.indexOf('shell.closeDrawer()')).toBeLessThan(open.indexOf('ui.createDialog.showModal()'));
+    const close = fn('closeCreate');
+    expect(close).toContain('if (!ui.createDialog.open || creating()) return;');
+    expect(close).toContain('lobby.clearActionError()');
+    expect(close).toContain('opener.focus()');
+    expect(close).toContain('ui.contextTitle.focus()');
+    expect(main).toContain("ui.createCancelBtn.addEventListener('click', () => closeCreate())");
+    expect(main).toContain("ui.createCloseBtn.addEventListener('click', () => closeCreate())");
+    expect(main).toContain("ui.createDialog.addEventListener('cancel', (event) => { event.preventDefault(); closeCreate(); })");
+    expect(main).toMatch(/ui\.createDialog\.addEventListener\('click', \(event\) => \{\n  if \(event\.target !== ui\.createDialog\) return;[^]*?if \(outside\) closeCreate\(\);/);
+    // Tab preso ao modal; Escape global não age nos painéis de fundo com o modal aberto.
+    expect(main).toMatch(/ui\.createDialog\.addEventListener\('keydown', \(event\) => \{\n  if \(event\.key !== 'Tab'\) return;/);
+    expect(main).toContain('if (ui.profilePanel.open || ui.createDialog.open) return;');
+    // Durante o envio: botões de fechar desabilitados; erros do create_room aparecem no modal, não atrás dele.
+    const render = fn('renderRooms');
+    expect(render).toContain('ui.createCancelBtn.disabled = busy');
+    expect(render).toContain('ui.createCloseBtn.disabled = busy');
+    expect(render).toContain("ui.createError.textContent = inDialog ? s.actionError ?? '' : ''");
+    expect(render).toContain('ui.roomsError.hidden = inDialog || s.actionError === null');
+    // Sucesso: fecha e segue a navegação atual (sala nova em destaque).
+    expect(main).toMatch(/closeCreate\(false\);\n\s*navigate\(id\);/);
   });
 
   it('aceitar convite não pede nome por sala: usa o nome global e, sem ele, o convite espera nesta aba', () => {
@@ -326,13 +361,11 @@ describe('Hybrid Midnight Gold: criação sob demanda e chat contextual', () => 
     expect(fn('applyIdentity')).toContain('renderInviteAccept(inviteAccept.state)');
   });
 
-  it('criar sala começa oculto, com Cancelar, e só abre por "Criar sala" ou sem nenhuma sala', () => {
-    expect(html).toMatch(/<section id="create-room" hidden>/);
-    expect(html).toMatch(/id="create-cancel-btn"/);
+  it('sem nenhuma sala, "Minhas salas" mostra só um botão "Criar sala" (o formulário fica no modal)', () => {
+    expect(html).toMatch(/<div id="rooms"><\/div>\s*<button id="create-empty-btn" type="button" hidden>Criar sala<\/button>/);
     const render = fn('renderRooms');
     expect(render).toContain("const noRooms = s.status === 'ready' && s.rooms.length === 0");
-    expect(render).toContain('ui.createRoom.hidden = selectedRoomId !== null || !(createOpen || noRooms)');
-    expect(main).toMatch(/ui\.createOpenBtn\.addEventListener\('click', \(\) => \{\n  createOpen = true;/);
+    expect(render).toContain('ui.createEmptyBtn.hidden = selectedRoomId !== null || !noRooms');
   });
 
   it('o chat aberto acompanha a sala escolhida, sem trocar com mensagem pendente e sem abrir sozinho', () => {
@@ -343,6 +376,6 @@ describe('Hybrid Midnight Gold: criação sob demanda e chat contextual', () => 
   });
 
   it('logout esquece criação e administração abertas', () => {
-    expect(main).toMatch(/createOpen = false;\n  adminOpen\.clear\(\);\n  shell\.reset\(\);/);
+    expect(main).toMatch(/if \(ui\.createDialog\.open\) ui\.createDialog\.close\(\);[^\n]*\n  ui\.createDialog\.hidden = true;\n  createOpener = null;\n  adminOpen\.clear\(\);\n  shell\.reset\(\);/);
   });
 });

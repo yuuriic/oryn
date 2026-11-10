@@ -55,7 +55,7 @@ export function statusText(state: LobbyState): string {
   if (state.status === 'loading') return 'Carregando salas…';
   if (state.status === 'error') return state.listError ?? 'Não foi possível carregar as salas.';
   if (state.status !== 'ready') return '';
-  if (state.rooms.length === 0) return 'Nenhuma sala ainda. Crie a primeira abaixo.';
+  if (state.rooms.length === 0) return 'Nenhuma sala ainda. Crie a primeira para conversar por voz e texto.';
   if (!state.rooms.some((r) => r.is_open)) return 'Nenhuma sala aberta.';
   return '';
 }

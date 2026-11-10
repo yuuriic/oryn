@@ -580,7 +580,7 @@ main[data-view='all'] #call-panel:has(> #participants[hidden]) > #voice-state {
   font-size: 0.875rem;
 }
 
-#create-room,
+#create-dialog,
 #invite-share,
 #invite-accept,
 #return-call,
