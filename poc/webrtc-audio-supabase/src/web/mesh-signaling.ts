@@ -138,7 +138,7 @@ export class MeshSignaling extends SupabaseSignaling {
 
   protected override async discoverNow(initial: boolean): Promise<void> {
     if (this.isClosed() || !this.sessionId) return;
-    const res = await this.o.backend.rpc<unknown[]>('get_voice_participants', { p_room_id: this.o.roomId });
+    const res = await this.participants('get_voice_participants');
     if (this.isClosed()) return;
     if (this.memberGone(res.error)) return;
     if (res.error) {

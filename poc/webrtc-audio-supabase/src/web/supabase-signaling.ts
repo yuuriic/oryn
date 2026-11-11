@@ -136,8 +136,11 @@ export const JOIN_LIMIT_MESSAGE = 'Esta conta já tem 2 sessões abertas na sala
 const JOIN_ERRORS: Record<string, string> = {
   'not-member': 'Esta conta não é membro da sala informada.',
   'limit-reached': JOIN_LIMIT_MESSAGE,
-  'invalid-argument': 'Identificador de sala inválido.',
+  'invalid-argument': 'Identificador de sala ou de canal inválido.',
   unauthorized: 'Login recusado pelo servidor.',
+  // Canais (0900).
+  'in-other-channel': 'Você já está na voz de outro canal deste espaço: saia dela antes de entrar nesta.',
+  'channel-archived': 'Este canal de voz foi arquivado: escolha outro canal.',
 };
 
 /** Código curto para log: só [a-z0-9-], no máximo 40 caracteres (mensagens longas do servidor viram "erro"). */
@@ -151,6 +154,8 @@ export const shortCode = (message: string | null | undefined): string => {
 export interface SupabaseSignalingOptions {
   backend: RoomBackend;
   roomId: string;
+  /** Canal de voz (0900). Sem ele, a voz padrão da sala pelas RPCs antigas (join_room, get_roster). */
+  channelId?: string | null;
   /** auth.uid() do usuário logado: sinais da PRÓPRIA conta (outra aba) nunca viram par. */
   selfUserId: string;
   handlers: SignalingHandlers;
@@ -283,6 +288,7 @@ export class SupabaseSignaling implements SignalingLike {
       maxQueue: 64,
       sendOptions: {},
       ...options,
+      channelId: options.channelId ?? null,
     };
     this.rate = new RateWindow(this.o.rateMax, this.o.rateWindowMs, this.o.now);
   }
@@ -297,14 +303,23 @@ export class SupabaseSignaling implements SignalingLike {
     return this.queue.length;
   }
 
+  /** Participantes vivos: do canal de voz (get_channel_participants, mesmas colunas de get_voice_participants) ou da voz
+   * padrão da sala pela RPC antiga. A recusa por pertença continua sendo `not-member` nos dois casos. */
+  protected participants(roomFn: 'get_roster' | 'get_voice_participants'): Promise<RpcResult<unknown[]>> {
+    if (this.o.channelId !== null) return this.o.backend.rpc<unknown[]>('get_channel_participants', { p_channel_id: this.o.channelId });
+    return this.o.backend.rpc<unknown[]>(roomFn, { p_room_id: this.o.roomId });
+  }
+
   // ---- SignalingLike ----
 
   async connect(): Promise<void> {
     if (this.state !== 'new') throw new Error('Sinalização já iniciada.');
-    if (!isUuid(this.o.roomId)) throw new Error(JOIN_ERRORS['invalid-argument']);
+    if (!isUuid(this.o.roomId) || (this.o.channelId !== null && !isUuid(this.o.channelId))) throw new Error(JOIN_ERRORS['invalid-argument']);
     this.state = 'connecting';
 
-    const joined = await this.o.backend.rpc<{ session_id: string; topic: string }[]>('join_room', { p_room_id: this.o.roomId });
+    const joined = this.o.channelId !== null
+      ? await this.o.backend.rpc<{ session_id: string; topic: string }[]>('join_voice_channel', { p_channel_id: this.o.channelId })
+      : await this.o.backend.rpc<{ session_id: string; topic: string }[]>('join_room', { p_room_id: this.o.roomId });
     const sid = joined.data?.[0]?.session_id;
     if (joined.error || !isUuid(sid)) {
       this.state = 'closed';
@@ -480,7 +495,7 @@ export class SupabaseSignaling implements SignalingLike {
 
   protected async discoverNow(initial: boolean): Promise<void> {
     if (this.isClosed() || !this.sessionId) return;
-    const res = await this.o.backend.rpc<unknown[]>('get_roster', { p_room_id: this.o.roomId });
+    const res = await this.participants('get_roster');
     if (this.isClosed()) return;
     if (this.memberGone(res.error)) return;
     const roster = (res.data ?? []).map(parseRosterEntry).filter((e): e is RosterEntry => e !== null);
@@ -689,7 +704,7 @@ export class SupabaseSignaling implements SignalingLike {
   protected async afterBeat(): Promise<void> {
     // Par que caiu sem bye (aba fechada, rede): some do roster em até 90 s.
     if (this.peer !== null) {
-      const roster = await this.o.backend.rpc<unknown[]>('get_roster', { p_room_id: this.o.roomId });
+      const roster = await this.participants('get_roster');
       if (this.isClosed() || this.memberGone(roster.error) || roster.error) return;
       const live = (roster.data ?? []).map(parseRosterEntry).some((e) => e?.session_id === this.peer);
       if (!live) this.dropPeer('sessão vencida');

@@ -65,6 +65,23 @@
           <button id="rooms-home-btn" class="nav-btn" type="button" aria-label="Minhas salas" title="Minhas salas"><span class="label-full">Minhas salas</span></button>
           <p class="room-nav-heading label-full" aria-hidden="true">Salas ativas</p>
           <div id="room-nav" class="room-nav"></div>
+          <!-- Canais do espaço selecionado (I-2). A lista é redesenhada pela consulta periódica; o formulário fica fora dela
+               para o texto digitado não se perder. -->
+          <section id="channel-nav" class="channel-nav label-full" aria-label="Canais do espaço" hidden>
+            <div id="channel-list"></div>
+            <form id="channel-create-form" class="channel-create" autocomplete="off" hidden>
+              <!-- maxlength conta unidades UTF-16 (um emoji vale 2): o dobro do limite real, conferido em pontos de código. -->
+              <label><span class="visually-hidden">Nome do novo canal</span>
+                <input id="channel-create-name" type="text" maxlength="80" spellcheck="false" required placeholder="Novo canal" /></label>
+              <label><span class="visually-hidden">Tipo do canal</span>
+                <select id="channel-create-kind">
+                  <option value="text" selected>Texto</option>
+                  <option value="voice">Voz</option>
+                </select>
+              </label>
+              <button id="channel-create-btn" type="submit">Criar canal</button>
+            </form>
+          </section>
           <button id="create-open-btn" class="nav-btn" type="button" aria-label="Criar sala" title="Criar sala"><span class="label-full">Criar sala</span></button>
           <div id="account-box" class="sidebar-foot">
             <p class="account-line"><span class="user-avatar" aria-hidden="true"></span><span class="account-text"><strong id="user-label"></strong><span class="muted">Conectado</span></span></p>

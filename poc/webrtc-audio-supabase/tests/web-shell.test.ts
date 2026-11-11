@@ -379,3 +379,55 @@ describe('Hybrid Midnight Gold: criação sob demanda e chat contextual', () => 
     expect(main).toMatch(/if \(ui\.createDialog\.open\) ui\.createDialog\.close\(\);[^\n]*\n  ui\.createDialog\.hidden = true;\n  createOpener = null;\n  adminOpen\.clear\(\);\n  shell\.reset\(\);/);
   });
 });
+
+describe('I-2: canais do espaço na navegação', () => {
+  const html = read('index.html');
+  const main = read('src/web/main.ts');
+  const fn = (name: string): string => new RegExp(`function ${name}[^]*?\n}\n`).exec(main)![0];
+
+  it('a barra lateral tem a lista de canais e um formulário de criação fixo (fora da lista redesenhada), ambos ocultos no início', () => {
+    const nav = /<section id="channel-nav"[^]*?<\/section>/.exec(html)![0];
+    expect(nav).toMatch(/<section id="channel-nav" class="channel-nav label-full" aria-label="Canais do espaço" hidden>/);
+    expect(nav).toMatch(/<div id="channel-list"><\/div>\s*<form id="channel-create-form"[^>]*hidden>/);
+    expect(nav).toMatch(/<select id="channel-create-kind">\s*<option value="text" selected>Texto<\/option>\s*<option value="voice">Voz<\/option>/);
+    expect(html.indexOf('id="room-nav"')).toBeLessThan(html.indexOf('id="channel-nav"'));
+  });
+
+  it('selecionar um espaço abre os canais dele; voltar à visão geral fecha', () => {
+    const nav = fn('navigate');
+    expect(nav).toContain('if (roomId === null) channels?.close();');
+    expect(nav).toContain('else channels?.open(roomId);');
+    expect(fn('renderRooms')).toContain('renderChannels();');
+  });
+
+  it('só o dono de um espaço aberto vê criar e arquivar; o servidor confere de novo', () => {
+    const render = fn('renderChannels');
+    expect(render).toContain("const canManage = room.role === 'owner' && room.is_open;");
+    expect(render).toContain("ui.channelCreateForm.hidden = !canManage || s.status !== 'ready';");
+    expect(render).toContain('canManage,');
+    expect(main).toContain('if (ui.channelCreateForm.hidden || ui.channelCreateBtn.disabled) return;');
+  });
+
+  it('voz por canal: o canal escolhido chega ao MeshSignaling; as repetições da entrada mantêm o canal', () => {
+    expect(fn('renderChannels')).toMatch(/onJoinVoice: \(channelId\) => \{\n\s*closeDrawer\(\);[^\n]*\n\s*startCall\(room\.room_id, channelId\);/);
+    expect(main).toMatch(/function startCall\(roomInput: string, channelId: string \| null = null\): void/);
+    expect(fn('startCall')).toContain('beginCall(roomId, userId, channelId)');
+    expect(fn('beginCall')).toContain('callChannelId = channelId;');
+    expect(main).toContain('signaling = new MeshSignaling({ backend, roomId, channelId, selfUserId: userId, events,');
+    expect(main).toContain('if (roomId) startCall(roomId, entryChannelId);');
+  });
+
+  it('texto por canal: o canal padrão segue pelo caminho antigo; os outros pelas RPCs de canal', () => {
+    const open = fn('openChannelChat');
+    expect(open).toContain("const target = defaultChannel(channels.state.channels, 'text')?.channel_id === channelId ? null : channelId;");
+    expect(open).toContain('chat.open(roomId, !room.is_open, target);');
+    expect(fn('renderChat')).toContain('`${chatRoomName} · #${chatChannel.name}`');
+  });
+
+  it('logout fecha os canais e esquece o canal da chamada e da entrada', () => {
+    const out = fn('showLoggedOut');
+    expect(out).toContain('channels.close();');
+    expect(out).toContain('callChannelId = null;');
+    expect(out).toContain('entryChannelId = null;');
+  });
+});

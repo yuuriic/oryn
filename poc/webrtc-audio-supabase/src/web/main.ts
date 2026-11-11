@@ -19,6 +19,7 @@ import { isUuid } from '../../supabase/functions/_shared/signal-contract.ts';
 import { authOptions, createAuthStorage, logout, restoreSession, type AuthStorage } from './auth-session.ts';
 import type { CallPhase, CallStats, PeerStates } from './call.ts';
 import { ChatController, type ChatState } from './chat.ts';
+import { ChannelsController, defaultChannel, renderChannelNav } from './channels.ts';
 import { chatStatusText, renderChatMessages } from './chat-view.ts';
 import { CallReturnController, ReturnRoomStore, type ReturnState } from './call-return.ts';
 import { parseWebConfig, type WebConfig } from './config.ts';
@@ -180,6 +181,12 @@ const ui = {
   shellMenuBtn: el<HTMLButtonElement>('shell-menu-btn'),
   roomsHomeBtn: el<HTMLButtonElement>('rooms-home-btn'),
   roomNav: el<HTMLDivElement>('room-nav'),
+  channelNav: el<HTMLElement>('channel-nav'),
+  channelList: el<HTMLDivElement>('channel-list'),
+  channelCreateForm: el<HTMLFormElement>('channel-create-form'),
+  channelCreateName: el<HTMLInputElement>('channel-create-name'),
+  channelCreateKind: el<HTMLSelectElement>('channel-create-kind'),
+  channelCreateBtn: el<HTMLButtonElement>('channel-create-btn'),
   createOpenBtn: el<HTMLButtonElement>('create-open-btn'),
   accountBox: el<HTMLElement>('account-box'),
   contextTitle: el<HTMLElement>('context-title'),
@@ -220,6 +227,10 @@ let signaling: MeshSignaling | null = null;
 const remoteAudio = new Map<string, HTMLAudioElement>();
 /** Sala da chamada atual (ou da última, até ela terminar) e se a chamada está em curso. */
 let callRoomId: string | null = null;
+/** Canal de voz da chamada (0900). `null`: a voz padrão da sala, pelo caminho antigo. */
+let callChannelId: string | null = null;
+/** Canal pedido na entrada em curso: os botões "Entrar agora" e "Verificar de novo" repetem o mesmo canal. */
+let entryChannelId: string | null = null;
 let callActive = false;
 let lobby: LobbyController;
 let callReturn: CallReturnController;
@@ -229,6 +240,7 @@ let sweepTimer: ReturnType<typeof setTimeout> | null = null;
 let inviteShare: InviteShareController;
 let inviteAccept: InviteAcceptController;
 let chat: ChatController;
+let channels: ChannelsController;
 let members: MembersController;
 let soundboard: SoundboardController;
 let soundCache: SoundCache;
@@ -390,6 +402,8 @@ function renderPhase(phase: CallPhase, error?: string): void {
     ui.participants.hidden = true;
     if (lobby.state.status !== 'idle') void lobby.refresh(); // contagens e estado das salas mudaram
   }
+  // Quem está em cada voz mudou (entrou, saiu ou caiu): a lista de canais não espera a próxima consulta.
+  if ((phase === 'waiting-peer' || phase === 'ended' || phase === 'failed') && channels?.state.status === 'ready') void channels.refresh();
   renderRooms();
 }
 
@@ -457,27 +471,34 @@ function renderStats(s: CallStats | null): void {
 
 // ---------- chamada ----------
 
-/** Sempre por ação do usuário. O microfone só é pedido depois da verificação, e o join_room ainda decide a entrada. */
-function startCall(roomInput: string): void {
+/** Sempre por ação do usuário. O microfone só é pedido depois da verificação, e o servidor (join_room ou
+ * join_voice_channel) ainda decide a entrada. Sem canal: a voz padrão da sala. */
+function startCall(roomInput: string, channelId: string | null = null): void {
   if (callActive || entryGate.checking) return; // uma chamada por vez
   callReturn.hide(); // entrar em qualquer chamada substitui a oferta de retorno
   disconnectTicket += 1; // explicação pendente de uma chamada anterior não aparece nesta
   showError(null);
   const roomId = roomInput.trim().toLowerCase();
   if (!isUuid(roomId)) return showError('ID da sala inválido: informe o UUID da sala.');
+  if (channelId !== null && !isUuid(channelId)) return showError('Canal de voz inválido.');
   if (!selfUserId) return showError('Faça login antes de entrar na chamada.');
   const userId = selfUserId;
+  entryChannelId = channelId;
   void entryGate.check(roomId).then((verdict) => {
     if (verdict !== 'go') return;
-    if (!callActive && selfUserId === userId) beginCall(roomId, userId);
+    if (!callActive && selfUserId === userId) beginCall(roomId, userId, channelId);
     else sessionLedger.releaseEntry();
   });
 }
 
-function beginCall(roomId: string, userId: string): void {
+function beginCall(roomId: string, userId: string, channelId: string | null = null): void {
   callRoomId = roomId;
+  callChannelId = channelId;
   ui.room.value = roomId;
-  ui.callRoom.textContent = lobby.state.rooms.find((r) => r.room_id === roomId)?.name ?? roomId;
+  const roomName = lobby.state.rooms.find((r) => r.room_id === roomId)?.name ?? roomId;
+  const voiceName = channels.state.roomId === roomId && channelId !== null
+    ? channels.state.channels.find((c) => c.channel_id === channelId)?.name ?? null : null;
+  ui.callRoom.textContent = voiceName === null ? roomName : `${roomName} · 🔊 ${voiceName}`;
   const backend = createSupabaseBackend(client, { url: cfg.supabaseUrl, publishableKey: cfg.publishableKey, accessToken: () => accessToken });
   ui.status.hidden = false;
   ui.log.replaceChildren();
@@ -487,7 +508,7 @@ function beginCall(roomId: string, userId: string): void {
       getUserMedia: (c) => navigator.mediaDevices.getUserMedia(c),
       createPeerConnection: (c) => new RTCPeerConnection(c),
       createRoom: (events, onDisconnected) => {
-        signaling = new MeshSignaling({ backend, roomId, selfUserId: userId, events, onDisconnected, iceServers: cfg.iceServers, tracker: sessionLedger.tracker(userId, roomId), log: (m) => call === current && log(m) });
+        signaling = new MeshSignaling({ backend, roomId, channelId, selfUserId: userId, events, onDisconnected, iceServers: cfg.iceServers, tracker: sessionLedger.tracker(userId, roomId), log: (m) => call === current && log(m) });
         return signaling;
       },
       iceServers: cfg.iceServers,
@@ -625,11 +646,11 @@ const entryRoom = (): string | null => {
 };
 ui.entryGoBtn.addEventListener('click', () => {
   const roomId = entryRoom();
-  if (roomId) startCall(roomId);
+  if (roomId) startCall(roomId, entryChannelId);
 });
 ui.entryRecheckBtn.addEventListener('click', () => {
   const roomId = entryRoom();
-  if (roomId) startCall(roomId);
+  if (roomId) startCall(roomId, entryChannelId);
 });
 ui.entryCancelBtn.addEventListener('click', () => entryGate.reset());
 
@@ -697,6 +718,7 @@ function renderRooms(): void {
       onSelect: (roomId) => navigate(roomId),
     }),
   );
+  renderChannels();
   replaceKeepingFocus(
     ui.rooms,
     renderLobby(document, s, {
@@ -750,8 +772,74 @@ function identityNote(target: HTMLElement, button: HTMLButtonElement, missing: s
   button.textContent = globalName === null ? 'Definir nome' : 'Alterar no perfil';
 }
 
+// ---------- canais do espaço (I-2) ----------
+
+/** Canais do espaço selecionado, na barra lateral. Só o dono de um espaço aberto vê criar e arquivar (o servidor confere). */
+function renderChannels(): void {
+  if (!channels) return;
+  const roomId = shell.state.selectedRoomId;
+  const room = roomId === null ? undefined : lobby.state.rooms.find((r) => r.room_id === roomId);
+  const s = channels.state;
+  ui.channelNav.hidden = !room || s.roomId !== room.room_id;
+  if (!room || s.roomId !== room.room_id) {
+    ui.channelList.replaceChildren();
+    ui.channelCreateForm.hidden = true;
+    return;
+  }
+  const canManage = room.role === 'owner' && room.is_open;
+  ui.channelCreateForm.hidden = !canManage || s.status !== 'ready';
+  ui.channelCreateBtn.disabled = s.busy !== null;
+  ui.channelCreateName.disabled = s.busy !== null;
+  ui.channelCreateKind.disabled = s.busy !== null;
+  // Chat aberto neste espaço sem canal escolhido = o texto padrão (RPCs antigas, mesmas mensagens).
+  const textId = chat?.state.status !== 'closed' && chat?.state.roomId === room.room_id
+    ? chat.state.channelId ?? defaultChannel(s.channels, 'text')?.channel_id ?? null : null;
+  const voiceId = callActive && callRoomId === room.room_id ? callChannelId ?? defaultChannel(s.channels, 'voice')?.channel_id ?? null : null;
+  replaceKeepingFocus(
+    ui.channelList,
+    renderChannelNav(document, s, {
+      canManage,
+      closed: !room.is_open,
+      openTextId: textId,
+      activeVoiceId: voiceId,
+      callBusy: callActive || entryGate.checking,
+      onOpenText: (channelId) => openChannelChat(room.room_id, channelId),
+      onJoinVoice: (channelId) => {
+        closeDrawer(); // na tela estreita, a chamada aparece no lugar da navegação
+        startCall(room.room_id, channelId);
+      },
+      onArchive: (channelId) => void channels.archive(channelId),
+    }),
+  );
+}
+
+/** Abre o chat de um canal de texto. O canal padrão usa o caminho antigo da sala: as mensagens são as mesmas. */
+function openChannelChat(roomId: string, channelId: string): void {
+  const room = lobby.state.rooms.find((r) => r.room_id === roomId);
+  if (!room) return;
+  const target = defaultChannel(channels.state.channels, 'text')?.channel_id === channelId ? null : channelId;
+  chat.open(roomId, !room.is_open, target);
+  closeDrawer();
+  ui.chat.scrollIntoView({ block: 'nearest' });
+  ui.chatInput.focus({ preventScroll: true });
+}
+
+ui.channelCreateForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  if (ui.channelCreateForm.hidden || ui.channelCreateBtn.disabled) return; // só o dono, e um envio por vez
+  const kind = ui.channelCreateKind.value === 'voice' ? 'voice' : 'text';
+  void channels.create(ui.channelCreateName.value, kind).then((id) => {
+    if (id === null) return;
+    ui.channelCreateName.value = '';
+    // Canal de texto novo: já abre o chat dele. Voz: fica na lista, para entrar quando quiser.
+    if (kind === 'text' && channels.state.roomId) openChannelChat(channels.state.roomId, id);
+  });
+});
+
 /** Abre uma sala ou a visão geral. Só muda o que é mostrado: entrar na chamada segue sendo uma ação à parte. */
 function navigate(roomId: string | null): void {
+  if (roomId === null) channels?.close();
+  else channels?.open(roomId);
   const covering = shell.state.drawerOpen;
   // Chat contextual: o chat aberto acompanha a sala escolhida. Não troca com mensagem pendente, que sumiria da tela.
   const room = roomId === null ? undefined : lobby.state.rooms.find((r) => r.room_id === roomId);
@@ -905,11 +993,16 @@ function openChat(roomId: string): void {
 }
 
 let chatRenderedRoom: string | null = null;
+let chatRenderedChannel: string | null = null;
 let chatDeniedRefreshed = false;
 
 function renderChat(s: ChatState): void {
   ui.chat.hidden = s.status === 'closed';
-  ui.chatRoom.textContent = lobby.state.rooms.find((r) => r.room_id === s.roomId)?.name ?? '';
+  const chatRoomName = lobby.state.rooms.find((r) => r.room_id === s.roomId)?.name ?? '';
+  const chatChannel = channels?.state.roomId === s.roomId
+    ? s.channelId === null ? defaultChannel(channels.state.channels, 'text') : channels.state.channels.find((c) => c.channel_id === s.channelId)
+    : undefined;
+  ui.chatRoom.textContent = chatChannel ? `${chatRoomName} · #${chatChannel.name}` : chatRoomName;
   setMessage(ui.chatStatus, chatStatusText(s));
   // Só desce sozinho se a pessoa já estava no fim: quem está lendo o histórico não perde o lugar.
   const box = ui.chatMessages;
@@ -932,7 +1025,9 @@ function renderChat(s: ChatState): void {
   chatRenderedRoom = s.roomId;
   ui.chatForm.hidden = s.readOnly || s.status === 'denied';
   ui.chatSendBtn.disabled = s.status !== 'ready';
-  if (roomChanged) renderRooms(); // o botão "Chat aberto": sem redesenhar o lobby a cada mensagem
+  const channelChanged = chatRenderedChannel !== s.channelId;
+  chatRenderedChannel = s.channelId;
+  if (roomChanged || channelChanged) renderRooms(); // "Chat aberto" e o canal em destaque: sem redesenhar a cada mensagem
   // Recusa do servidor: a pertença acabou. A lista de salas deixa de mostrar esta.
   if (s.status === 'denied' && !chatDeniedRefreshed) {
     chatDeniedRefreshed = true;
@@ -1079,6 +1174,10 @@ function showLoggedOut(): void {
   entryGate.reset();
   chat.close();
   members.close();
+  channels.close();
+  callChannelId = null;
+  entryChannelId = null;
+  ui.channelCreateName.value = '';
   ui.chatInput.value = '';
   lobby.reset();
   inviteShare.reset();
@@ -1435,6 +1534,23 @@ try {
     clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
     onChange: renderChat,
     onRoomClosed: () => void lobby.refresh(),
+  });
+  channels = new ChannelsController({
+    rpc: (fn, args) => backend.rpc(fn, args),
+    confirm: (message) => window.confirm(message),
+    isHidden: () => document.hidden,
+    setTimer: (fn, ms) => setTimeout(fn, ms),
+    clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+    onChange: () => {
+      renderChannels();
+      if (chat.state.status !== 'closed') renderChat(chat.state); // o título do chat usa o nome do canal
+    },
+    // Canal arquivado com o chat aberto nele: volta para o texto padrão do espaço (o histórico segue legível na lista).
+    onChannelGone: (channelId) => {
+      const { roomId } = chat.state;
+      const room = lobby.state.rooms.find((r) => r.room_id === roomId);
+      if (room && chat.state.channelId === channelId && chat.state.pending.length === 0) chat.open(room.room_id, !room.is_open, null);
+    },
   });
   client.auth.onAuthStateChange((event, session) => {
     // Sem sessão, guarda o último JWT: ainda é preciso sair da sala (ver endByAuth); showLoggedOut o descarta.

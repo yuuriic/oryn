@@ -1,7 +1,7 @@
 // Renderização do chat. Só createElement + textContent: as mensagens vêm de outros usuários e NUNCA passam
 // por HTML (nada de innerHTML/insertAdjacentHTML; há teste). O documento é injetado para os testes.
 
-import { CHAT_DENIED, CHAT_LOAD_FAILED, CHAT_READ_ONLY, CHAT_STALE, type ChatState } from './chat.ts';
+import { CHAT_ARCHIVED, CHAT_DENIED, CHAT_LOAD_FAILED, CHAT_READ_ONLY, CHAT_STALE, type ChatState } from './chat.ts';
 import type { ViewDocument } from './rooms-view.ts';
 
 export interface ChatViewOptions {
@@ -22,6 +22,7 @@ export function chatStatusText(state: ChatState): { tone: 'info' | 'error'; text
   if (state.status === 'loading') return { tone: 'info', text: 'Carregando mensagens…' };
   if (state.stale) return { tone: 'error', text: CHAT_STALE };
   if (state.notice) return { tone: 'error', text: state.notice };
+  if (state.archived) return { tone: 'info', text: CHAT_ARCHIVED };
   if (state.readOnly) return { tone: 'info', text: CHAT_READ_ONLY };
   return null;
 }
