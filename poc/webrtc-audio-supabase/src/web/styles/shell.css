@@ -495,3 +495,158 @@ main:has(> #error:not([hidden])) .shell-main {
     display: none;
   }
 }
+
+/* ---------- Canais do espaço selecionado (I-2) ---------- */
+/* Abaixo das salas, com rolagem própria: uma lista longa de canais não empurra a conta para fora da tela. */
+.channel-nav {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2) var(--space-2) var(--space-1);
+  border-top: 1px solid var(--color-divider);
+}
+
+.channel-heading {
+  margin: var(--space-2) var(--space-1) var(--space-1);
+  color: var(--color-text-secondary);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.channel-list,
+.channel-people {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.channel-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.channel-link {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  min-height: 40px;
+  margin: 0;
+  padding: var(--space-1) var(--space-2);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  color: var(--color-text-secondary);
+  font-weight: 500;
+  text-align: left;
+}
+
+.channel-link:hover:not(:disabled) {
+  background: var(--color-elevated);
+  color: var(--color-text);
+}
+
+/* Seleção visível também sem cor: borda e peso do nome. */
+.channel-link[aria-current='true'] {
+  background: var(--color-accent-soft);
+  border-color: var(--color-accent);
+  color: var(--color-text);
+}
+
+.channel-link[aria-current='true'] .channel-name {
+  font-weight: 700;
+}
+
+.channel-link.channel-in-call {
+  border-color: var(--color-gold);
+}
+
+.channel-link:disabled:not([aria-current='true']) {
+  opacity: 0.6;
+}
+
+.channel-icon {
+  flex: none;
+  width: 1.25rem;
+  text-align: center;
+  color: var(--color-text-secondary);
+}
+
+.channel-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.channel-archive {
+  flex: none;
+  min-height: 32px;
+  margin: 0;
+  padding: 0 var(--space-2);
+  font-size: 0.75rem;
+}
+
+.channel-people {
+  margin: 0 0 var(--space-1) calc(1.25rem + var(--space-4));
+  color: var(--color-text-secondary);
+  font-size: 0.8125rem;
+}
+
+.channel-people li {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.channel-status,
+.channel-message {
+  margin: var(--space-2) var(--space-1);
+  font-size: 0.8125rem;
+}
+
+.channel-create {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 var(--space-1);
+}
+
+.channel-create label {
+  margin: 0;
+}
+
+.channel-create input,
+.channel-create select {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 40px;
+  margin: 0;
+}
+
+.channel-create button {
+  grid-column: 1 / -1;
+  min-height: 40px;
+  margin: 0;
+}
+
+/* Com um espaço aberto, as salas ficam na altura delas (até 40% da tela, com rolagem própria) e os canais ocupam o resto:
+   o espaço selecionado nunca é espremido. Sem espaço aberto, as salas seguem ocupando a coluna como antes. */
+.sidebar:has(#channel-nav:not([hidden])) .room-nav {
+  flex: 0 0 auto;
+  max-height: 40vh;
+}
+
+/* Mínimo utilizável para os canais; o que passar disso rola dentro da área deles. Em telas baixas, a barra inteira rola:
+   nada (nem a conta e o "Sair") fica fora de alcance. */
+.sidebar:has(#channel-nav:not([hidden])) .channel-nav {
+  min-height: min(9rem, 30vh);
+}
+
+.sidebar:has(#channel-nav:not([hidden])) {
+  overflow-y: auto;
+}

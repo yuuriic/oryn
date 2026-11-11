@@ -5,7 +5,7 @@ import { PeerCall, type CallCallbacks, type CallPhase } from '../src/web/call.ts
 import { MAX_MESH_PEERS, MeshSignaling, pickPrimaries } from '../src/web/mesh-signaling.ts';
 import { MeshCall, type ParticipantView } from '../src/web/mesh-call.ts';
 import { SupabaseSignaling, pairEpoch } from '../src/web/supabase-signaling.ts';
-import { FakePeerConnection, FakeStream, FakeSupabase, ROOM, USERS, settle } from './helpers/web-fakes.ts';
+import { FakePeerConnection, FakeStream, FakeSupabase, ROOM, USERS, VOICE_2, VOICE_DEFAULT, settle } from './helpers/web-fakes.ts';
 
 const STUN = [{ urls: ['stun:stun.l.google.com:19302'] }];
 const ALL = [USERS.owner, USERS.member, USERS.third, USERS.fourth];
@@ -28,7 +28,7 @@ interface Client {
 let server: FakeSupabase;
 const clients: Client[] = [];
 
-function client(user: string, negotiationTimeoutMs?: number): Client {
+function client(user: string, negotiationTimeoutMs?: number, channelId: string | null = null): Client {
   const c: Client = { user, call: undefined as unknown as MeshCall, phases: [], errors: [], logs: [], problems: [], participants: [], standby: false, audio: new Map(), streams: [], pcs: [], signaling: null };
   c.call = new MeshCall(
     {
@@ -43,7 +43,7 @@ function client(user: string, negotiationTimeoutMs?: number): Client {
         return pc as unknown as RTCPeerConnection;
       },
       createRoom: (events, onDisconnected) => {
-        c.signaling = new MeshSignaling({ backend: server.backend(user), roomId: ROOM, selfUserId: user, events, onDisconnected, iceServers: STUN, log: (m) => c.logs.push(m) });
+        c.signaling = new MeshSignaling({ backend: server.backend(user), roomId: ROOM, channelId, selfUserId: user, events, onDisconnected, iceServers: STUN, log: (m) => c.logs.push(m) });
         return c.signaling;
       },
       iceServers: STUN,
@@ -569,5 +569,63 @@ describe('compatibilidade com o cliente 1:1 anterior', () => {
     old.end();
     await settle();
     expect(a!.call.phase).toBe('waiting-peer');
+  });
+});
+
+describe('canais de voz (0900): a malha fica no canal escolhido', () => {
+  async function enterIn(channelId: string | null, ...users: string[]): Promise<Client[]> {
+    const list: Client[] = [];
+    for (const u of users) {
+      const c = client(u, undefined, channelId);
+      list.push(c);
+      await c.call.start();
+      await settle();
+    }
+    await settle();
+    return list;
+  }
+
+  it('dois usuários no segundo canal conectam entre si; quem está na voz padrão fica fora da malha deles', async () => {
+    const [def] = await enterIn(null, USERS.owner);
+    const inV2 = await enterIn(VOICE_2, USERS.member, USERS.third);
+    fullMesh(inV2);
+    // Isolamento: nenhuma conexão entre canais; a voz padrão segue esperando alguém.
+    expect(open(def!)).toHaveLength(0);
+    expect(def!.call.phase).toBe('waiting-peer');
+    for (const c of inV2) expect(c.participants.map((p) => p.displayName).sort()).toEqual(['it-member', 'it-third'].filter((n) => n !== server.members.get(c.user)));
+    // O cliente com canal usa só as RPCs da 0900; o da voz padrão, só as antigas.
+    const byUser = (u: string) => server.calls.filter((x) => x.user === u).map((x) => x.fn);
+    expect(byUser(USERS.member)).toContain('join_voice_channel');
+    expect(byUser(USERS.member)).toContain('get_channel_participants');
+    expect(byUser(USERS.member)).not.toContain('join_room');
+    expect(byUser(USERS.member)).not.toContain('get_voice_participants');
+    expect(byUser(USERS.owner)).toContain('join_room');
+    expect(byUser(USERS.owner)).not.toContain('join_voice_channel');
+    expect(server.calls.filter((x) => x.fn === 'join_voice_channel').every((x) => x.args['p_channel_id'] === VOICE_2)).toBe(true);
+  });
+
+  it('a voz padrão escolhida pelo canal (join_voice_channel) encontra quem entrou pelo caminho antigo (join_room)', async () => {
+    const [oldClient] = await enterIn(null, USERS.owner);
+    const [newClient] = await enterIn(VOICE_DEFAULT, USERS.member);
+    fullMesh([oldClient!, newClient!]);
+  });
+
+  it('uma voz por espaço: entrar em outro canal com uma sessão viva é recusado com mensagem clara', async () => {
+    await enterIn(null, USERS.member);
+    const second = client(USERS.member, undefined, VOICE_2);
+    await second.call.start();
+    await settle();
+    expect(second.call.phase).toBe('failed');
+    expect(second.errors.join(' ')).toMatch(/já está na voz de outro canal deste espaço/);
+    expect(second.streams.every((s) => s.track.readyState === 'ended')).toBe(true); // o microfone foi liberado
+  });
+
+  it('canal de voz arquivado: a entrada é recusada com mensagem clara', async () => {
+    server.archivedChannels.add(VOICE_2);
+    const c = client(USERS.member, undefined, VOICE_2);
+    await c.call.start();
+    await settle();
+    expect(c.call.phase).toBe('failed');
+    expect(c.errors.join(' ')).toMatch(/canal de voz foi arquivado/);
   });
 });

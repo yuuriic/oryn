@@ -1,4 +1,5 @@
-// Chat persistente por sala, pelas RPCs send_room_message e list_room_messages (migração 0500). Sem DOM: o
+// Chat persistente por sala, pelas RPCs send_room_message e list_room_messages (migração 0500), ou por canal de texto,
+// pelas RPCs send_channel_message e list_channel_messages (migração 0900). Sem DOM: o
 // estado e as regras ficam aqui, e a renderização em chat-view.ts. Não usa a sinalização nem o Realtime, e nada aqui
 // fala com o PeerCall: o chat funciona dentro ou fora de uma chamada, e uma falha dele nunca alcança a chamada.
 //
@@ -26,12 +27,14 @@ export const CHAT_LOAD_FAILED = 'Não foi possível carregar as mensagens (falha
 export const CHAT_STALE = 'Sem conexão com o servidor: as mensagens podem estar desatualizadas. Tentando de novo…';
 export const CHAT_DENIED = 'Esta conta não tem acesso às mensagens desta sala.';
 export const CHAT_READ_ONLY = 'Sala encerrada: as mensagens ficam somente para leitura.';
+export const CHAT_ARCHIVED = 'Canal arquivado: as mensagens ficam somente para leitura.';
 export const CHAT_OLDER_FAILED = 'Não foi possível carregar as mensagens anteriores. Tente de novo.';
 export const CHAT_INVALID_BODY = `Mensagem vazia, longa demais (limite de ${MAX_CHAT_BODY} caracteres) ou com caracteres não permitidos.`;
 
 const SEND_ERRORS: Record<string, string> = {
   unauthorized: 'Sem permissão para enviar nesta sala.',
   'room-closed': 'A sala foi encerrada: a mensagem não foi enviada.',
+  'channel-archived': 'O canal foi arquivado: a mensagem não foi enviada.',
   'rate-limited': 'Muitas mensagens em pouco tempo. Aguarde um pouco e repita.',
   'invalid-argument': 'O servidor recusou esta mensagem.',
 };
@@ -49,6 +52,10 @@ export interface PendingMessage {
 
 export interface ChatState {
   roomId: string | null;
+  /** Canal de texto aberto. `null`: o chat da sala (o canal padrão, pelas RPCs antigas). */
+  channelId: string | null;
+  /** O canal foi arquivado: leitura só, com aviso próprio. */
+  archived: boolean;
   status: ChatStatus;
   /** Confirmadas pelo servidor, em ordem crescente de seq. */
   messages: ChatMessage[];
@@ -78,7 +85,7 @@ export interface ChatDeps {
   onRoomClosed?(roomId: string): void;
 }
 
-const CLOSED: ChatState = { roomId: null, status: 'closed', messages: [], pending: [], hasOlder: false, loadingOlder: false, readOnly: false, stale: false, skipped: 0, notice: null };
+const CLOSED: ChatState = { roomId: null, channelId: null, archived: false, status: 'closed', messages: [], pending: [], hasOlder: false, loadingOlder: false, readOnly: false, stale: false, skipped: 0, notice: null };
 
 /** Resposta das RPCs. `null` = fora do contrato (não é lista, ou alguma linha sem exatamente as colunas): é erro. */
 export function parseChatRows(data: unknown): { rows: ChatMessage[]; skipped: number; lastSeq: number; count: number } | null {
@@ -126,19 +133,26 @@ export class ChatController {
     });
   }
 
+  /** RPC e argumentos do alvo aberto: canal (0900) ou sala (0500). */
+  private target(kind: 'list' | 'send', extra: Record<string, unknown>): [string, Record<string, unknown>] {
+    const channel = this.s.channelId;
+    if (channel !== null) return [kind === 'list' ? 'list_channel_messages' : 'send_channel_message', { p_channel_id: channel, ...extra }];
+    return [kind === 'list' ? 'list_room_messages' : 'send_room_message', { p_room_id: this.s.roomId, ...extra }];
+  }
+
   private set(patch: Partial<ChatState>): void {
     this.s = { ...this.s, ...patch };
     this.deps.onChange(this.s);
   }
 
-  /** Abre o chat de uma sala. A mesma sala, já aberta, só atualiza o modo de leitura. */
-  open(roomId: string, readOnly: boolean): void {
-    if (this.s.roomId === roomId && this.s.status !== 'closed') {
-      if (this.s.readOnly !== readOnly) this.set({ readOnly });
+  /** Abre o chat de uma sala ou de um canal de texto dela. O mesmo alvo, já aberto, só atualiza o modo de leitura. */
+  open(roomId: string, readOnly: boolean, channelId: string | null = null): void {
+    if (this.s.roomId === roomId && this.s.channelId === channelId && this.s.status !== 'closed') {
+      if (this.s.readOnly !== (readOnly || this.s.archived)) this.set({ readOnly: readOnly || this.s.archived });
       return;
     }
     this.stop();
-    this.set({ ...CLOSED, roomId, status: 'loading', readOnly });
+    this.set({ ...CLOSED, roomId, channelId, status: 'loading', readOnly });
     void this.tick();
   }
 
@@ -164,7 +178,7 @@ export class ChatController {
   /** A lista de salas foi atualizada: a sala aberta pode ter sido encerrada. */
   syncRooms(rooms: readonly RoomSummary[]): void {
     const room = rooms.find((r) => r.room_id === this.s.roomId);
-    if (room && this.s.readOnly === room.is_open) this.set({ readOnly: !room.is_open });
+    if (room && this.s.readOnly !== (!room.is_open || this.s.archived)) this.set({ readOnly: !room.is_open || this.s.archived });
   }
 
   private schedule(ms: number): void {
@@ -187,7 +201,8 @@ export class ChatController {
     try {
       const pages = Math.ceil(this.s.messages.length / CHAT_CATCH_UP) + 1;
       for (let i = 0; i < pages; i += 1) {
-        const res = await this.call('list_room_messages', { p_room_id: room, p_before_seq: before, p_limit: CHAT_CATCH_UP });
+        if (room !== this.s.roomId) return;
+        const res = await this.call(...this.target('list', { p_before_seq: before, p_limit: CHAT_CATCH_UP }));
         if (gen !== this.generation) return;
         const parsed = res.error ? null : parseChatRows(res.data);
         if (!parsed || parsed.rows.length === 0) return;
@@ -228,8 +243,7 @@ export class ChatController {
     if (roomId === null) return;
     this.polling = true;
     const first = !this.loaded;
-    const args = first ? { p_room_id: roomId, p_limit: CHAT_PAGE_SIZE } : { p_room_id: roomId, p_after_seq: this.cursor, p_limit: CHAT_CATCH_UP };
-    const res = await this.call('list_room_messages', args);
+    const res = await this.call(...this.target('list', first ? { p_limit: CHAT_PAGE_SIZE } : { p_after_seq: this.cursor, p_limit: CHAT_CATCH_UP }));
     if (gen !== this.generation) return;
     this.polling = false;
 
@@ -270,7 +284,7 @@ export class ChatController {
     const before = this.s.messages[0]?.seq;
     if (roomId === null || before === undefined) return;
     this.set({ loadingOlder: true, notice: null });
-    const res = await this.call('list_room_messages', { p_room_id: roomId, p_before_seq: before, p_limit: CHAT_PAGE_SIZE });
+    const res = await this.call(...this.target('list', { p_before_seq: before, p_limit: CHAT_PAGE_SIZE }));
     if (gen !== this.generation) return;
     const parsed = res.error ? null : parseChatRows(res.data);
     if (!parsed) {
@@ -320,7 +334,7 @@ export class ChatController {
     const roomId = this.s.roomId;
     const message = this.s.pending.find((p) => p.nonce === nonce);
     if (roomId === null || !message) return; // já confirmada pela consulta periódica, ou descartada
-    const res = await this.call('send_room_message', { p_room_id: roomId, p_client_nonce: nonce, p_body: message.body });
+    const res = await this.call(...this.target('send', { p_client_nonce: nonce, p_body: message.body }));
     if (gen !== this.generation) return;
     const parsed = res.error ? null : parseChatRows(res.data);
     if (parsed && parsed.rows[0]?.client_nonce === nonce) {
@@ -332,6 +346,7 @@ export class ChatController {
       this.deps.onRoomClosed?.(roomId);
       this.set({ readOnly: true });
     }
+    if (code === 'channel-archived') this.set({ readOnly: true, archived: true });
     if (this.s.pending.some((p) => p.nonce === nonce)) this.patchPending(nonce, { state: 'failed', error: SEND_ERRORS[code] ?? SEND_FAILED });
   }
 }

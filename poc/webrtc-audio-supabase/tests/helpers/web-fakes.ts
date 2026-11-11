@@ -144,6 +144,10 @@ export async function settle(rounds = 400): Promise<void> {
 // ---------- backend Supabase em memória ----------
 
 export const ROOM = '0c2a0000-0000-4000-8000-000000000001';
+/** Canais de voz da sala (0900): o padrão (caminho antigo, join_room) e um segundo, criado pelo dono. */
+export const VOICE_DEFAULT = '0c2a0000-0000-4000-8000-0000000000d1';
+export const VOICE_2 = '0c2a0000-0000-4000-8000-0000000000d2';
+export const TEXT_DEFAULT = '0c2a0000-0000-4000-8000-0000000000e1';
 export const USERS = {
   owner: '0a000000-0000-4000-8000-00000000000a',
   member: '0b000000-0000-4000-8000-00000000000b',
@@ -156,6 +160,8 @@ interface Session {
   id: string;
   user: string;
   room: string;
+  /** Canal de voz (0900). */
+  channel: string;
   revoked: boolean;
   lastSeen: number;
   createdAt: number;
@@ -228,8 +234,32 @@ export class FakeSupabase {
   private fresh(s: Session): boolean {
     return !s.revoked && this.clock() - s.lastSeen < 90_000;
   }
-  private live(room: string): Session[] {
-    return [...this.sessions.values()].filter((s) => s.room === room && this.fresh(s)).sort((a, b) => a.createdAt - b.createdAt);
+  private live(room: string, channel: string = VOICE_DEFAULT): Session[] {
+    return [...this.sessions.values()].filter((s) => s.room === room && s.channel === channel && this.fresh(s)).sort((a, b) => a.createdAt - b.createdAt);
+  }
+  /** Canais de voz conhecidos e arquivados (0900). */
+  readonly voiceChannels = new Set<string>([VOICE_DEFAULT, VOICE_2]);
+  readonly archivedChannels = new Set<string>();
+  private openSession(user: string, room: string, channel: string): unknown {
+    if (room !== ROOM || this.closed || !this.members.has(user)) throw new Error('not-member');
+    if (!this.voiceChannels.has(channel)) throw new Error('invalid-argument');
+    if (this.archivedChannels.has(channel)) throw new Error('channel-archived');
+    // Uma voz por usuário em cada espaço; sessão sem batimento não prende.
+    if ([...this.sessions.values()].some((s) => s.user === user && s.room === room && s.channel !== channel && this.fresh(s))) throw new Error('in-other-channel');
+    if (this.live(room, channel).filter((s) => s.user === user).length >= 2) throw new Error('limit-reached');
+    const id = this.nextSessionIds.shift() ?? this.uuid();
+    this.sessions.set(id, { id, user, room, channel, revoked: false, lastSeen: this.clock(), createdAt: this.clock() + this.counter / 1000 });
+    this.control(room, id, 'hello', { session_id: id, label: this.members.get(user) }, channel);
+    return [{ session_id: id, topic: `oryn:s:${id}` }];
+  }
+  private participantsOf(user: string, room: string, channel: string): unknown[] {
+    return this.live(room, channel).map((s) => ({
+      session_id: s.id,
+      participant_ref: s.user.replace(/-/g, ''),
+      display_name: this.members.get(s.user)!,
+      is_self: s.user === user,
+      joined_at: new Date(s.createdAt).toISOString(),
+    }));
   }
   private deliver(topic: string, event: string, payload: unknown): void {
     if (this.silent) return;
@@ -245,8 +275,8 @@ export class FakeSupabase {
     void Promise.resolve().then(send);
   }
   /** publish_control: só para as OUTRAS sessões vivas da sala; o realtime.send injeta `id`. */
-  private control(room: string, except: string, event: 'hello' | 'bye', payload: Record<string, unknown>): void {
-    for (const s of this.live(room)) if (s.id !== except) this.deliver(`oryn:s:${s.id}`, event, { ...payload, id: this.uuid() });
+  private control(room: string, except: string, event: 'hello' | 'bye', payload: Record<string, unknown>, channel: string = VOICE_DEFAULT): void {
+    for (const s of this.live(room, channel)) if (s.id !== except) this.deliver(`oryn:s:${s.id}`, event, { ...payload, id: this.uuid() });
   }
 
   /** Cliente de UM usuário (o "JWT" dele). */
@@ -282,14 +312,17 @@ export class FakeSupabase {
 
   private rpc(user: string, fn: string, a: Record<string, unknown>): unknown {
     switch (fn) {
-      case 'join_room': {
-        const room = String(a['p_room_id']);
-        if (room !== ROOM || this.closed || !this.members.has(user)) throw new Error('not-member');
-        if (this.live(room).filter((s) => s.user === user).length >= 2) throw new Error('limit-reached');
-        const id = this.nextSessionIds.shift() ?? this.uuid();
-        this.sessions.set(id, { id, user, room, revoked: false, lastSeen: this.clock(), createdAt: this.clock() + this.counter / 1000 });
-        this.control(room, id, 'hello', { session_id: id, label: this.members.get(user) });
-        return [{ session_id: id, topic: `oryn:s:${id}` }];
+      case 'join_room':
+        return this.openSession(user, String(a['p_room_id']), VOICE_DEFAULT);
+      case 'join_voice_channel': {
+        const channel = String(a['p_channel_id']);
+        if (!this.voiceChannels.has(channel)) throw new Error('not-member');
+        return this.openSession(user, ROOM, channel);
+      }
+      case 'get_channel_participants': {
+        const channel = String(a['p_channel_id']);
+        if (!this.voiceChannels.has(channel) || this.closed || !this.members.has(user)) throw new Error('not-member');
+        return this.participantsOf(user, ROOM, channel);
       }
       case 'get_roster': {
         const room = String(a['p_room_id']);
@@ -318,7 +351,7 @@ export class FakeSupabase {
         if (!s || s.user !== user) throw new Error('session-invalid');
         if (s.revoked) return null; // como a 0200: sessão já encerrada (ou revogada pelo close_room) só retorna
         s.revoked = true;
-        this.control(s.room, s.id, 'bye', { session_id: s.id });
+        this.control(s.room, s.id, 'bye', { session_id: s.id }, s.channel);
         return null;
       }
       case 'ack_signals': {
@@ -361,7 +394,7 @@ export class FakeSupabase {
     const from = this.sessions.get(r.session_id);
     if (!from || from.user !== user || !this.fresh(from)) throw new RpcError('session-invalid');
     const to = this.sessions.get(r.to_session_id);
-    if (!to || to.room !== from.room || !this.fresh(to)) throw new RpcError('recipient-invalid');
+    if (!to || to.room !== from.room || to.channel !== from.channel || !this.fresh(to)) throw new RpcError('recipient-invalid');
     const key = `${r.session_id}|${r.client_msg_id}`;
     const existing = this.log.get(key);
     if (existing) {

@@ -467,7 +467,7 @@ class FakeEl {
   }
 }
 const fakeDoc = { createElement: (tag: string) => new FakeEl(tag) as unknown as HTMLElement };
-const baseState = (over: Partial<ChatState> = {}): ChatState => ({ roomId: ROOM, status: 'ready', messages: [], pending: [], hasOlder: false, loadingOlder: false, readOnly: false, stale: false, skipped: 0, notice: null, ...over });
+const baseState = (over: Partial<ChatState> = {}): ChatState => ({ roomId: ROOM, channelId: null, archived: false, status: 'ready', messages: [], pending: [], hasOlder: false, loadingOlder: false, readOnly: false, stale: false, skipped: 0, notice: null, ...over });
 const render = (state: ChatState, on: { retry?: string[]; discard?: string[]; older?: number[] } = {}) =>
   renderChatMessages(fakeDoc, state, {
     onRetry: (n) => on.retry?.push(n),
@@ -653,4 +653,67 @@ describe('ponta a ponta com o banco real em memória', () => {
       await db.close();
     }
   }, 120_000);
+});
+
+describe('chat por canal de texto (0900)', () => {
+  const CHANNEL = '33333333-3333-4333-8333-333333333333';
+  const CHANNEL_2 = '44444444-4444-4444-8444-444444444444';
+
+  it('com canal, lista, pagina, consulta e envia pelas RPCs de canal (p_channel_id); sem canal, segue nas da sala', async () => {
+    const t = harness({ list_channel_messages: () => ({ data: [row(4), row(7)], error: null }), send_channel_message: (a) => ({ data: [row(9, { is_mine: true, client_nonce: String(a['p_client_nonce']) })], error: null }) });
+    t.chat.open(ROOM, false, CHANNEL);
+    await flush();
+    expect(t.chat.state).toMatchObject({ roomId: ROOM, channelId: CHANNEL, status: 'ready' });
+    expect(t.calls[0]).toEqual({ fn: 'list_channel_messages', args: { p_channel_id: CHANNEL, p_limit: CHAT_PAGE_SIZE } });
+    await t.fire(CHAT_POLL_MS);
+    expect(t.calls.at(-1)).toEqual({ fn: 'list_channel_messages', args: { p_channel_id: CHANNEL, p_after_seq: 7, p_limit: CHAT_CATCH_UP } });
+    expect(t.chat.send('oi')).toBe(true);
+    await flush();
+    const send = t.calls.find((c) => c.fn === 'send_channel_message')!;
+    expect(send.args).toEqual({ p_channel_id: CHANNEL, p_client_nonce: nonce(1), p_body: 'oi' });
+    expect(t.calls.some((c) => c.fn === 'list_room_messages' || c.fn === 'send_room_message' || 'p_room_id' in c.args)).toBe(false);
+    // Sem canal: exatamente o caminho antigo.
+    const old = await opened();
+    expect(old.calls[0]).toEqual({ fn: 'list_room_messages', args: { p_room_id: ROOM, p_limit: CHAT_PAGE_SIZE } });
+    expect(old.chat.state.channelId).toBeNull();
+  });
+
+  it('trocar de canal no mesmo espaço recarrega e descarta respostas do canal anterior', async () => {
+    let release: ((r: RpcResult<unknown[]>) => void) | null = null;
+    const t = harness({
+      list_channel_messages: (a) => (a['p_channel_id'] === CHANNEL ? new Promise((r) => { release = r; }) : { data: [row(2, { body: 'do canal 2' })], error: null }),
+    });
+    t.chat.open(ROOM, false, CHANNEL);
+    await flush();
+    t.chat.open(ROOM, false, CHANNEL_2);
+    await flush();
+    release!({ data: [row(1, { body: 'do canal 1' })], error: null }); // resposta atrasada do canal anterior
+    await flush();
+    expect(t.chat.state.channelId).toBe(CHANNEL_2);
+    expect(t.chat.state.messages.map((m) => m.body)).toEqual(['do canal 2']);
+  });
+
+  it('canal arquivado ao enviar: a mensagem falha com aviso próprio e o chat fica só para leitura', async () => {
+    const t = harness({ list_channel_messages: () => ({ data: [], error: null }), send_channel_message: () => ({ data: null, error: 'channel-archived' }) });
+    t.chat.open(ROOM, false, CHANNEL);
+    await flush();
+    expect(t.chat.send('tarde demais')).toBe(true);
+    await flush();
+    expect(t.chat.state.pending[0]).toMatchObject({ state: 'failed', error: 'O canal foi arquivado: a mensagem não foi enviada.' });
+    expect(t.chat.state).toMatchObject({ readOnly: true, archived: true });
+    expect(chatStatusText(t.chat.state)).toEqual({ tone: 'info', text: 'Canal arquivado: as mensagens ficam somente para leitura.' });
+    expect(t.chat.send('de novo')).toBe(false);
+    // A atualização da lista de salas não desfaz o arquivamento.
+    t.chat.syncRooms([{ room_id: ROOM, name: 'Sala', role: 'member', is_open: true, closed_at: null, member_count: 2, max_members: 4, created_at: '2026-11-06T12:00:00+00:00' } as RoomSummary]);
+    expect(t.chat.state.readOnly).toBe(true);
+    expect(t.closed).toEqual([]); // não é sala encerrada
+  });
+
+  it('sem acesso ao canal (unauthorized): negado, sem insistir', async () => {
+    const t = harness({ list_channel_messages: () => ({ data: null, error: 'unauthorized' }) });
+    t.chat.open(ROOM, false, CHANNEL);
+    await flush();
+    expect(t.chat.state.status).toBe('denied');
+    expect(t.delays()).toEqual([]);
+  });
 });

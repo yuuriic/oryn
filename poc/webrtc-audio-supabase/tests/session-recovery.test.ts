@@ -802,8 +802,9 @@ describe('estático: a página', () => {
   const ledger = code(read('src/web/session-ledger.ts'));
 
   it('só cria a chamada, e portanto o microfone, depois do veredito `go`', () => {
-    const start = /function startCall\(roomInput: string\): void \{([\s\S]*?)\n\}/.exec(main)?.[1] ?? '';
-    expect(start).toMatch(/entryGate\.check\(roomId\)\.then\(\(verdict\) => \{\s*if \(verdict !== 'go'\) return;\s*if \(!callActive && selfUserId === userId\) beginCall\(roomId, userId\);\s*else sessionLedger\.releaseEntry\(\);/);
+    // I-2: o canal de voz escolhido é opcional e segue o mesmo caminho (sem canal = a voz padrão da sala).
+    const start = /function startCall\(roomInput: string, channelId: string \| null = null\): void \{([\s\S]*?)\n\}/.exec(main)?.[1] ?? '';
+    expect(start).toMatch(/entryGate\.check\(roomId\)\.then\(\(verdict\) => \{\s*if \(verdict !== 'go'\) return;\s*if \(!callActive && selfUserId === userId\) beginCall\(roomId, userId, channelId\);\s*else sessionLedger\.releaseEntry\(\);/);
     expect(start).not.toMatch(/new MeshCall|getUserMedia/);
     expect(main.match(/beginCall\(/g)).toHaveLength(2); // a definição e a única chamada
     expect(main.match(/new MeshCall/g)).toHaveLength(1);
@@ -816,7 +817,7 @@ describe('estático: a página', () => {
   });
 
   it('a liberação não inicia nada: "Entrar agora" passa pelo clique e verifica de novo', () => {
-    expect(main).toMatch(/entryGoBtn\.addEventListener\('click'[\s\S]{0,90}startCall\(roomId\)/);
+    expect(main).toMatch(/entryGoBtn\.addEventListener\('click'[\s\S]{0,90}startCall\(roomId, entryChannelId\)/);
     expect(gate).not.toMatch(/startCall|beginCall|getUserMedia|PeerCall/);
   });
 
