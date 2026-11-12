@@ -9,6 +9,9 @@ import { FakePeerConnection, FakeStream, FakeSupabase, ROOM, USERS, VOICE_2, VOI
 
 const STUN = [{ urls: ['stun:stun.l.google.com:19302'] }];
 const ALL = [USERS.owner, USERS.member, USERS.third, USERS.fourth];
+/** Sala de 5 (1000): as quatro contas de sempre e uma quinta. A sexta só existe para provar o limite do cliente. */
+const FIVE = [...ALL, USERS.stranger];
+const SIXTH = '0f000000-0000-4000-8000-00000000000f';
 
 interface Client {
   user: string;
@@ -180,11 +183,49 @@ describe('quantos participantes', () => {
     expect(server.published.filter((e) => e.kind === 'offer')).toHaveLength(6);
   });
 
-  it('o limite é por conexão: uma sala com mais contas não abre mais de 3 pares', async () => {
+  it('5 participantes: 4 conexões por cliente, 4 envios de áudio e 10 pares distintos', async () => {
     server.members.set(USERS.stranger, 'it-quinto');
-    const list = await enter(...ALL, USERS.stranger);
-    expect(MAX_MESH_PEERS).toBe(3);
-    for (const c of list) expect(open(c).length).toBeLessThanOrEqual(3);
+    const list = await enter(...FIVE);
+    fullMesh(list);
+    const pairs = new Set<number>();
+    for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) pairs.add(pairEpoch(session(list[i]!), session(list[j]!)));
+    expect(pairs.size).toBe(10);
+    expect(server.published.filter((e) => e.kind === 'offer')).toHaveLength(10);
+    expect(server.published.filter((e) => e.kind === 'answer')).toHaveLength(10);
+    // Cada participante aparece com a referência estável da conta, a mesma vista por todos.
+    for (const c of list) expect(new Set(c.participants.map((p) => p.ref)).size).toBe(4);
+  });
+
+  it('entrada simultânea dos 5: mesmo resultado', async () => {
+    server.members.set(USERS.stranger, 'it-quinto');
+    const list = FIVE.map((u) => client(u));
+    await Promise.all(list.map((c) => c.call.start()));
+    await settle(2000);
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle(2000);
+    fullMesh(list);
+    expect(server.published.filter((e) => e.kind === 'offer')).toHaveLength(10);
+  });
+
+  it('o limite é por conexão: com uma sexta conta, ninguém abre mais de 4 pares', async () => {
+    server.members.set(USERS.stranger, 'it-quinto');
+    server.members.set(SIXTH, 'it-sexto');
+    const list = await enter(...FIVE, SIXTH);
+    expect(MAX_MESH_PEERS).toBe(4);
+    for (const c of list) expect(open(c).length).toBeLessThanOrEqual(4);
+  });
+
+  it('quem entra por último numa sala de 5 negocia os 4 pares dentro de uma janela do limite de sinalização', async () => {
+    server.members.set(USERS.stranger, 'it-quinto');
+    const list = await enter(...ALL);
+    const before = server.invokes.length;
+    const [last] = await enter(USERS.stranger);
+    const sent = server.invokes.slice(before).filter((r) => r.session_id === session(last!));
+    // offer ou answer, candidatos e fim de candidatos para cada um dos 4 pares: tudo dentro dos 30 por 10 s, sem espera.
+    expect(sent.length).toBeGreaterThanOrEqual(4 * 3);
+    expect(sent.length).toBeLessThanOrEqual(30);
+    expect(last!.logs.join('\n')).not.toMatch(/rate-limited|limite de taxa/i);
+    fullMesh([...list, last!]);
   });
 });
 
@@ -204,6 +245,18 @@ describe('isolamento entre pares', () => {
     expect(open(a!).every((pc) => before.includes(pc.id))).toBe(true);
     expect(d!.streams[0]!.track.readyState).toBe('ended');
     expect(open(d!)).toEqual([]);
+  });
+
+  it('quem volta tem sessão nova e a mesma referência: é a chave do volume individual', async () => {
+    const [a, , c] = await enter(USERS.owner, USERS.member, USERS.third);
+    const first = a!.participants.find((p) => p.displayName === 'it-third')!;
+    c!.call.end();
+    await settle();
+    await enter(USERS.third);
+    const again = a!.participants.find((p) => p.displayName === 'it-third')!;
+    expect(again.session).not.toBe(first.session);
+    expect(again.ref).toBe(first.ref);
+    expect(first.ref).toMatch(/\S/);
   });
 
   it('quem sai pode voltar: os outros formam só o par novo', async () => {

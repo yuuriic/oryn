@@ -249,3 +249,156 @@
     min-height: 44px;
   }
 }
+
+/* ---------- Volume de cada participante (só neste aparelho) ----------
+   Botão no canto do cartão (teclado e toque) e menu flutuante na posição do clique direito. O estado também vai no
+   texto (cartão, aria-pressed e aria-valuetext), não só na cor. A posição chega por propriedades CSS (CSSOM). */
+#participants .participant-grid .participant-volume {
+  --i: var(--icon-sliders);
+  position: absolute;
+  top: var(--space-3);
+  right: var(--space-3);
+  display: grid;
+  place-items: center;
+  width: 40px;
+  min-height: 40px;
+  margin: 0;
+  padding: 0;
+  background: var(--color-elevated);
+  border: 1px solid var(--color-border-control);
+  border-radius: 50%;
+  color: var(--color-text);
+  font-size: 0;
+  line-height: 0;
+}
+
+#participants .participant-grid .participant-volume::before {
+  content: '' / '';
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  background: currentColor;
+  -webkit-mask: var(--i) center / contain no-repeat;
+  mask: var(--i) center / contain no-repeat;
+}
+
+/* Silenciado para mim: fone riscado em vermelho, como o áudio recebido silenciado na barra. */
+#participants .participant-grid li[data-voice-muted='true'] .participant-volume {
+  --i: var(--icon-headphones-off);
+  border: 2px solid var(--color-error);
+  color: var(--color-error);
+}
+
+#participants .participant-grid .participant-volume[aria-expanded='true'] {
+  background: var(--color-gold-soft);
+  border: 2px solid var(--color-gold);
+  box-shadow: var(--glow-gold);
+  color: var(--color-gold);
+}
+
+#participants .participant-grid .participant-voice {
+  color: var(--color-text-secondary);
+  font-size: 0.85em;
+}
+
+#participants .participant-grid li[data-voice-muted='true'] .participant-voice {
+  color: var(--color-error);
+}
+
+/* Cinco ou seis cartões (você, até 4 pessoas e a vaga): 3 colunas quando o palco é largo; 2 no estreito. */
+@container (min-width: 720px) {
+  #participants .participant-grid[data-count='5'],
+  #participants .participant-grid[data-count='6'] {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.voice-menu {
+  position: fixed;
+  top: var(--voice-menu-y, var(--space-4));
+  left: var(--voice-menu-x, var(--space-4));
+  z-index: 40;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: 300px;
+  margin: 0;
+  padding: var(--space-4);
+  /* Opaco: o menu cobre cartões e barra, e nada pode transparecer por trás do texto. */
+  background: linear-gradient(180deg, rgb(33 27 60), rgb(21 17 42));
+  border: 1px solid rgb(157 123 255 / 45%);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 24px 60px rgb(0 0 0 / 55%);
+}
+
+.voice-menu[hidden] {
+  display: none;
+}
+
+.voice-menu-title {
+  margin: 0;
+  overflow: hidden;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.voice-menu-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.voice-menu-row output {
+  font-variant-numeric: tabular-nums;
+}
+
+.voice-menu input[type='range'] {
+  width: 100%;
+  min-height: 32px;
+  margin: 0;
+  accent-color: var(--color-gold);
+}
+
+.voice-menu-hint,
+.voice-menu > p.muted {
+  margin: 0;
+  font-size: 0.85em;
+}
+
+.voice-menu .buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  justify-content: space-between;
+  margin: var(--space-1) 0 0;
+}
+
+.voice-menu .buttons button {
+  min-height: 40px;
+  white-space: nowrap;
+}
+
+#voice-menu-mute[aria-pressed='true'] {
+  background: rgb(255 138 150 / 10%);
+  border: 2px solid var(--color-error);
+  color: var(--color-error);
+}
+
+/* Celular: folha presa à parte de baixo, acima da barra da chamada, na largura da tela. Sem depender do ponto do toque. */
+@media (max-width: 560px) {
+  .voice-menu {
+    top: auto;
+    right: var(--space-4);
+    bottom: calc(var(--space-4) + env(safe-area-inset-bottom));
+    left: var(--space-4);
+    width: auto;
+  }
+
+  #participants .participant-grid .participant-volume {
+    width: 44px;
+    min-height: 44px;
+  }
+}

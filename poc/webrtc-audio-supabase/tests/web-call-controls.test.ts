@@ -54,11 +54,13 @@ describe('áudio recebido (só neste aparelho)', () => {
 
   it('na página: não mexe no microfone nem na conexão; novo áudio remoto adota o estado; a chamada encerrada reseta', () => {
     const click = /ui\.incomingBtn\.addEventListener\('click'[^]*?\n\}\);\n/.exec(main)![0];
-    expect(click).toContain('incoming.toggle(remoteAudio.values());');
+    expect(click).toContain('incoming.toggle(voiceMix.values());');
     expect(click).not.toMatch(/setMuted|\.end\(|signaling|setField\('mic'/);
-    expect(fn('setRemote')).toMatch(/audio\.srcObject = stream;\n\s*incoming\.adopt\(audio\);/);
+    // A mixagem aplica o silenciamento geral (incoming.adopt) e o individual antes de o elemento tocar.
+    expect(fn('setRemote')).toMatch(/audio\.srcObject = stream;\n\s*voiceMix\.attach\(session, audio\);/);
+    expect(main).toMatch(/const incoming = voiceMix\.incoming;/);
     const phase = fn('renderPhase');
-    expect(phase).toContain('incoming.reset(remoteAudio.values());');
+    expect(phase).toContain('incoming.reset(voiceMix.values());');
     expect(phase).toContain('ui.incomingBtn.disabled = !active;');
     expect(fn('renderIncoming')).toContain("ui.incomingBtn.setAttribute('aria-pressed', String(incoming.muted));");
     // Os sons da sala têm caminho e desativação próprios: o controle não toca neles.

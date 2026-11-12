@@ -276,7 +276,7 @@ describe('renderização', () => {
   });
 
   it('participantes: estado individual, falha parcial em destaque e sessão em espera explicada', () => {
-    const list = [{ session: 'a', displayName: 'A', state: 'connected' as const }, { session: 'b', displayName: '<b>B</b>', state: 'failed' as const }];
+    const list = [{ session: 'a', ref: 'r-a', displayName: 'A', state: 'connected' as const }, { session: 'b', ref: 'r-b', displayName: '<b>B</b>', state: 'failed' as const }];
     const root = renderParticipants(doc, list, false) as unknown as FakeEl;
     expect(root.allText).toContain('conectado');
     expect(root.allText).toContain('<b>B</b>');
@@ -286,7 +286,7 @@ describe('renderização', () => {
   });
 
   it('palco: o próprio cartão, os outros e a vaga, só com estado real e sem contar como "conectado"', () => {
-    const list = [{ session: 'a', displayName: 'Bia', state: 'connected' as const }];
+    const list = [{ session: 'a', ref: 'r-a', displayName: 'Bia', state: 'connected' as const }];
     const root = renderParticipants(doc, list, false, { owner: true, muted: false, freeSlots: 2 }) as unknown as FakeEl;
     const ul = root.children.find((c) => c.tag === 'ul')!;
     expect(ul.children.map((li) => li.className)).toEqual(['participant-self', '', 'participant-waiting']);
@@ -307,7 +307,7 @@ describe('renderização', () => {
     expect(muted.allText).not.toContain('Dono');
     expect(muted.allText).toContain('Até 1 vaga disponível');
     expect(muted.allText).toMatch(/Nenhum outro participante/); // segue para leitores de tela
-    const full = renderParticipants(doc, [1, 2, 3].map((i) => ({ session: `s${i}`, displayName: `P${i}`, state: 'connected' as const })), false, { owner: true, muted: false, freeSlots: 0 }) as unknown as FakeEl;
+    const full = renderParticipants(doc, [1, 2, 3].map((i) => ({ session: `s${i}`, ref: `r${i}`, displayName: `P${i}`, state: 'connected' as const })), false, { owner: true, muted: false, freeSlots: 0 }) as unknown as FakeEl;
     const ul = full.children.find((c) => c.tag === 'ul')!;
     expect(ul.children).toHaveLength(4);
     expect(ul.attrs.get('data-count')).toBe('4');
@@ -333,9 +333,9 @@ describe('capacidade e avisos', () => {
   const room = (n: number): RoomSummary => ({ room_id: ROOM, name: `S${n}`, role: 'member', is_open: true, closed_at: null, member_count: 1, max_members: 2, created_at: 'x' });
   const lobby = (rooms: RoomSummary[]): LobbyState => ({ status: 'ready', rooms, skipped: 0, listError: null, actionError: null, busy: null });
 
-  it('só 2, 3 ou 4', () => {
-    for (const v of [2, 3, 4]) expect(isRoomCapacity(v)).toBe(true);
-    for (const v of [1, 5, 10, NaN, '4', null]) expect(isRoomCapacity(v)).toBe(false);
+  it('só de 2 a 5 (1000)', () => {
+    for (const v of [2, 3, 4, 5]) expect(isRoomCapacity(v)).toBe(true);
+    for (const v of [1, 6, 10, NaN, '4', null]) expect(isRoomCapacity(v)).toBe(false);
   });
 
   it('create envia a capacidade escolhida e recusa outra, sem chamar o servidor', async () => {
@@ -348,11 +348,11 @@ describe('capacidade e avisos', () => {
       confirm: () => true,
       onChange: () => undefined,
     });
-    await c.create('Sala', 'Eu', 4);
-    expect(calls[0]).toMatchObject({ p_max_members: 4 });
     await c.create('Sala', 'Eu', 5);
+    expect(calls[0]).toMatchObject({ p_max_members: 5 });
+    await c.create('Sala', 'Eu', 6);
     expect(calls).toHaveLength(1);
-    expect(c.state.actionError).toMatch(/2, 3 ou 4/);
+    expect(c.state.actionError).toBe('Capacidade inválida: escolha de 2 a 5 lugares.');
     await c.create('Sala', 'Eu');
     expect(calls[1]).toMatchObject({ p_max_members: 2 });
   });

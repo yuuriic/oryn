@@ -5,7 +5,7 @@
 // e a ligação entre cada par e a sinalização.
 //
 // O microfone é pedido uma vez, antes de entrar na sala, e só é liberado quando a chamada termina. Cada áudio remoto é entregue
-// separado, por sessão: é o que vai permitir volume individual e deafen.
+// separado, por sessão: é o que permite o volume individual (voice-prefs, pela referência do participante) e o deafen.
 //
 // Limite conhecido: o servidor revoga a pertença, mas uma conexão P2P já estabelecida entre dois clientes MODIFICADOS não tem
 // como ser interrompida com garantia só pelo banco. O cliente legítimo fecha a conexão ao perder o par.
@@ -22,6 +22,8 @@ export type ParticipantState = 'connecting' | 'connected' | 'reconnecting' | 'fa
 
 export interface ParticipantView {
   session: string;
+  /** participant_ref: estável na sala (a sessão muda a cada entrada). Chave do volume individual. */
+  ref: string;
   displayName: string;
   state: ParticipantState;
 }
@@ -350,12 +352,13 @@ export class MeshCall {
   private emitParticipants(): void {
     const list: ParticipantView[] = this.others.map((o) => ({
       session: o.session,
+      ref: o.ref,
       displayName: o.displayName,
       state: this.entries.get(o.session)?.state ?? this.lost.get(o.session) ?? 'waiting',
     }));
     // A descoberta pode adotar antes de a lista chegar: quem tem conexão sempre aparece.
     for (const e of this.entries.values()) {
-      if (!list.some((p) => p.session === e.peer.session)) list.push({ session: e.peer.session, displayName: e.peer.displayName, state: e.state });
+      if (!list.some((p) => p.session === e.peer.session)) list.push({ session: e.peer.session, ref: e.peer.ref, displayName: e.peer.displayName, state: e.state });
     }
     this.cb.onParticipants(list, this.standby);
   }

@@ -4,7 +4,7 @@
 // Identidade: um participante é uma conta (`participant_ref`, referência opaca do servidor), não uma sessão. Uma conta pode
 // ter até 2 sessões vivas na sala. Para todos chegarem à mesma conclusão sem conversar, a regra só depende do que o servidor
 // devolve: de cada conta, só a sessão MAIS ANTIGA entra no mesh. A outra fica em espera, sem nenhuma conexão, e assume quando
-// a mais antiga sair. Isso mantém no máximo 3 conexões por cliente e 6 no total, com 4 contas.
+// a mais antiga sair. Isso mantém no máximo 4 conexões por cliente e 10 no total, com 5 contas.
 //
 // Sessão fantasma: se um navegador cai sem avisar, a sessão dele segue "viva" no servidor por até 90 s, e a pessoa pode voltar
 // antes disso. A sessão nova não sabe que a antiga morreu. Quem sabe é o par, pela falha de ICE: ele passa para a próxima sessão
@@ -22,9 +22,12 @@ import type { SignalEnvelope } from '../../supabase/functions/_shared/signal-con
 import type { Role, SignalPayload } from './protocol.ts';
 import { SupabaseSignaling, fromEnvelope, isInitiator, pairEpoch, shortCode, type PeerLossReason, type SupabaseSignalingOptions } from './supabase-signaling.ts';
 
-/** Com 4 contas, cada cliente fala com as outras 3. Um servidor com mais contas não abre mais conexões aqui. */
-export const MAX_MESH_PEERS = 3;
-/** Cada par gasta offer ou answer, candidatos e fim de candidatos: a fila do 1:1 ficaria curta para 3 pares juntos. */
+/** Com 5 contas, cada cliente fala com as outras 4. Um servidor com mais contas não abre mais conexões aqui. */
+export const MAX_MESH_PEERS = 4;
+/**
+ * Cada par gasta offer ou answer, candidatos e fim de candidatos (um sinal cada): a fila do 1:1 ficaria curta para 4 pares
+ * juntos. 192 dá 48 por par, folga larga sobre os 4 a 8 de uma negociação.
+ */
 const MESH_MAX_QUEUE = 192;
 const MAX_PARKED_PER_SESSION = 32;
 

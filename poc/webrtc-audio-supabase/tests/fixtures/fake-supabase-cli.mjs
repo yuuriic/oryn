@@ -49,16 +49,18 @@ appendFileSync(`${process.env['FAKE_CLI_LOG'] ?? 'fake-cli.json'}.calls`, `${ent
 const mode = process.env['FAKE_CLI_MODE'] ?? 'ok';
 if (args.includes('query')) {
   const sqlFile = args[args.indexOf('--file') + 1] ?? '';
-  // Etapa 8 (20/21, perfil) ou 9 (30/31, canais): cada uma com o próprio marcador e a própria versão-alvo.
+  // Etapa 8 (20/21, perfil), 9 (30/31, canais) ou 10 (40/41, capacidade): cada uma com o próprio marcador e a própria versão-alvo.
   const channels = /3[01]_channels_09_/.test(sqlFile);
-  const phase = /(20_profile_08|30_channels_09)_preflight\.sql$/.test(sqlFile) ? 'preflight' : 'postflight';
-  const version = channels ? '20261110000900' : '20261109224924';
+  const capacity = /4[01]_capacity_10_/.test(sqlFile);
+  const phase = /(20_profile_08|30_channels_09|40_capacity_10)_preflight\.sql$/.test(sqlFile) ? 'preflight' : 'postflight';
+  const version = capacity ? '20261112001000' : channels ? '20261110000900' : '20261109224924';
+  const marker = capacity ? 'oryn-capacity-10' : channels ? 'oryn-channels-09' : 'oryn-profile-08';
   const statePath = process.env['FAKE_STATE'];
   const alreadyApplied = (process.env['FAKE_APPLIED'] ?? '').includes(version) ||
     (statePath && existsSync(statePath) && readFileSync(statePath, 'utf8').includes(version));
   const state = process.env['FAKE_PROFILE_STATE'] ?? 'ok';
   const fail = state === phase || (phase === 'preflight' && alreadyApplied);
-  console.log(JSON.stringify({ rows: [{ result: `${channels ? 'oryn-channels-09' : 'oryn-profile-08'}-${phase}-${fail ? 'FAIL' : 'ok'}` }] }));
+  console.log(JSON.stringify({ rows: [{ result: `${marker}-${phase}-${fail ? 'FAIL' : 'ok'}` }] }));
   process.exit(state === 'query-error' ? 1 : 0);
 }
 if (mode === 'fail') {

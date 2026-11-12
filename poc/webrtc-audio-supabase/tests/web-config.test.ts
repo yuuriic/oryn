@@ -65,19 +65,22 @@ describe('garantias estáticas do frontend', () => {
       if (f !== 'identity.ts') expect(c, f).not.toMatch(/\.signUp\(/);
       // Só o cache de sons usa IndexedDB, e guarda só áudio; ver o teste do cache.
       if (f !== 'sound-cache.ts') expect(c, f).not.toMatch(/indexedDB/);
-      if (f !== 'auth-session.ts' && f !== 'session-ledger.ts' && f !== 'sound-prefs.ts') expect(c, f).not.toMatch(/localStorage/);
+      if (f !== 'auth-session.ts' && f !== 'session-ledger.ts' && f !== 'sound-prefs.ts' && f !== 'voice-prefs.ts') expect(c, f).not.toMatch(/localStorage/);
       if (f !== 'call-return.ts' && f !== 'session-ledger.ts') expect(c, f).not.toMatch(/sessionStorage/);
     }
     expect(code(web['main.ts']!)).toMatch(/signInWithPassword/);
   });
 
-  it('cache e preferências de som: nada de sessão, token ou cabeçalho de autorização no armazenamento', () => {
-    for (const f of ['sound-cache.ts', 'sound-prefs.ts']) {
+  it('cache e preferências de som e de volume: nada de sessão, token ou cabeçalho de autorização no armazenamento', () => {
+    for (const f of ['sound-cache.ts', 'sound-prefs.ts', 'voice-prefs.ts']) {
       const c = code(web[f]!);
       expect(c, f).not.toMatch(/access_token|refresh_token|accessToken|authorization|getSession|auth-session|createSignedUrl|signedUrl/i);
       expect(c, f).not.toMatch(/sessionStorage|document\.cookie/);
     }
     expect(code(web['sound-prefs.ts']!).match(/\blocalStorage\b/g)).toHaveLength(2);
+    // Volume de cada pessoa: um único acesso ao localStorage, num só ponto do módulo; nada de IndexedDB nem de dados da sessão.
+    expect(code(web['voice-prefs.ts']!).match(/\blocalStorage\b/g)).toHaveLength(1);
+    expect(code(web['voice-prefs.ts']!)).not.toMatch(/indexedDB|oryn\.auth|display_?name|session_id/i);
     expect(code(web['sound-prefs.ts']!)).not.toMatch(/indexedDB/);
     expect(code(web['sound-cache.ts']!)).not.toMatch(/localStorage/);
   });

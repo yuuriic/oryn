@@ -26,6 +26,7 @@ beforeAll(() => {
   cpSync(originalScript, script);
   cpSync(new URL('../integration/scripts/profile-08-manifest.json', import.meta.url), join(fixture, 'integration', 'scripts', 'profile-08-manifest.json'));
   cpSync(new URL('../integration/scripts/channels-09-manifest.json', import.meta.url), join(fixture, 'integration', 'scripts', 'channels-09-manifest.json'));
+  cpSync(new URL('../integration/scripts/capacity-10-manifest.json', import.meta.url), join(fixture, 'integration', 'scripts', 'capacity-10-manifest.json'));
   cpSync(new URL('../integration/sql/', import.meta.url), join(fixture, 'integration', 'sql'), { recursive: true });
   const source = fileURLToPath(new URL('../supabase/', import.meta.url));
   cpSync(join(source, 'config.toml'), join(fixture, 'supabase', 'config.toml'));
@@ -248,6 +249,67 @@ describe('oryn-push-step.ps1 (CLI falsa, sem rede)', () => {
     });
     it('confirmação da etapa 8 é recusada na 9 antes da consulta', () => {
       const r = run({ ...options, confirmation: 'APLICAR 20261109224924' });
+      expect(r.ok).toBe(false);
+      expect(r.calls).toEqual([]);
+    });
+  });
+  describe('Etapa 10 (capacidade 5): lista fixa, manifesto próprio, pré/pós-voo e recusa de reaplicação', () => {
+    const previous = '20261023000100,20261023000200,20261023000300,20261028000400,20261106000500,20261107000600,20261108000700,20261109224924,20261110000900';
+    const options = { step: 10, applied: previous, apply: true, confirmation: 'APLICAR 20261112001000' };
+    it('os SQL 40/41/97 e o manifesto estão em dia com a migração versionada (gerador em --check)', () => {
+      const out = execFileSync(process.execPath, [fileURLToPath(new URL('../integration/scripts/capacity-10-artifacts.mjs', import.meta.url)), '--check'], { encoding: 'utf8' });
+      expect(out).toMatch(/Artefatos 10 conferidos/);
+    });
+    it('aplica somente a 1000 depois de dois pré-voos (40); só anuncia sucesso após o pós-voo (41)', () => {
+      const r = run(options);
+      expect(r.ok, r.out).toBe(true);
+      expect(r.calls.map((c) => c.args.includes('query') ? 'query' : c.args.includes('--dry-run') ? 'dry' : 'push'))
+        .toEqual(['query', 'dry', 'query', 'push', 'dry', 'query']);
+      expect(r.calls[0]!.migrations).toHaveLength(10);
+      const files = r.calls.filter((c) => c.args.includes('query')).map((c) => c.args[c.args.indexOf('--file') + 1]!.split(/[\\/]/).at(-1));
+      expect(files).toEqual(['40_capacity_10_preflight.sql', '40_capacity_10_preflight.sql', '41_capacity_10_postflight.sql']);
+      expect(r.calls.every((c) => c.passwordLength === TEST_PASSWORD.length)).toBe(true);
+      expect(r.calls.every((c) => !c.args.includes('--yes') && !c.args.join(' ').includes(TEST_PASSWORD))).toBe(true);
+      expect(r.out).toMatch(/Etapa 10: postflight confirmado/);
+      expect(r.out).toMatch(/^APLICADO: 20261112001000/m);
+      expect(r.out).not.toContain(TEST_PASSWORD);
+      expect(r.envAfter).toBe('False');
+      expect(existsSync(r.calls[0]!.workdir)).toBe(false);
+    });
+    it('dry-run executa o pré-voo, mas nenhuma escrita', () => {
+      const r = run({ step: 10, applied: previous });
+      expect(r.ok, r.out).toBe(true);
+      expect(r.calls).toHaveLength(2);
+      expect(r.calls[1]!.args).toContain('--dry-run');
+    });
+    it.each(['preflight', 'query-error'])('recusa estado divergente ou consulta indisponível: %s', (profileState) => {
+      const r = run({ ...options, profileState });
+      expect(r.ok).toBe(false);
+      expect(r.calls).toHaveLength(1);
+      expect(r.out).toMatch(/Etapa 10: preflight recusado/);
+      expect(r.envAfter).toBe('False');
+    });
+    it('não anuncia APLICADO se o pós-voo divergir', () => {
+      const r = run({ ...options, profileState: 'postflight' });
+      expect(r.ok).toBe(false);
+      expect(r.out).toMatch(/Etapa 10: postflight recusado/);
+      expect(r.out).not.toMatch(/^APLICADO/m);
+    });
+    it('recusa reaplicação antes do dry-run e do push', () => {
+      const r = run({ ...options, applied: `${previous},20261112001000` });
+      expect(r.ok).toBe(false);
+      expect(r.calls).toHaveLength(1);
+      expect(r.out).toMatch(/preflight recusado/);
+    });
+    it.each(['extra', 'rename', 'content'] as const)('recusa mudança de integridade da 1000 antes de conectar: %s', (migrationMutation) => {
+      const r = run({ ...options, migrationMutation, mutationFile: '20261112001000_oryn_room_capacity_5.sql' });
+      expect(r.ok).toBe(false);
+      expect(r.out).toMatch(/migrações inesperadas|integridade divergente/);
+      expect(r.calls).toEqual([]);
+      expect(r.versionCalls).toEqual([]);
+    });
+    it('confirmação da etapa 9 é recusada na 10 antes da consulta', () => {
+      const r = run({ ...options, confirmation: 'APLICAR 20261110000900' });
       expect(r.ok).toBe(false);
       expect(r.calls).toEqual([]);
     });
