@@ -1,0 +1,610 @@
+/* Autenticação Midnight V2: identidade à esquerda, cartão de acesso à direita. Mesmos tokens do aplicativo (fundo
+   escuro, violeta e dourado); o único elemento de outra marca é o "G" do Google, nas cores dela, no botão do Google.
+   Fora da conta (#account oculto). Celular: a identidade vira um cabeçalho compacto acima do cartão. */
+
+main:has(> #account[hidden]) {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+  grid-template-rows: 1fr auto auto auto 1fr;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: none;
+  min-height: 100vh;
+  min-height: 100dvh;
+  margin: 0;
+  padding: 0;
+  background:
+    radial-gradient(ellipse 60% 50% at 100% 0%, rgb(109 61 242 / 10%), transparent 70%),
+    var(--color-bg);
+}
+
+/* ---------- Identidade ---------- */
+main:has(> #account[hidden]) > .auth-hero {
+  grid-column: 1;
+  grid-row: 1 / -1;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--space-5);
+  box-sizing: border-box;
+  min-height: 100%;
+  margin: 0;
+  padding: clamp(32px, 6vw, 88px);
+  overflow: hidden;
+  text-align: left;
+  background:
+    radial-gradient(ellipse 70% 55% at 15% 10%, rgb(124 58 237 / 30%), transparent 65%),
+    radial-gradient(ellipse 55% 45% at 90% 95%, rgb(109 61 242 / 18%), transparent 60%),
+    linear-gradient(160deg, #130f28, var(--color-bg) 75%);
+  border-right: 1px solid var(--color-divider);
+}
+
+.auth-hero-mark {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.auth-hero .brand-mark {
+  width: 48px;
+  height: 48px;
+}
+
+main:has(> #account[hidden]) .auth-hero h1 {
+  margin: 0;
+  font-size: 2.5rem;
+  letter-spacing: 0.01em;
+}
+
+main:has(> #account[hidden]) .auth-hero .brand-tagline {
+  display: block;
+  margin: calc(var(--space-3) * -1) 0 0;
+  color: var(--color-gold);
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.auth-hero-lead {
+  max-width: 20ch;
+  margin: var(--space-3) 0 0;
+  color: var(--color-text);
+  font-size: clamp(1.75rem, 2.6vw, 2.5rem);
+  font-weight: 700;
+  line-height: 1.15;
+}
+
+.auth-features {
+  display: grid;
+  gap: var(--space-3);
+  max-width: 460px;
+  margin: var(--space-3) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.auth-feature {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  background: rgb(255 255 255 / 3%);
+  border: 1px solid rgb(255 255 255 / 7%);
+  border-radius: var(--radius-lg);
+}
+
+.auth-feature-icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  background: var(--color-accent-soft);
+  border: 1px solid rgb(157 123 255 / 35%);
+  border-radius: 12px;
+  color: var(--color-gold);
+}
+
+.auth-feature-icon::before {
+  content: '' / '';
+  width: 20px;
+  height: 20px;
+  background: currentColor;
+  -webkit-mask: var(--i) center / contain no-repeat;
+  mask: var(--i) center / contain no-repeat;
+}
+
+.auth-feature-voice { --i: var(--icon-wave); }
+.auth-feature-channels { --i: var(--icon-hash); }
+.auth-feature-chat { --i: var(--icon-chat); }
+
+.auth-feature strong {
+  display: block;
+  font-size: 0.9375rem;
+}
+
+.auth-feature-text {
+  display: block;
+  margin-top: 2px;
+  color: var(--color-text-secondary);
+  font-size: 0.875rem;
+}
+
+/* ---------- Cartão de acesso ---------- */
+main:has(> #account[hidden]) > #config-error,
+main:has(> #account[hidden]) > #error {
+  grid-column: 2;
+  justify-self: center;
+  box-sizing: border-box;
+  width: min(440px, calc(100% - 48px));
+  margin: 0 0 var(--space-3);
+}
+
+main:has(> #account[hidden]) > #config-error { grid-row: 2; }
+main:has(> #account[hidden]) > #error { grid-row: 4; margin: var(--space-3) 0 0; }
+
+main:has(> #account[hidden]) > #login {
+  grid-column: 2;
+  grid-row: 3;
+  justify-self: center;
+  box-sizing: border-box;
+  width: min(440px, calc(100% - 48px));
+  margin: var(--space-5) 0;
+  padding: var(--space-6);
+  background: linear-gradient(180deg, rgb(33 27 60 / 82%), rgb(21 17 42 / 96%));
+  border: 1px solid rgb(255 255 255 / 8%);
+  border-radius: var(--radius-xl);
+  box-shadow: 0 1px 0 rgb(255 255 255 / 5%) inset, 0 24px 64px rgb(0 0 0 / 45%);
+}
+
+.auth-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin: 0 0 var(--space-5);
+  padding: 4px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-divider);
+  border-radius: 14px;
+}
+
+.auth-tab {
+  min-height: 42px;
+  margin: 0;
+  padding: 0 var(--space-3);
+  background: transparent;
+  border: 0;
+  border-radius: 10px;
+  color: var(--color-text-secondary);
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+.auth-tab:hover:not([aria-selected='true']):not(:disabled) {
+  background: var(--color-elevated);
+  color: var(--color-text);
+}
+
+/* Aba ativa: preenchida (o estado também está no aria-selected). */
+.auth-tab[aria-selected='true'] {
+  background: linear-gradient(90deg, var(--color-accent-strong), #4f22c9);
+  box-shadow: var(--glow-accent);
+  color: #fff;
+}
+
+#login h2 {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 700;
+}
+
+.auth-subtitle {
+  margin: var(--space-1) 0 var(--space-5);
+  color: var(--color-text-secondary);
+  font-size: 0.9375rem;
+}
+
+#login > .notice,
+#login > .error,
+#signup-status {
+  margin: 0 0 var(--space-4);
+}
+
+.auth-form {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.auth-field {
+  display: grid;
+  gap: 6px;
+}
+
+#login .auth-field label {
+  margin: 0;
+  color: var(--color-text);
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+/* Campo com ícone à esquerda e, na senha, o botão de mostrar à direita, dentro da mesma caixa. */
+.auth-input {
+  position: relative;
+  display: block;
+}
+
+.auth-input::before {
+  content: '' / '';
+  position: absolute;
+  top: 50%;
+  left: 14px;
+  width: 18px;
+  height: 18px;
+  background: var(--color-text-secondary);
+  -webkit-mask: var(--i) center / contain no-repeat;
+  mask: var(--i) center / contain no-repeat;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.auth-input:focus-within::before {
+  background: var(--color-gold);
+}
+
+.auth-icon-mail { --i: var(--icon-mail); }
+.auth-icon-lock { --i: var(--icon-lock); }
+.auth-icon-user { --i: var(--icon-user); }
+.auth-icon-phone { --i: var(--icon-phone); }
+
+#login .auth-input input {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 48px;
+  margin: 0;
+  padding: 0 var(--space-3) 0 44px;
+  background: rgb(11 9 21 / 70%);
+  border: 1px solid var(--color-border-control);
+  border-radius: 12px;
+  color: var(--color-text);
+  font-size: 1rem;
+}
+
+#login .auth-input:has(.auth-reveal) input {
+  padding-right: 52px;
+}
+
+#login .auth-input input::placeholder {
+  color: var(--color-text-secondary);
+  opacity: 0.75;
+}
+
+#login .auth-input input:hover {
+  border-color: var(--color-accent);
+}
+
+#login .auth-input input:focus-visible {
+  border-color: var(--color-accent);
+  outline-offset: 1px;
+}
+
+#login .auth-input input[aria-invalid='true'] {
+  border-color: var(--color-error);
+}
+
+/* Mostrar/ocultar senha: olho aberto ou riscado, com o estado no aria-pressed. */
+.auth-reveal {
+  --i: var(--icon-eye);
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  display: grid;
+  place-items: center;
+  place-content: center;
+  width: 40px;
+  height: 40px;
+  min-height: 40px;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 10px;
+  color: var(--color-text-secondary);
+  font-size: 0;
+  line-height: 0;
+  transform: translateY(-50%);
+}
+
+.auth-reveal::before {
+  content: '' / '';
+  width: 20px;
+  height: 20px;
+  background: currentColor;
+  -webkit-mask: var(--i) center / contain no-repeat;
+  mask: var(--i) center / contain no-repeat;
+}
+
+.auth-reveal[aria-pressed='true'] {
+  --i: var(--icon-eye-off);
+  color: var(--color-gold);
+}
+
+.auth-reveal:hover:not(:disabled) {
+  background: var(--color-elevated);
+  color: var(--color-text);
+}
+
+.auth-error,
+.auth-hint {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+
+.auth-error {
+  color: var(--color-error);
+}
+
+.auth-hint {
+  color: var(--color-text-secondary);
+}
+
+/* Requisitos da senha: círculo vazio quando pendente; verde e com o check quando atendido (texto e ícone, não só cor). */
+.auth-rules {
+  display: grid;
+  gap: 6px;
+  margin: calc(var(--space-1) * -1) 0 0;
+  padding: var(--space-3);
+  list-style: none;
+  background: rgb(255 255 255 / 3%);
+  border: 1px solid var(--color-divider);
+  border-radius: 12px;
+  color: var(--color-text-secondary);
+  font-size: 0.8125rem;
+}
+
+.auth-rules li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.auth-rules li::before {
+  content: '' / '';
+  flex: none;
+  box-sizing: border-box;
+  width: 16px;
+  height: 16px;
+  border: 1.5px solid var(--color-border-control);
+  border-radius: 50%;
+}
+
+.auth-rules li[data-met='true'] {
+  color: var(--color-success);
+}
+
+.auth-rules li[data-met='true']::before {
+  border: 0;
+  background: currentColor;
+  -webkit-mask: var(--icon-check) center / contain no-repeat;
+  mask: var(--icon-check) center / contain no-repeat;
+}
+
+.auth-primary {
+  width: 100%;
+  min-height: 48px;
+  margin: var(--space-1) 0 0;
+  background: linear-gradient(90deg, var(--color-accent-strong), #4f22c9);
+  border: 0;
+  border-radius: 12px;
+  box-shadow: var(--glow-accent);
+  color: #fff;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.auth-primary:hover:not(:disabled) {
+  background: linear-gradient(90deg, #7a4cf5, #5a2dd4);
+}
+
+.auth-primary:disabled {
+  background: var(--color-elevated);
+  box-shadow: none;
+  color: var(--color-text-secondary);
+}
+
+.auth-alt {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.auth-divider {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 0.8125rem;
+}
+
+.auth-divider::before,
+.auth-divider::after {
+  content: '' / '';
+  flex: 1;
+  height: 1px;
+  background: var(--color-divider);
+}
+
+/* Botão do Google no tema escuro da própria marca (fundo #131314, borda #8E918F, texto #E3E3E3) e o "G" colorido. */
+.auth-google {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: 48px;
+  margin: 0;
+  background: #131314;
+  border: 1px solid #8e918f;
+  border-radius: 12px;
+  color: #e3e3e3;
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+.auth-google::before {
+  content: '' / '';
+  flex: none;
+  width: 20px;
+  height: 20px;
+  background: var(--logo-google) center / contain no-repeat;
+}
+
+.auth-google:hover:not(:disabled) {
+  background: #1e1f20;
+}
+
+.auth-link {
+  justify-self: center;
+  min-height: 44px;
+  margin: 0;
+  padding: 0 var(--space-2);
+  background: transparent;
+  border: 0;
+  color: var(--color-accent);
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+.auth-link:hover:not(:disabled) {
+  background: transparent;
+  color: #c4b0ff;
+  text-decoration: underline;
+}
+
+.auth-switch {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 0.9375rem;
+  text-align: center;
+}
+
+.auth-switch .auth-link {
+  padding: 0 var(--space-1);
+}
+
+/* ---------- Janela intermediária: menos promoção, formulário em primeiro lugar ---------- */
+@media (max-width: 1100px) {
+  main:has(> #account[hidden]) {
+    grid-template-columns: minmax(0, 0.85fr) minmax(0, 1fr);
+  }
+
+  main:has(> #account[hidden]) > .auth-hero {
+    padding: clamp(28px, 4vw, 56px);
+  }
+
+  .auth-feature-text {
+    display: none;
+  }
+
+  .auth-feature {
+    padding: var(--space-2) var(--space-3);
+  }
+}
+
+/* ---------- Celular e janelas estreitas: identidade compacta acima do cartão ---------- */
+@media (max-width: 860px) {
+  main:has(> #account[hidden]) {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto auto auto 1fr;
+  }
+
+  main:has(> #account[hidden]) > .auth-hero {
+    grid-column: 1;
+    grid-row: 1;
+    align-items: center;
+    gap: var(--space-2);
+    min-height: 0;
+    padding: var(--space-6) var(--space-4) var(--space-2);
+    text-align: center;
+    background:
+      radial-gradient(ellipse 80% 70% at 50% 0%, rgb(124 58 237 / 26%), transparent 70%),
+      transparent;
+    border-right: 0;
+  }
+
+  main:has(> #account[hidden]) .auth-hero .brand-tagline {
+    margin: 0;
+  }
+
+  .auth-hero-lead {
+    max-width: none;
+    margin: var(--space-1) 0 0;
+    color: var(--color-text-secondary);
+    font-size: 1rem;
+    font-weight: 500;
+  }
+
+  .auth-features {
+    display: none;
+  }
+
+  main:has(> #account[hidden]) > #config-error,
+  main:has(> #account[hidden]) > #login,
+  main:has(> #account[hidden]) > #error {
+    grid-column: 1;
+  }
+
+  main:has(> #account[hidden]) > #config-error { grid-row: 2; }
+  main:has(> #account[hidden]) > #login { grid-row: 3; margin: var(--space-4) 0 var(--space-6); }
+  main:has(> #account[hidden]) > #error { grid-row: 4; }
+}
+
+@media (max-width: 480px) {
+  main:has(> #account[hidden]) > #login,
+  main:has(> #account[hidden]) > #config-error,
+  main:has(> #account[hidden]) > #error {
+    width: calc(100% - 24px);
+  }
+
+  main:has(> #account[hidden]) > #login {
+    padding: var(--space-5) var(--space-4);
+  }
+
+  .auth-hero .brand-mark {
+    width: 36px;
+    height: 36px;
+  }
+
+  main:has(> #account[hidden]) .auth-hero h1 {
+    font-size: 2rem;
+  }
+
+  .auth-hero-lead {
+    font-size: 0.9375rem;
+  }
+}
+
+/* O botão nativo de revelar senha do Edge/WebView2 duplicaria o nosso (que tem rótulo e estado acessíveis). */
+#login input::-ms-reveal,
+#login input::-ms-clear {
+  display: none;
+}
+
+/* A mesma geometria do botão de olho em todos os formulários (login.css dá 44px aos botões do cadastro). */
+#login .auth-reveal {
+  width: 40px;
+  height: 40px;
+  min-height: 40px;
+}
+
+#login .auth-tab {
+  min-height: 42px;
+  margin: 0;
+}
+
+/* Todos os formulários começam à mesma distância do subtítulo (login.css dava margem só a três deles). */
+#login .auth-form {
+  margin: 0;
+}

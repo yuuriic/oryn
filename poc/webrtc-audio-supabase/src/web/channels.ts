@@ -251,16 +251,28 @@ export interface ChannelNavOptions {
   canManage: boolean;
   /** Espaço encerrado: só leitura (texto legível; voz indisponível). */
   closed: boolean;
-  /** Canal de texto com o chat aberto. */
+  /** Canal de texto aberto no centro. */
   openTextId: string | null;
   /** Canal de voz da chamada em curso, se for deste espaço. */
   activeVoiceId: string | null;
+  /** Canal de voz aberto no centro (o palco), com ou sem chamada. */
+  selectedVoiceId?: string | null;
   /** Há uma chamada (ou verificação de entrada) em curso: nenhuma outra entrada é oferecida. */
   callBusy: boolean;
   onOpenText(channelId: string): void;
   onJoinVoice(channelId: string): void;
+  /** A voz da própria chamada: só volta ao palco, sem nova entrada. */
+  onOpenVoice?(channelId: string): void;
   onArchive(channelId: string): void;
+  /** "+" de cada seção (só com `canManage`): abre a criação já com o tipo da seção. */
+  onCreate?(kind: ChannelKind): void;
+  /** Canal com o menu de opções aberto, para o redesenho não fechá-lo. */
+  openMenuId?: string | null;
+  onMenuToggle?(channelId: string, open: boolean): void;
 }
+
+/** Nome de canal aceito pelo servidor (create_channel): a mesma regra do nome de sala. */
+export const isChannelName = (name: string): boolean => isRoomName(name.trim());
 
 /** Lista de canais do espaço selecionado: texto primeiro, depois voz com os participantes. Arquivados não aparecem. */
 export function renderChannelNav(doc: ChannelDocument, state: ChannelsState, opts: ChannelNavOptions): HTMLElement {
@@ -275,6 +287,7 @@ export function renderChannelNav(doc: ChannelDocument, state: ChannelsState, opt
   if (state.status === 'error' || state.status === 'denied') root.append(el('p', state.message?.text ?? CHANNELS_LOAD_FAILED, 'error channel-status'));
   if (state.status !== 'ready') return root;
 
+  // Ações do dono num menu do canal ("⋯"), para não espremer o nome. Mesmas permissões: só com `canManage`.
   const archiveButton = (c: ChannelSummary): HTMLElement | null => {
     if (!opts.canManage || c.is_default) return null;
     const archiving = typeof state.busy === 'object' && state.busy !== null && state.busy.archiving === c.channel_id;
@@ -283,14 +296,39 @@ export function renderChannelNav(doc: ChannelDocument, state: ChannelsState, opt
     b.disabled = state.busy !== null;
     b.setAttribute('aria-label', `Arquivar o canal ${c.name}`);
     b.addEventListener('click', () => opts.onArchive(c.channel_id));
-    return b;
+    const menu = el('details', undefined, 'channel-menu');
+    // O redesenho periódico não pode fechar o menu que a pessoa abriu (nem durante o arquivamento).
+    if (opts.openMenuId === c.channel_id || archiving) menu.setAttribute('open', '');
+    menu.addEventListener('toggle', () => opts.onMenuToggle?.(c.channel_id, (menu as HTMLDetailsElement).open));
+    const summary = el('summary', '⋯', 'channel-menu-btn');
+    summary.setAttribute('aria-label', `Opções do canal ${c.name}`);
+    summary.setAttribute('title', `Opções do canal ${c.name}`);
+    const box = el('div', undefined, 'channel-menu-list');
+    box.append(b);
+    menu.append(summary, box);
+    return menu;
   };
 
   const section = (title: string, kind: ChannelKind): HTMLElement | null => {
     const list = activeChannels(state.channels, kind);
-    if (list.length === 0) return null;
+    const creatable = opts.canManage && !opts.closed && opts.onCreate !== undefined;
+    if (list.length === 0 && !creatable) return null;
     const box = el('div', undefined, `channel-group channel-group-${kind}`);
-    box.append(el('p', title, 'channel-heading'));
+    const head = el('div', undefined, 'channel-heading-row');
+    head.append(el('p', title, 'channel-heading'));
+    if (creatable) {
+      const { onCreate } = opts;
+      const label = kind === 'text' ? 'Criar canal de texto' : 'Criar canal de voz';
+      const add = el('button', '+', 'channel-add icon-btn') as HTMLButtonElement;
+      add.type = 'button';
+      add.setAttribute('aria-label', label);
+      add.setAttribute('title', label);
+      add.setAttribute('data-create-kind', kind);
+      add.disabled = state.busy !== null;
+      add.addEventListener('click', () => onCreate?.(kind));
+      head.append(add);
+    }
+    box.append(head);
     const ul = el('ul', undefined, 'channel-list');
     for (const c of list) {
       const li = el('li', undefined, 'channel-item');
@@ -306,15 +344,18 @@ export function renderChannelNav(doc: ChannelDocument, state: ChannelsState, opt
         row.append(b);
       } else {
         const here = opts.activeVoiceId === c.channel_id;
+        const shown = opts.selectedVoiceId === c.channel_id;
         const people = state.participants[c.channel_id] ?? [];
-        const b = el('button', undefined, `channel-link channel-voice${here ? ' channel-in-call' : ''}`) as HTMLButtonElement;
+        const b = el('button', undefined, `channel-link channel-voice${here ? ' channel-in-call' : ''}${shown ? ' channel-open' : ''}`) as HTMLButtonElement;
         b.type = 'button';
         b.append(el('span', '🔊', 'channel-icon'), el('span', c.name, 'channel-name'));
-        const action = here ? 'você está nesta voz' : opts.closed ? 'espaço encerrado' : 'entrar na voz';
+        // A voz da própria chamada continua clicável, mas só para voltar ao palco: nunca uma segunda entrada.
+        const canReturn = here && opts.onOpenVoice !== undefined;
+        const action = here ? (canReturn ? 'você está nesta voz, abrir' : 'você está nesta voz') : opts.closed ? 'espaço encerrado' : 'entrar na voz';
         b.setAttribute('aria-label', `Canal de voz ${c.name}, ${people.length} ${people.length === 1 ? 'pessoa' : 'pessoas'}, ${action}`);
-        b.disabled = here || opts.closed || opts.callBusy;
-        if (here) b.setAttribute('aria-current', 'true');
-        b.addEventListener('click', () => opts.onJoinVoice(c.channel_id));
+        b.disabled = here ? !canReturn : opts.closed || opts.callBusy;
+        if (shown || (here && opts.selectedVoiceId === undefined)) b.setAttribute('aria-current', 'true');
+        b.addEventListener('click', () => (here ? opts.onOpenVoice?.(c.channel_id) : opts.onJoinVoice(c.channel_id)));
         row.append(b);
         if (people.length > 0) {
           const who = el('ul', undefined, 'channel-people');

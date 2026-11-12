@@ -14,13 +14,18 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:pg": "vitest run --config vitest.pg.config.ts",
-    "test:remote": "vitest run --config vitest.remote.config.ts"
+    "test:remote": "vitest run --config vitest.remote.config.ts",
+    "build:desktop": "tsc --noEmit && vite build --mode desktop",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.118.0"
   },
   "devDependencies": {
     "@electric-sql/pglite": "0.5.11",
+    "@tauri-apps/cli": "2.12.4",
     "@types/node": "24.19.2",
     "@types/pg": "8.23.1",
     "embedded-postgres": "17.10.0-beta.17",

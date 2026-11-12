@@ -1,0 +1,384 @@
+/* Midnight: composição por canal (ARQUITETURA_VISUAL_ORYN.md, P0). O canal selecionado define o centro e o painel
+   contextual, independente da chamada:
+   - Texto (main[data-channel='text']): o chat no centro e os membros ao lado.
+   - Voz (main[data-channel='voice']): o palco (participantes e Sons da sala) no centro e o chat ao lado.
+   A barra da chamada continua visível em qualquer tela. Só tokens existentes: sem cores, fontes ou imagens novas. A troca
+   de posição é só por grid-column, sem reordenar por CSS: a ordem do teclado segue a do DOM (chat antes dos membros). */
+
+/* ---------- Texto no centro ---------- */
+/* O palco sai da tela; a chamada continua na barra, e os elementos de áudio ficam fora de todo painel. */
+main[data-view='room'][data-channel='text'] #shell-main > #call-panel {
+  display: none;
+}
+
+/* O chat é o conteúdo do canal: não se fecha pelo centro. Abrir outro canal troca o conteúdo. */
+main[data-view='room'][data-channel='text'] #chat-close-btn {
+  display: none;
+}
+
+main[data-view='room'][data-channel='text'] #chat {
+  min-height: min(560px, 62dvh);
+}
+
+main[data-view='room'][data-channel='text'] #chat .chat-messages {
+  flex: 1 1 auto;
+  min-height: 200px;
+  max-height: none;
+}
+
+main[data-view='room'][data-channel='text'] .context-icon {
+  --i: var(--icon-chat);
+}
+
+@media (min-width: 1200px) {
+  /* O seletor de shell.css (chat na coluna da direita) pesa como dois ids: estas regras precisam pesar mais. */
+  main[data-view='room'][data-channel='text'] #shell-main.shell-main:has(> #chat:not([hidden])) > #chat {
+    grid-column: 1;
+    grid-row: auto;
+    position: static;
+  }
+
+  /* Sem o painel de membros, o chat ocupa a largura toda. */
+  main[data-view='room'][data-channel='text'] #shell-main.shell-main:not(:has(> #members:not([hidden]))) > #chat {
+    grid-column: 1 / -1;
+  }
+
+  main[data-view='room'][data-channel='text'] #shell-main.shell-main:has(> #chat:not([hidden])):has(> #members:not([hidden])) > #members {
+    grid-column: 2;
+    grid-row: 2 / span 40;
+    position: sticky;
+    top: var(--space-5);
+    box-sizing: border-box;
+    height: calc(100dvh - 150px);
+    max-height: calc(100dvh - 150px);
+    min-height: 420px;
+  }
+
+  main[data-view='room'][data-channel='text']:has(#call-bar:not([hidden])) #shell-main.shell-main:has(> #chat:not([hidden])):has(> #members:not([hidden])) > #members {
+    height: calc(100dvh - 150px - 112px);
+    max-height: calc(100dvh - 150px - 112px);
+    min-height: 360px;
+  }
+}
+
+/* ---------- Voz no centro: Sons da sala abaixo dos participantes ---------- */
+.sound-panel {
+  margin: var(--space-5) 0 0;
+  padding: var(--space-3) var(--space-5) var(--space-4);
+  background: linear-gradient(180deg, rgb(33 27 60 / 75%), rgb(21 17 42 / 92%));
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-xl);
+}
+
+/* O título recolhe e expande o catálogo; a seta muda de direção (o estado não depende só de cor). */
+#soundboard-details > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-height: 44px;
+  cursor: pointer;
+  list-style: none;
+  border-radius: var(--radius-md);
+}
+
+#soundboard-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+#soundboard-details > summary::after {
+  content: '▾' / '';
+  color: var(--color-text-secondary);
+  font-size: 1.125rem;
+  transition: transform var(--motion-base) ease;
+}
+
+#soundboard-details:not([open]) > summary::after {
+  transform: rotate(-90deg);
+}
+
+#soundboard-details > summary:focus-visible {
+  outline: 2px solid var(--color-gold);
+  outline-offset: 2px;
+}
+
+#soundboard-details > summary > h3 {
+  margin: 0;
+}
+
+#soundboard-details[open] > summary {
+  margin-bottom: var(--space-3);
+}
+
+main[data-view='room'][data-channel='voice'] .context-icon {
+  --i: var(--icon-wave);
+}
+
+/* ---------- Barra da chamada: aviso de um participante, na própria região ---------- */
+.call-bar-notice {
+  margin: 0;
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  font-size: 0.8125rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.call-bar-notice.error {
+  color: var(--color-error);
+}
+
+/* ---------- Seções Texto e Voz com o "+" de criar canal ---------- */
+.channel-heading-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-1);
+  margin: var(--space-2) 0 var(--space-1);
+}
+
+.channel-heading-row .channel-heading {
+  margin: 0 var(--space-1);
+}
+
+.channel-add {
+  --i: var(--icon-plus);
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  color: var(--color-text-secondary);
+  font-size: 0;
+}
+
+.channel-add::before {
+  content: '' / '';
+  display: block;
+  width: 16px;
+  height: 16px;
+  background: currentColor;
+  -webkit-mask: var(--i) center / contain no-repeat;
+  mask: var(--i) center / contain no-repeat;
+}
+
+.channel-add:hover:not(:disabled),
+.channel-add:focus-visible {
+  background: var(--color-gold-soft);
+  border-color: var(--color-gold);
+  color: var(--color-gold);
+}
+
+/* Canal aberto no centro: a mesma marca da seleção (borda e peso), também na voz. */
+.channel-link.channel-voice.channel-open {
+  background: var(--color-accent-soft);
+  border-color: var(--color-accent);
+  color: var(--color-text);
+}
+
+/* ---------- Modal "Criar canal" (mesma camada e padrão do "Criar sala") ---------- */
+#channel-dialog {
+  background: linear-gradient(160deg, rgb(33 27 60 / 96%), rgb(21 17 42 / 98%));
+  border-radius: var(--radius-xl);
+  padding: var(--space-5);
+}
+
+#channel-dialog .panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: nowrap;
+}
+
+#channel-dialog .create-close {
+  flex: none;
+  width: 44px;
+  min-width: 44px;
+  padding: 0;
+  font-size: 1.5rem;
+  line-height: 1;
+}
+
+#channel-dialog .create-lead {
+  margin: var(--space-2) 0 var(--space-5);
+  color: var(--color-text-secondary);
+}
+
+#channel-create-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+}
+
+.channel-kinds {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.channel-kinds legend {
+  margin-bottom: var(--space-2);
+  padding: 0;
+  color: var(--color-text-secondary);
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+/* Cada tipo é um cartão com o rádio nativo visível: o tipo escolhido aparece pelo rádio marcado e pela borda. */
+.channel-kind {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-3);
+  background: var(--color-elevated);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+}
+
+.channel-kind input {
+  width: 18px;
+  min-height: 18px;
+  height: 18px;
+  margin: 2px 0 0;
+  accent-color: var(--color-gold);
+}
+
+.channel-kind:has(input:checked) {
+  background: var(--color-gold-soft);
+  border-color: var(--color-gold);
+}
+
+.channel-kind:has(input:focus-visible) {
+  outline: 2px solid var(--color-gold);
+  outline-offset: 2px;
+}
+
+.channel-kind-icon {
+  color: var(--color-gold);
+  font-weight: 700;
+}
+
+.channel-kind-text-box {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.channel-kind-text-box strong {
+  color: var(--color-text);
+}
+
+.channel-kind-desc {
+  color: var(--color-text-secondary);
+  font-size: 0.8125rem;
+}
+
+.channel-name-field {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+/* O ícone do campo acompanha o tipo: "#" em texto, a onda em voz. */
+.channel-name-input {
+  position: relative;
+  display: block;
+  margin-top: var(--space-1);
+}
+
+.channel-name-icon {
+  position: absolute;
+  top: 50%;
+  left: var(--space-3);
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  color: var(--color-gold);
+  font-weight: 700;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+#channel-dialog[data-kind='text'] .channel-name-icon::before {
+  content: '#';
+}
+
+#channel-dialog[data-kind='voice'] .channel-name-icon::before {
+  content: '' / '';
+  width: 18px;
+  height: 18px;
+  background: currentColor;
+  -webkit-mask: var(--icon-wave) center / contain no-repeat;
+  mask: var(--icon-wave) center / contain no-repeat;
+}
+
+#channel-create-name {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 44px;
+  padding-left: calc(var(--space-3) + 26px);
+  font-size: 1rem;
+}
+
+#channel-create-form .create-hint {
+  margin: calc(var(--space-3) * -1) 0 0;
+  color: var(--color-text-secondary);
+  font-size: 0.8125rem;
+}
+
+#channel-create-error {
+  margin: 0;
+}
+
+#channel-create-form .create-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  margin-top: var(--space-1);
+}
+
+#channel-create-form button {
+  min-height: 44px;
+  margin: 0;
+}
+
+/* Confirmar: o dourado Midnight, com texto escuro (contraste do par dourado/fundo já usado em "Criar sala"). */
+#channel-create-btn {
+  background: var(--color-gold);
+  border: 1px solid var(--color-gold);
+  color: var(--color-bg);
+  font-weight: 700;
+}
+
+#channel-create-btn:disabled {
+  background: var(--color-gold-soft);
+  border-color: var(--color-divider);
+  color: var(--color-text-secondary);
+}
+
+@media (max-width: 480px) {
+  .channel-kinds {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  #channel-create-form .create-actions button {
+    flex: 1 1 auto;
+  }
+}

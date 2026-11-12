@@ -16,8 +16,12 @@ const roomsCss = read('src/web/styles/rooms.css');
 const voiceCss = read('src/web/styles/voice.css');
 const panelsCss = read('src/web/styles/panels.css');
 const goldCss = read('src/web/styles/gold.css');
+const midnightCss = read('src/web/styles/midnight.css');
+const midnightV2Css = read('src/web/styles/midnight-v2.css');
+const authCss = read('src/web/styles/auth.css');
+const callControlsCss = read('src/web/styles/call-controls.css');
 const entry = read('src/web/style.css');
-const allCss = [tokens, base, login, shellCss, roomsCss, voiceCss, panelsCss, goldCss, entry].join('\n');
+const allCss = [tokens, base, login, shellCss, roomsCss, voiceCss, panelsCss, goldCss, midnightCss, midnightV2Css, callControlsCss, authCss, entry].join('\n');
 
 const idsIn = (text: string, pattern: RegExp): string[] => [...text.matchAll(pattern)].map((m) => m[1]!);
 
@@ -73,9 +77,9 @@ describe('experiência de login', () => {
   });
 
   it('o formulário segue com os rótulos e o preenchimento automático do gerenciador de senhas', () => {
-    expect(html).toMatch(/<label>E-mail <input id="email" type="email" autocomplete="username" required \/><\/label>/);
-    expect(html).toMatch(/<label>Senha <input id="password" type="password" autocomplete="current-password" required \/><\/label>/);
-    expect(html).toMatch(/<button id="login-btn" type="submit">/);
+    expect(html).toMatch(/<label for="email">E-mail<\/label>\s*<span class="auth-input auth-icon-mail"><input id="email" type="email" autocomplete="username" required /);
+    expect(html).toMatch(/<label for="password">Senha<\/label>\s*<span class="auth-input auth-icon-lock"><input id="password" type="password" autocomplete="current-password" required /);
+    expect(html).toMatch(/<button id="login-btn" class="auth-primary" type="submit">Entrar<\/button>/);
   });
 
   it('o erro continua anunciado e fora da seção de login, que pode estar oculta', () => {
@@ -101,8 +105,8 @@ describe('estilos', () => {
     expect(urls.length).toBeGreaterThan(0);
     for (const u of urls) expect(u).toMatch(/^"data:image\/svg\+xml,%3Csvg xmlns=%27http:\/\/www\.w3\.org\/2000\/svg%27 [^"]*"$/);
     expect(allCss.replace(/url\("data:[^"]*"\)/g, '')).not.toMatch(/url\(/);
-    for (const css of [base, login, shellCss, roomsCss, voiceCss, panelsCss, goldCss]) expect(css).not.toMatch(/url\(/);
-    expect(idsIn(allCss, /@import\s+'([^']+)'/g)).toEqual(['./styles/tokens.css', './styles/base.css', './styles/login.css', './styles/shell.css', './styles/rooms.css', './styles/voice.css', './styles/panels.css', './styles/gold.css']);
+    for (const css of [base, login, shellCss, roomsCss, voiceCss, panelsCss, goldCss, midnightCss, midnightV2Css, callControlsCss, authCss]) expect(css).not.toMatch(/url\(/);
+    expect(idsIn(allCss, /@import\s+'([^']+)'/g)).toEqual(['./styles/tokens.css', './styles/base.css', './styles/login.css', './styles/shell.css', './styles/rooms.css', './styles/voice.css', './styles/panels.css', './styles/gold.css', './styles/midnight.css', './styles/midnight-v2.css', './styles/call-controls.css', './styles/auth.css']);
     expect(html).not.toMatch(/\sstyle=|<style\b/);
   });
 
@@ -154,45 +158,23 @@ describe('tokens Midnight', () => {
   });
 });
 
-describe('recursos futuros: visíveis e indisponíveis', () => {
-  const group = /<div class="future-features"[\s\S]*?<\/div>/.exec(html)?.[0] ?? '';
-  const buttons = [...group.matchAll(/<button\b[^>]*>[\s\S]*?<\/button>/g)].map((m) => m[0]);
+describe('controles sem funcionalidade: fora da interface (Midnight, P0)', () => {
   const sources = readdirSync(fileURLToPath(new URL('../src', import.meta.url)), { recursive: true, encoding: 'utf8' })
     .filter((f) => f.endsWith('.ts'))
     .map((f) => read(`src/${f.replaceAll('\\', '/')}`))
     .join('\n');
 
-  it('transmissão de tela e configurações avançadas de áudio, cada uma com "Em breve" no nome acessível', () => {
-    expect(buttons).toHaveLength(2);
-    expect(buttons[0]).toMatch(/Transmitir tela/);
-    expect(buttons[1]).toMatch(/Configurações avançadas de áudio/);
-    for (const b of buttons) expect(b).toMatch(/<span class="soon-badge">Em breve<\/span>/);
+  it('os placeholders antigos seguem fora; o único controle indisponível é compartilhar tela, sem nada ligado a ele', () => {
+    expect(html).not.toMatch(/future-features|future-btn|soon-badge|Transmitir tela|Configurações avançadas de áudio/);
+    expect(allCss).not.toMatch(/future-btn|future-features|soon-badge/);
+    expect(html).toMatch(/<button id="screen-btn" class="round-btn" type="button" aria-disabled="true" title="Compartilhamento de tela — em breve">Compartilhamento de tela — em breve<\/button>/);
+    expect(main).not.toMatch(/screen-btn|screenBtn/); // sem ouvinte: o clique não faz nada
   });
 
-  it('indisponíveis sem sair do Tab: aria-disabled, type="button" e a explicação associada', () => {
-    for (const b of buttons) {
-      expect(b).toMatch(/\saria-disabled="true"/);
-      expect(b).toMatch(/\stype="button"/);
-      expect(b).toMatch(/\saria-describedby="future-features-note"/);
-      expect(b).not.toMatch(/\sid=/);
-    }
-    expect(html).toMatch(/id="future-features-note"[^>]*>Ainda não disponíveis nesta versão\.</);
-  });
-
-  it('nenhum código os liga a uma funcionalidade nem pede permissão de captura de tela ou de dispositivos', () => {
+  it('nenhum código pede captura de tela ou escolhe dispositivos', () => {
     expect(sources).toMatch(/navigator\.mediaDevices\.getUserMedia/); // controle: a leitura encontrou o código-fonte
     expect(sources).not.toMatch(/future-btn|future-features|soon-badge/);
     expect(sources).not.toMatch(/getDisplayMedia|enumerateDevices|selectAudioOutput|setSinkId/);
     expect(sources).not.toMatch(/video:\s*true/);
-  });
-
-  it('distinguíveis dos controles disponíveis sem depender só de cor, e o hover genérico não os acende', () => {
-    const rule = /button\.future-btn\[aria-disabled='true'\],\s*button\.future-btn\[aria-disabled='true'\]:hover\s*\{([^}]*)\}/.exec(voiceCss)?.[1] ?? '';
-    expect(rule).toMatch(/background:\s*transparent/);
-    expect(rule).toMatch(/border:\s*1px dashed var\(--color-border-control\)/);
-    expect(rule).toMatch(/color:\s*var\(--color-text-secondary\)/);
-    expect(rule).toMatch(/cursor:\s*not-allowed/);
-    expect(rule).toMatch(/min-height:\s*44px/);
-    expect(rule).not.toMatch(/opacity/);
   });
 });

@@ -1,0 +1,15 @@
+[package]
+name = "oryn-desktop"
+version = "0.1.0"
+description = "Oryn para Windows: host Tauri 2 do mesmo cliente web (P06)"
+edition = "2021"
+rust-version = "1.90"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "=2.7.4", features = [] }
+
+[dependencies]
+# Mesmas versões exatas da POC-01B. Sem plugins nem comandos: captura, WebRTC, Realtime e armazenamento usam só as
+# APIs web do WebView2. Updater e sessão protegida entram em incrementos próprios.
+tauri = { version = "=2.12.5", features = [] }

@@ -333,7 +333,7 @@ describe('Hybrid Midnight Gold: criação sob demanda e chat contextual', () => 
     expect(main).toMatch(/ui\.createDialog\.addEventListener\('click', \(event\) => \{\n  if \(event\.target !== ui\.createDialog\) return;[^]*?if \(outside\) closeCreate\(\);/);
     // Tab preso ao modal; Escape global não age nos painéis de fundo com o modal aberto.
     expect(main).toMatch(/ui\.createDialog\.addEventListener\('keydown', \(event\) => \{\n  if \(event\.key !== 'Tab'\) return;/);
-    expect(main).toContain('if (ui.profilePanel.open || ui.createDialog.open) return;');
+    expect(main).toContain('if (ui.profilePanel.open || ui.createDialog.open || ui.channelDialog.open) return;');
     // Durante o envio: botões de fechar desabilitados; erros do create_room aparecem no modal, não atrás dele.
     const render = fn('renderRooms');
     expect(render).toContain('ui.createCancelBtn.disabled = busy');
@@ -368,11 +368,16 @@ describe('Hybrid Midnight Gold: criação sob demanda e chat contextual', () => 
     expect(render).toContain('ui.createEmptyBtn.hidden = selectedRoomId !== null || !noRooms');
   });
 
-  it('o chat aberto acompanha a sala escolhida, sem trocar com mensagem pendente e sem abrir sozinho', () => {
+  it('abrir uma sala mostra o texto padrão dela (Midnight), sem trocar o chat com mensagem pendente', () => {
     const nav = fn('navigate');
-    expect(nav).toContain("chat.state.status !== 'closed'");
-    expect(nav).toContain('chat.state.pending.length === 0');
-    expect(nav).toContain('chat.open(room.room_id, !room.is_open)');
+    expect(nav).toContain('const changed = roomId !== shell.state.selectedRoomId;');
+    expect(nav).toMatch(/if \(room && changed\) \{\n\s*selectedVoiceId = null;\n\s*showText\(room\.room_id\);/);
+    expect(nav).not.toMatch(/startCall|endCall|beginCall|setMuted/);
+    const text = fn('showText');
+    expect(text).toContain("centerKind = 'text';");
+    expect(text).toContain('chat.state.pending.length === 0');
+    expect(text).toContain('chat.open(roomId, !room.is_open, channelId)');
+    expect(text).toContain('members.open(roomId, room.name, !room.is_open)');
   });
 
   it('logout esquece criação e administração abertas', () => {
@@ -385,12 +390,42 @@ describe('I-2: canais do espaço na navegação', () => {
   const main = read('src/web/main.ts');
   const fn = (name: string): string => new RegExp(`function ${name}[^]*?\n}\n`).exec(main)![0];
 
-  it('a barra lateral tem a lista de canais e um formulário de criação fixo (fora da lista redesenhada), ambos ocultos no início', () => {
+  it('a barra lateral tem só a lista de canais; criar canal é um modal fora da lista redesenhada, oculto no início', () => {
     const nav = /<section id="channel-nav"[^]*?<\/section>/.exec(html)![0];
     expect(nav).toMatch(/<section id="channel-nav" class="channel-nav label-full" aria-label="Canais do espaço" hidden>/);
-    expect(nav).toMatch(/<div id="channel-list"><\/div>\s*<form id="channel-create-form"[^>]*hidden>/);
-    expect(nav).toMatch(/<select id="channel-create-kind">\s*<option value="text" selected>Texto<\/option>\s*<option value="voice">Voz<\/option>/);
+    expect(nav).toMatch(/<div id="channel-list"><\/div>\s*<\/section>/);
+    expect(nav).not.toContain('channel-create-form');
     expect(html.indexOf('id="room-nav"')).toBeLessThan(html.indexOf('id="channel-nav"'));
+    const dialog = /<dialog id="channel-dialog"[^]*?<\/dialog>/.exec(html)![0];
+    expect(dialog).toMatch(/^<dialog id="channel-dialog" class="[^"]*" aria-labelledby="channel-dialog-title"[^>]*hidden>/);
+    expect(dialog).toMatch(/<legend>Tipo do canal<\/legend>/);
+    expect(dialog).toMatch(/<input id="channel-kind-text" type="radio" name="channel-kind" value="text" checked \/>/);
+    expect(dialog).toMatch(/<input id="channel-kind-voice" type="radio" name="channel-kind" value="voice" \/>/);
+    expect(dialog).toMatch(/<input id="channel-create-name" type="text" maxlength="80"[^>]*required/);
+    expect(dialog).toMatch(/<p id="channel-create-error" class="error" role="alert" hidden><\/p>/);
+    expect(dialog).toMatch(/<button id="channel-cancel-btn" class="ghost-btn" type="button">Cancelar<\/button>\s*<button id="channel-create-btn" type="submit" disabled>Criar canal<\/button>/);
+    expect(html.indexOf('id="channel-dialog"')).toBeGreaterThan(html.indexOf('id="shell-main"')); // no conteúdo, como o "Criar sala"
+  });
+
+  it('modal de canal: tipo da seção, foco no nome, nome válido para enviar, Esc/×/Cancelar devolvem o foco ao "+"', () => {
+    const open = fn('openChannelCreate');
+    expect(open).toContain("ui.channelKindText.checked = kind === 'text';");
+    expect(open).toContain("ui.channelKindVoice.checked = kind === 'voice';");
+    expect(open).toContain('ui.channelDialog.showModal();');
+    expect(open.indexOf('ui.channelDialog.showModal();')).toBeLessThan(open.indexOf('ui.channelCreateName.focus();'));
+    const render = fn('renderChannelDialog');
+    expect(render).toContain('ui.channelCreateBtn.disabled = busy || !isChannelName(ui.channelCreateName.value);');
+    expect(render).toContain('ui.channelCancelBtn.disabled = busy;');
+    expect(render).toContain("setMessage(ui.channelCreateError, message?.tone === 'error' ? message : null);");
+    const close = fn('closeChannelCreate');
+    expect(close).toContain('if (!ui.channelDialog.open || channelCreating()) return;');
+    expect(close).toContain('[data-create-kind="${kind}"]');
+    expect(main).toContain("ui.channelCancelBtn.addEventListener('click', () => closeChannelCreate())");
+    expect(main).toContain("ui.channelCloseBtn.addEventListener('click', () => closeChannelCreate())");
+    expect(main).toContain("ui.channelDialog.addEventListener('cancel', (event) => { event.preventDefault(); closeChannelCreate(); })");
+    // Erro: o modal segue aberto com o nome e o tipo; sucesso: fecha e o texto novo abre no centro.
+    expect(main).toMatch(/if \(id === null\) \{\n\s*\/\/ Erro[^\n]*\n\s*renderChannelDialog\(\);\n\s*ui\.channelCreateName\.focus\(\);\n\s*return;/);
+    expect(main).toMatch(/closeChannelCreate\(false\);\n[^\n]*\n\s*if \(kind === 'text' && roomId !== null && channels\.state\.roomId === roomId\) openChannelChat\(roomId, id\);/);
   });
 
   it('selecionar um espaço abre os canais dele; voltar à visão geral fecha', () => {
@@ -403,9 +438,10 @@ describe('I-2: canais do espaço na navegação', () => {
   it('só o dono de um espaço aberto vê criar e arquivar; o servidor confere de novo', () => {
     const render = fn('renderChannels');
     expect(render).toContain("const canManage = room.role === 'owner' && room.is_open;");
-    expect(render).toContain("ui.channelCreateForm.hidden = !canManage || s.status !== 'ready';");
+    expect(render).toContain('if (ui.channelDialog.open && !canManage && !channelCreating()) closeChannelCreate(false);');
     expect(render).toContain('canManage,');
-    expect(main).toContain('if (ui.channelCreateForm.hidden || ui.channelCreateBtn.disabled) return;');
+    expect(render).toContain('onCreate: (kind) => openChannelCreate(kind),');
+    expect(main).toContain('if (!ui.channelDialog.open || ui.channelCreateBtn.disabled || channelCreating()) return;');
   });
 
   it('voz por canal: o canal escolhido chega ao MeshSignaling; as repetições da entrada mantêm o canal', () => {
@@ -420,8 +456,9 @@ describe('I-2: canais do espaço na navegação', () => {
   it('texto por canal: o canal padrão segue pelo caminho antigo; os outros pelas RPCs de canal', () => {
     const open = fn('openChannelChat');
     expect(open).toContain("const target = defaultChannel(channels.state.channels, 'text')?.channel_id === channelId ? null : channelId;");
-    expect(open).toContain('chat.open(roomId, !room.is_open, target);');
-    expect(fn('renderChat')).toContain('`${chatRoomName} · #${chatChannel.name}`');
+    expect(open).toContain('showText(roomId, target);');
+    expect(fn('showText')).toContain('chat.open(roomId, !room.is_open, channelId);');
+    expect(fn('renderChat')).toContain('ui.chatRoom.textContent = chatChannel ? `#${chatChannel.name}` : chatRoomName;');
   });
 
   it('logout fecha os canais e esquece o canal da chamada e da entrada', () => {

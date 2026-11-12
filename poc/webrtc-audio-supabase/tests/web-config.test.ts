@@ -21,7 +21,7 @@ const ok = (over: Record<string, string | undefined> = {}) => parseWebConfig({ V
 describe('configuração do cliente (só a chave publicável)', () => {
   it('aceita URL do projeto e chave publicável; STUN padrão sem TURN; sala opcional', () => {
     const c = ok({ VITE_ORYN_ROOM_ID: '0C2A0000-0000-4000-8000-000000000001'.toLowerCase() });
-    expect(c).toEqual({ supabaseUrl: URL_OK, publishableKey: KEY_OK, defaultRoomId: '0c2a0000-0000-4000-8000-000000000001', iceServers: [{ urls: DEFAULT_STUN }] });
+    expect(c).toEqual({ supabaseUrl: URL_OK, publishableKey: KEY_OK, defaultRoomId: '0c2a0000-0000-4000-8000-000000000001', iceServers: [{ urls: DEFAULT_STUN }], publicOrigin: null, googleAuth: 'off' });
     expect(ok({ VITE_ORYN_STUN_URLS: 'stun:stun.cloudflare.com:3478, stun:stun.l.google.com:19302' }).iceServers).toEqual([{ urls: ['stun:stun.cloudflare.com:3478', 'stun:stun.l.google.com:19302'] }]);
   });
 

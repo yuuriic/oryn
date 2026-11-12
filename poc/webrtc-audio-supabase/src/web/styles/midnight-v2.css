@@ -1,0 +1,684 @@
+/* Midnight V2: duas barras laterais (global de salas + contextual de canais), responsividade e acabamento.
+   Só tokens existentes (fundo escuro, violeta, dourado). Nada aqui muda comportamento: os controladores são os mesmos.
+
+   Larguras: barra global 72 px (56 px no celular); lateral contextual 248 px, recolhível na tela larga e gaveta no
+   celular, sempre ao lado da barra global (nunca por cima dela). A barra da chamada começa depois das duas. */
+
+/* ---------- Grade: barra global | lateral contextual | conteúdo ---------- */
+main:has(> #account:not([hidden])) {
+  --rail-width: 72px;
+  --context-width: 248px;
+  --sidebar-width: calc(var(--rail-width) + var(--context-width)); /* a barra da chamada usa este deslocamento */
+  grid-template-columns: var(--rail-width) var(--context-width) minmax(0, 1fr);
+}
+
+main[data-sidebar='collapsed']:has(> #account:not([hidden])) {
+  --context-width: 0px;
+}
+
+.rail {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  position: sticky;
+  top: 0;
+  z-index: 32; /* acima da gaveta de canais e da camada escura: nunca coberta */
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  width: var(--rail-width);
+  height: 100vh;
+  height: 100dvh;
+  padding: var(--space-4) 0 var(--space-3);
+  background: linear-gradient(180deg, rgb(15 12 32 / 98%), rgb(10 8 20 / 98%));
+  border-right: 1px solid var(--color-divider);
+}
+
+main:has(> #account:not([hidden])) .sidebar {
+  grid-column: 2;
+  width: var(--context-width);
+  padding: var(--space-4) var(--space-3) var(--space-3);
+}
+
+main:has(> #account:not([hidden])) .shell-main {
+  grid-column: 3;
+}
+
+@media (min-width: 769px) {
+  main[data-sidebar='collapsed'] .sidebar {
+    display: none;
+  }
+
+  #shell-menu-btn {
+    display: none;
+  }
+}
+
+/* ---------- Barra global ---------- */
+.rail-brand {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  margin-bottom: var(--space-2);
+}
+
+.rail-btn {
+  position: relative;
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  min-height: 48px;
+  margin: 0;
+  padding: 0;
+  background: var(--color-elevated);
+  border: 1px solid var(--color-divider);
+  border-radius: 16px;
+  color: var(--color-text-secondary);
+  font-size: 0;
+  line-height: 0;
+  transition: border-radius var(--motion-base) ease, background var(--motion-base) ease;
+}
+
+.rail-btn::before {
+  width: 22px;
+  height: 22px;
+}
+
+.rail-btn:hover:not(:disabled) {
+  background: var(--color-accent-soft);
+  border-radius: 14px;
+  color: var(--color-text);
+}
+
+/* Início ativo: o violeta da marca, com o estado também no aria-current. */
+#rooms-home-btn.rail-btn[aria-current='true'] {
+  background: linear-gradient(135deg, var(--color-accent-strong), #4f22c9);
+  border-color: var(--color-accent);
+  box-shadow: var(--glow-accent);
+  color: #fff;
+}
+
+/* Criar sala: o "+" dourado da marca. */
+#create-open-btn.rail-btn {
+  min-height: 48px;
+  margin: var(--space-1) 0 0;
+  background: rgb(242 181 68 / 8%);
+  border: 1.5px dashed var(--color-gold);
+  border-radius: 16px;
+  box-shadow: none;
+  color: var(--color-gold);
+}
+
+#create-open-btn.rail-btn:hover:not(:disabled) {
+  background: var(--color-gold-soft);
+  border-style: solid;
+}
+
+.rail-divider {
+  flex: none;
+  width: 32px;
+  height: 2px;
+  margin: var(--space-1) 0;
+  background: var(--color-divider);
+  border-radius: 2px;
+}
+
+/* Salas: rolagem própria; Início e Criar sala ficam fora dela, sempre alcançáveis. */
+.rail-rooms {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.rail-rooms::-webkit-scrollbar {
+  display: none;
+}
+
+.rail-rooms .room-list {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-1) 0;
+}
+
+.rail-rooms .room-nav-status {
+  margin: var(--space-2) var(--space-1);
+  font-size: 0.6875rem;
+  text-align: center;
+}
+
+.rail .room-link {
+  position: relative;
+  justify-content: center;
+  width: 52px;
+  min-height: 52px;
+  height: 52px;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 16px;
+}
+
+.rail .room-link:hover:not(:disabled) {
+  background: transparent;
+}
+
+.rail .room-text {
+  display: none; /* o nome continua no aria-label e aparece na dica */
+}
+
+.rail .room-initials {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  background: var(--color-elevated);
+  border: 1px solid var(--color-divider);
+  border-radius: 14px;
+  font-size: 0.875rem;
+  font-weight: 700;
+  transition: border-radius var(--motion-base) ease;
+}
+
+.rail .room-link:hover .room-initials {
+  border-color: var(--color-accent);
+  border-radius: 12px;
+}
+
+/* Sala selecionada: anel dourado e a marca à esquerda (estado também no aria-current, não só na cor). */
+.rail .room-link[aria-current='true'] .room-initials {
+  background: linear-gradient(135deg, rgb(109 61 242 / 45%), rgb(42 31 85 / 80%));
+  border: 2px solid var(--color-gold);
+  box-shadow: var(--glow-gold);
+}
+
+.rail .room-link::before {
+  content: '' / '';
+  position: absolute;
+  top: 50%;
+  left: -10px;
+  width: 4px;
+  height: 0;
+  background: var(--color-gold);
+  border-radius: 0 4px 4px 0;
+  transform: translateY(-50%);
+  transition: height var(--motion-base) ease;
+}
+
+.rail .room-link[aria-current='true']::before {
+  height: 32px;
+}
+
+.rail .room-link:hover:not([aria-current='true'])::before {
+  height: 14px;
+}
+
+/* Sala da chamada: ponto verde de conexão (o aria-label diz "na chamada"). */
+.rail .room-link.room-in-call .room-initials::after {
+  content: '' / '';
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  width: 12px;
+  height: 12px;
+  background: var(--color-success);
+  border: 2px solid rgb(10 8 20);
+  border-radius: 50%;
+}
+
+/* Dica com o nome da sala, também ao focar pelo teclado. Fixa, para a lista que rola não cortá-la. */
+.rail .room-link:hover::after,
+.rail .room-link:focus-visible::after,
+.rail-btn:hover::after,
+.rail-btn:focus-visible::after {
+  content: attr(data-name);
+  position: fixed;
+  left: calc(var(--rail-width) + var(--space-2));
+  z-index: 40;
+  max-width: 240px;
+  padding: var(--space-1) var(--space-3);
+  background: var(--color-elevated);
+  border: 1px solid var(--color-border-control);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 45%);
+  color: var(--color-text);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.rail-btn:hover::after,
+.rail-btn:focus-visible::after {
+  content: attr(title);
+}
+
+/* ---------- Lateral contextual ---------- */
+.sidebar-head {
+  align-items: center;
+  margin-bottom: var(--space-3);
+  padding: 0 var(--space-1) var(--space-3);
+  border-bottom: 1px solid var(--color-divider);
+}
+
+.sidebar-title {
+  min-width: 0;
+}
+
+.sidebar-room {
+  margin: 0;
+  overflow: hidden;
+  color: var(--color-text);
+  font-size: 1.0625rem;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-room-detail {
+  margin: 2px 0 0;
+  color: var(--color-text-secondary);
+  font-size: 0.8125rem;
+}
+
+.sidebar-hint {
+  margin: var(--space-2) var(--space-1);
+  color: var(--color-text-secondary);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+/* Os canais ocupam o meio, com rolagem própria; a conta fica no pé. */
+main:has(> #account:not([hidden])) .sidebar .channel-nav {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  padding: 0 var(--space-1);
+  border-top: 0;
+}
+
+main:has(> #account:not([hidden])) .sidebar:has(#channel-nav:not([hidden])) {
+  overflow-y: hidden;
+}
+
+.sidebar .sidebar-foot {
+  margin-top: auto;
+}
+
+.sidebar .nav-btn {
+  min-height: 44px;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+}
+
+/* ---------- Canais: nome inteiro; ações do dono no menu "⋯" ---------- */
+.channel-row {
+  position: relative;
+}
+
+.channel-link .channel-name {
+  flex: 1 1 auto;
+}
+
+.channel-menu {
+  position: relative;
+  flex: none;
+}
+
+.channel-menu > summary {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-md);
+  color: var(--color-text-secondary);
+  font-size: 1.125rem;
+  font-weight: 700;
+  line-height: 0;
+  list-style: none;
+  cursor: pointer;
+}
+
+.channel-menu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.channel-menu > summary:hover,
+.channel-menu[open] > summary {
+  background: var(--color-elevated);
+  color: var(--color-text);
+}
+
+.channel-menu > summary:focus-visible {
+  outline: 2px solid var(--color-gold);
+  outline-offset: 1px;
+}
+
+.channel-menu-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 6;
+  min-width: 148px;
+  padding: var(--space-1);
+  background: var(--color-elevated);
+  border: 1px solid var(--color-border-control);
+  border-radius: var(--radius-md);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 50%);
+}
+
+.channel-menu-list .channel-archive {
+  display: block;
+  width: 100%;
+  min-height: 36px;
+  padding: 0 var(--space-3);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--color-error);
+  font-size: 0.875rem;
+  text-align: left;
+}
+
+.channel-menu-list .channel-archive:hover:not(:disabled) {
+  background: rgb(255 138 150 / 10%);
+}
+
+/* ---------- Cabeçalho: botão de canais (recolher na tela larga, gaveta no celular) ---------- */
+.header-icon-btn {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  min-height: 44px;
+  padding: 0;
+  background: var(--color-elevated);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-md);
+  color: var(--color-text);
+  font-size: 1.125rem;
+  line-height: 0;
+}
+
+.header-icon-btn:hover:not(:disabled) {
+  background: var(--color-accent-soft);
+}
+
+/* ---------- Geometria única dos botões só de ícone ---------- */
+/* Texto do botão a 0 (o nome segue acessível) e sem espaço entre itens. O texto invisível ainda vira uma segunda linha
+   da grade; com place-content: center as linhas ficam juntas no meio, em vez de se esticarem (o que subia o ícone).
+   Vale para todos os botões redondos ou quadrados de ícone. */
+.call-bar-actions .round-btn,
+#rooms-refresh-btn,
+#rooms .room-admin > summary,
+#chat-form #chat-send-btn,
+#chat-close-btn,
+#members-close-btn,
+.channel-add,
+.rail-btn,
+.header-icon-btn {
+  place-content: center;
+  gap: 0;
+  line-height: 0;
+}
+
+.call-bar-actions .round-btn::before,
+.rail-btn::before {
+  margin: 0;
+}
+
+/* ---------- Painéis: bordas discretas, raios e espaçamentos consistentes ---------- */
+#chat,
+#members,
+.sound-panel {
+  border-color: rgb(255 255 255 / 7%);
+  border-radius: var(--radius-xl);
+  box-shadow: 0 1px 0 rgb(255 255 255 / 4%) inset, 0 16px 40px rgb(0 0 0 / 25%);
+}
+
+/* Texto no centro: o cabeçalho da página já diz "#canal"; o cabeçalho do painel sairia repetido. */
+main[data-view='room'][data-channel='text'] #chat > .panel-head {
+  display: none;
+}
+
+/* ---------- Telas médias (769–1199): centro prioritário ---------- */
+@media (min-width: 769px) and (max-width: 1199px) {
+  main:has(> #account:not([hidden])) {
+    --context-width: 232px;
+  }
+
+  main[data-sidebar='collapsed']:has(> #account:not([hidden])) {
+    --context-width: 0px;
+  }
+
+  .shell-main {
+    padding-top: var(--space-4);
+    padding-inline: var(--space-5);
+  }
+}
+
+/* ---------- Celular (até 768): barra global compacta e sempre visível; canais em gaveta ao lado dela ---------- */
+@media (max-width: 768px) {
+  main:has(> #account:not([hidden])) {
+    --rail-width: 56px;
+    --sidebar-width: var(--rail-width);
+    grid-template-columns: var(--rail-width) minmax(0, 1fr);
+  }
+
+  /* Sem o atalho padding: o fundo continua com a folga da barra da chamada (gold.css), senão os sons ficariam atrás dela. */
+  main:has(> #account:not([hidden])) .shell-main {
+    grid-column: 2;
+    padding-top: var(--space-3);
+    padding-inline: var(--space-3);
+  }
+
+  .rail {
+    gap: var(--space-2);
+    padding: var(--space-3) 0 var(--space-2);
+  }
+
+  .rail-brand {
+    width: 28px;
+    height: 28px;
+    margin-bottom: 0;
+  }
+
+  .rail-btn,
+  #create-open-btn.rail-btn {
+    width: 44px;
+    height: 44px;
+    min-height: 44px;
+    border-radius: 14px;
+  }
+
+  .rail-btn::before {
+    width: 20px;
+    height: 20px;
+  }
+
+  .rail .room-link {
+    width: 48px;
+    height: 48px;
+    min-height: 48px;
+  }
+
+  .rail .room-initials {
+    width: 40px;
+    height: 40px;
+    border-radius: 12px;
+    font-size: 0.8125rem;
+  }
+
+  .rail .room-link::before {
+    left: -4px;
+  }
+
+  /* A gaveta abre ao lado da barra global, nunca por cima dela. */
+  main:has(> #account:not([hidden])) .sidebar {
+    inset: 0 auto 0 var(--rail-width);
+    width: min(280px, calc(100vw - var(--rail-width) - 32px));
+  }
+
+  .shell-backdrop {
+    left: var(--rail-width);
+    width: auto;
+  }
+
+  #sidebar-toggle {
+    display: none;
+  }
+
+  #shell-menu-btn {
+    display: grid;
+  }
+
+  /* A barra da chamada fica à direita da barra global; microfone e Sair seguem visíveis. */
+  .call-bar {
+    left: calc(var(--rail-width) + var(--space-2));
+  }
+
+  .rail .room-link:hover::after,
+  .rail .room-link:focus-visible::after,
+  .rail-btn:hover::after,
+  .rail-btn:focus-visible::after {
+    display: none; /* no toque, a dica atrapalharia; o nome está no aria-label */
+  }
+}
+
+@media (max-width: 480px) {
+  /* Sair da chamada redondo: só o ícone, centralizado (sem o espaço do texto invisível). */
+  #leave-btn {
+    gap: 0;
+    line-height: 0;
+  }
+}
+
+/* ---------- Cabeçalho: hierarquia mais limpa, sem quebrar as ações à toa ---------- */
+.context-header .context-text {
+  flex: 1 1 160px;
+}
+
+.context-header .context-icon {
+  width: 48px;
+  height: 48px;
+}
+
+.context-header .context-icon::after {
+  width: 22px;
+  height: 22px;
+}
+
+.context-text h1 {
+  font-size: 1.625rem;
+}
+
+/* Glifos de texto (‹ ☰ ⋯) centralizam pela própria linha; só os ícones por máscara usam line-height 0. */
+.header-icon-btn,
+.channel-menu > summary {
+  font-size: 1.375rem;
+  line-height: 1;
+}
+
+@media (max-width: 768px) {
+  .context-header .context-icon {
+    display: none;
+  }
+
+  .context-text h1 {
+    font-size: 1.375rem;
+  }
+
+  .context-header {
+    gap: var(--space-2) var(--space-3);
+    margin-bottom: var(--space-4);
+  }
+
+  .context-actions #rooms .rooms li > .buttons,
+  .context-actions {
+    gap: 6px;
+  }
+
+  #rooms .buttons button.room-join {
+    padding: 0 var(--space-3);
+    font-size: 0.8125rem;
+    white-space: nowrap;
+  }
+}
+
+@media (max-width: 480px) {
+  /* Chat no celular: menos moldura, mais área para mensagens e o campo. */
+  #chat,
+  #members {
+    padding: var(--space-3);
+  }
+
+  #chat .panel-head,
+  #members .panel-head {
+    margin: 0 calc(-1 * var(--space-3)) var(--space-2);
+    padding: 0 var(--space-3) var(--space-2);
+  }
+}
+
+@media (max-width: 380px) {
+  /* Entrar na chamada só com o ícone; o nome do botão segue o mesmo para leitores de tela. */
+  #rooms .buttons button.room-join {
+    justify-content: center;
+    width: 44px;
+    padding: 0;
+    font-size: 0;
+    gap: 0;
+    line-height: 0;
+  }
+}
+
+/* Recolher/mostrar canais: seta desenhada (o glifo de texto ficava abaixo do centro). Gira com aria-expanded. */
+#sidebar-toggle #sidebar-toggle-icon {
+  display: none;
+}
+
+#sidebar-toggle::before {
+  content: '' / '';
+  width: 9px;
+  height: 9px;
+  margin-left: 6px;
+  border-bottom: 2px solid currentColor;
+  border-left: 2px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform var(--motion-base) ease, margin var(--motion-base) ease;
+}
+
+#sidebar-toggle[aria-expanded='false']::before {
+  margin: 0 6px 0 0;
+  transform: rotate(-135deg);
+}
+
+/* Janela intermediária (769–1199): o cabeçalho cabe numa linha. Sem o ícone de contexto e com Chat e Membros só no
+   ícone (o nome do botão segue o mesmo, inclusive "Chat aberto"/"Membros abertos"), como no celular. */
+@media (min-width: 769px) and (max-width: 1199px) {
+  .context-header .context-icon {
+    display: none;
+  }
+
+  #rooms .buttons button.room-chat,
+  #rooms .buttons button.room-members {
+    justify-content: center;
+    width: 44px;
+    min-height: 44px;
+    padding: 0;
+    font-size: 0;
+    gap: 0;
+    line-height: 0;
+  }
+}

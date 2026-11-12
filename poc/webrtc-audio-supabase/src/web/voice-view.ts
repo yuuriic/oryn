@@ -27,6 +27,28 @@ export function micLabel(mic: string): string {
   return '';
 }
 
+/** Fases da chamada que a barra resume. Os nomes técnicos ficam no diagnóstico. */
+export type BarPhase = 'idle' | 'requesting-mic' | 'connecting-signaling' | 'waiting-peer' | 'negotiating' | 'connected' | 'ended' | 'failed';
+
+/**
+ * Estado da chamada na barra: só estados resumidos, sem diagnóstico. "Reconectando…" quando algum participante está
+ * voltando; a entrada aceita pelo servidor já é "Em chamada", mesmo sozinho na voz.
+ */
+export function callBarStatus(phase: BarPhase, reconnecting: boolean): string {
+  if (phase === 'requesting-mic') return 'Aguardando o microfone…';
+  if (phase === 'connecting-signaling') return 'Entrando…';
+  // Já na voz, ligando o áudio com os outros participantes.
+  if (phase === 'negotiating') return reconnecting ? 'Reconectando…' : 'Conectando…';
+  if (phase === 'waiting-peer' || phase === 'connected') return reconnecting ? 'Reconectando…' : 'Em chamada';
+  if (phase === 'failed' || phase === 'ended') return 'Chamada encerrada';
+  return '';
+}
+
+/** Identificação da chamada na barra: o canal de voz conectado e a sala dele. */
+export function callBarTitle(voiceName: string | null, roomName: string): string {
+  return voiceName === null ? roomName : `${voiceName} · ${roomName}`;
+}
+
 /** A sala em tela não é a da chamada: a chamada continua, e a pessoa precisa saber onde. */
 export function otherRoomNote(active: boolean, selectedRoomId: string | null, callRoomId: string | null, room: string): string | null {
   if (!active || selectedRoomId === null || selectedRoomId === callRoomId) return null;

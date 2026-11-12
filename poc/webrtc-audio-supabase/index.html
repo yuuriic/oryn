@@ -13,76 +13,139 @@
   </head>
   <body>
     <main id="app">
-      <header class="brand">
-        <h1>Oryn</h1>
+      <!-- Identidade (painel esquerdo da autenticação). Só recursos que o Oryn já tem: voz, canais e mensagens. -->
+      <header class="brand auth-hero">
+        <div class="auth-hero-mark"><span class="brand-mark" aria-hidden="true"></span><h1>Oryn</h1></div>
         <p class="brand-tagline" lang="en">Stay close. Play on.</p>
+        <p class="auth-hero-lead">O lugar do seu grupo para conversar enquanto joga.</p>
+        <ul class="auth-features" aria-label="O que o Oryn oferece">
+          <li class="auth-feature auth-feature-voice"><span class="auth-feature-icon" aria-hidden="true"></span><span><strong>Voz em grupo</strong><span class="auth-feature-text">Entre no canal de voz da sala e fale com o seu grupo.</span></span></li>
+          <li class="auth-feature auth-feature-channels"><span class="auth-feature-icon" aria-hidden="true"></span><span><strong>Canais por assunto</strong><span class="auth-feature-text">Texto e voz organizados em cada sala.</span></span></li>
+          <li class="auth-feature auth-feature-chat"><span class="auth-feature-icon" aria-hidden="true"></span><span><strong>Mensagens que ficam</strong><span class="auth-feature-text">O histórico de cada canal fica para quem é da sala.</span></span></li>
+        </ul>
       </header>
       <p id="config-error" class="error" role="alert" hidden></p>
 
       <section id="login" aria-labelledby="login-title" hidden>
-        <h2 id="login-title">Entrar na sua conta</h2>
+        <!-- Entrar e Criar conta como abas; recuperar e redefinir a senha usam o mesmo cartão, sem as abas. -->
+        <div id="auth-tabs" class="auth-tabs" role="tablist" aria-label="Acesso à conta">
+          <button id="auth-tab-login" class="auth-tab" type="button" role="tab" aria-selected="true" aria-controls="login-form">Entrar</button>
+          <button id="signup-open-btn" class="auth-tab" type="button" role="tab" aria-selected="false" aria-controls="signup-form" tabindex="-1">Criar conta</button>
+        </div>
+        <h2 id="login-title">Bem-vindo de volta!</h2>
+        <p id="login-subtitle" class="auth-subtitle">Entre para voltar às suas salas.</p>
         <p id="invite-login-hint" class="notice" role="status" hidden></p>
-        <form id="login-form" autocomplete="on">
-          <label>E-mail <input id="email" type="email" autocomplete="username" required /></label>
-          <label>Senha <input id="password" type="password" autocomplete="current-password" required /></label>
-          <button id="login-btn" type="submit">Entrar</button>
-        </form>
-        <button id="signup-open-btn" class="ghost-btn" type="button">Criar conta</button>
-        <form id="signup-form" autocomplete="on" hidden>
-          <label>Nome de exibição (até 32 caracteres) <input id="signup-name" type="text" maxlength="128" autocomplete="nickname" required /></label>
-          <label>E-mail <input id="signup-email" type="email" autocomplete="email" required /></label>
-          <label>Senha <input id="signup-password" type="password" autocomplete="new-password" minlength="8" required /></label>
-          <p class="muted">Use pelo menos 8 caracteres. O nome será usado em todas as suas salas.</p>
-          <button id="signup-btn" type="submit">Criar conta</button>
-          <button id="signup-cancel-btn" class="ghost-btn" type="button">Voltar ao login</button>
-        </form>
-        <button id="forgot-open-btn" class="ghost-btn" type="button">Esqueci minha senha</button>
-        <form id="forgot-form" autocomplete="on" hidden>
-          <label>E-mail da conta <input id="forgot-email" type="email" autocomplete="email" required /></label>
-          <p class="muted">Enviaremos um link para você criar uma nova senha.</p>
-          <button id="forgot-btn" type="submit">Enviar link</button>
-          <button id="forgot-cancel-btn" class="ghost-btn" type="button">Voltar ao login</button>
-        </form>
-        <form id="reset-form" autocomplete="off" hidden>
-          <label>Nova senha <input id="reset-password" type="password" autocomplete="new-password" minlength="8" required /></label>
-          <label>Confirme a nova senha <input id="reset-confirm" type="password" autocomplete="new-password" minlength="8" required /></label>
-          <p class="muted">Use pelo menos 8 caracteres.</p>
-          <button id="reset-btn" type="submit">Salvar nova senha</button>
-          <button id="reset-cancel-btn" class="ghost-btn" type="button">Cancelar</button>
-        </form>
         <p id="signup-status" role="status" hidden></p>
+
+        <form id="login-form" class="auth-form" autocomplete="on" novalidate>
+          <div class="auth-field">
+            <label for="email">E-mail</label>
+            <span class="auth-input auth-icon-mail"><input id="email" type="email" autocomplete="username" required placeholder="voce@exemplo.com" aria-describedby="email-error" /></span>
+            <p id="email-error" class="auth-error" hidden></p>
+          </div>
+          <div class="auth-field">
+            <label for="password">Senha</label>
+            <span class="auth-input auth-icon-lock"><input id="password" type="password" autocomplete="current-password" required aria-describedby="password-error" /><button class="auth-reveal" type="button" data-reveal="password" aria-label="Mostrar senha" aria-pressed="false"></button></span>
+            <p id="password-error" class="auth-error" hidden></p>
+          </div>
+          <button id="login-btn" class="auth-primary" type="submit">Entrar</button>
+          <div id="auth-google" class="auth-alt" hidden>
+            <p class="auth-divider"><span>ou</span></p>
+            <button id="google-btn" class="auth-google" type="button">Continuar com Google</button>
+          </div>
+          <button id="forgot-open-btn" class="auth-link" type="button">Esqueci minha senha</button>
+        </form>
+
+        <form id="signup-form" class="auth-form" autocomplete="on" novalidate hidden>
+          <div class="auth-field">
+            <label for="signup-name">Nome de exibição</label>
+            <!-- maxlength conta unidades UTF-16; o limite real (32) é conferido em pontos de código, como no banco. -->
+            <span class="auth-input auth-icon-user"><input id="signup-name" type="text" maxlength="128" autocomplete="nickname" required placeholder="Como o grupo vai te ver" aria-describedby="signup-name-hint signup-name-error" /></span>
+            <p id="signup-name-hint" class="auth-hint">Até 32 caracteres. Aparece em todas as suas salas.</p>
+            <p id="signup-name-error" class="auth-error" hidden></p>
+          </div>
+          <div class="auth-field">
+            <label for="signup-email">E-mail</label>
+            <span class="auth-input auth-icon-mail"><input id="signup-email" type="email" autocomplete="email" required placeholder="voce@exemplo.com" aria-describedby="signup-email-error" /></span>
+            <p id="signup-email-error" class="auth-error" hidden></p>
+          </div>
+          <div class="auth-field">
+            <label for="signup-phone">Telefone</label>
+            <span class="auth-input auth-icon-phone"><input id="signup-phone" type="tel" inputmode="tel" autocomplete="tel-national" maxlength="16" required placeholder="(11) 91234-5678" aria-describedby="signup-phone-error" /></span>
+            <p id="signup-phone-error" class="auth-error" hidden></p>
+          </div>
+          <div class="auth-field">
+            <label for="signup-password">Senha</label>
+            <span class="auth-input auth-icon-lock"><input id="signup-password" type="password" autocomplete="new-password" required aria-describedby="signup-rules signup-password-error" /><button class="auth-reveal" type="button" data-reveal="signup-password" aria-label="Mostrar senha" aria-pressed="false"></button></span>
+            <p id="signup-password-error" class="auth-error" hidden></p>
+          </div>
+          <div class="auth-field">
+            <label for="signup-confirm">Confirmar senha</label>
+            <span class="auth-input auth-icon-lock"><input id="signup-confirm" type="password" autocomplete="new-password" required aria-describedby="signup-confirm-error" /><button class="auth-reveal" type="button" data-reveal="signup-confirm" aria-label="Mostrar confirmação da senha" aria-pressed="false"></button></span>
+            <p id="signup-confirm-error" class="auth-error" hidden></p>
+          </div>
+          <!-- Requisitos da senha: os mesmos do Auth (8 caracteres, até 72 bytes) e a confirmação. Estado em texto e ícone. -->
+          <ul id="signup-rules" class="auth-rules" aria-label="Requisitos da senha">
+            <li data-rule="length" data-met="false">Pelo menos 8 caracteres</li>
+            <li data-rule="match" data-met="false">As duas senhas conferem</li>
+          </ul>
+          <button id="signup-btn" class="auth-primary" type="submit">Criar conta</button>
+          <p class="auth-switch">Já tem conta? <button id="signup-cancel-btn" class="auth-link" type="button">Entrar</button></p>
+        </form>
+
+        <form id="forgot-form" class="auth-form" autocomplete="on" hidden>
+          <div class="auth-field">
+            <label for="forgot-email">E-mail da conta</label>
+            <span class="auth-input auth-icon-mail"><input id="forgot-email" type="email" autocomplete="email" required placeholder="voce@exemplo.com" /></span>
+          </div>
+          <button id="forgot-btn" class="auth-primary" type="submit">Enviar link</button>
+          <button id="forgot-cancel-btn" class="auth-link auth-back" type="button">Voltar ao login</button>
+        </form>
+
+        <form id="reset-form" class="auth-form" autocomplete="off" hidden>
+          <div class="auth-field">
+            <label for="reset-password">Nova senha</label>
+            <span class="auth-input auth-icon-lock"><input id="reset-password" type="password" autocomplete="new-password" minlength="8" required aria-describedby="reset-hint" /><button class="auth-reveal" type="button" data-reveal="reset-password" aria-label="Mostrar senha" aria-pressed="false"></button></span>
+            <p id="reset-hint" class="auth-hint">Use pelo menos 8 caracteres.</p>
+          </div>
+          <div class="auth-field">
+            <label for="reset-confirm">Confirme a nova senha</label>
+            <span class="auth-input auth-icon-lock"><input id="reset-confirm" type="password" autocomplete="new-password" minlength="8" required /><button class="auth-reveal" type="button" data-reveal="reset-confirm" aria-label="Mostrar confirmação da senha" aria-pressed="false"></button></span>
+          </div>
+          <button id="reset-btn" class="auth-primary" type="submit">Salvar nova senha</button>
+          <button id="reset-cancel-btn" class="auth-link auth-back" type="button">Cancelar e voltar ao login</button>
+        </form>
       </section>
 
       <section id="account" hidden>
         <button id="shell-backdrop" class="shell-backdrop" type="button" tabindex="-1" aria-label="Fechar navegação" hidden></button>
 
-        <nav id="sidebar" class="sidebar" aria-label="Navegação principal">
+        <!-- Barra global (Midnight V2): só a navegação entre salas. Sempre visível, inclusive no celular; a lista de salas
+             rola sozinha, com Início e Criar sala sempre alcançáveis. Os ícones são as iniciais (sem upload de imagem). -->
+        <nav id="rail" class="rail" aria-label="Salas">
+          <span class="brand-mark rail-brand" aria-hidden="true"></span>
+          <button id="rooms-home-btn" class="rail-btn rail-home" type="button" aria-label="Início: minhas salas" title="Início"></button>
+          <span class="rail-divider" aria-hidden="true"></span>
+          <div id="room-nav" class="room-nav rail-rooms"></div>
+          <button id="create-open-btn" class="rail-btn rail-create" type="button" aria-label="Criar sala" title="Criar sala"></button>
+        </nav>
+
+        <!-- Lateral contextual: a sala selecionada, os canais dela e a conta. Recolhível na tela larga; gaveta no celular,
+             ao lado da barra global, que continua visível. -->
+        <nav id="sidebar" class="sidebar" aria-label="Canais da sala">
           <div class="sidebar-head">
-            <p class="sidebar-brand"><span class="brand-mark" aria-hidden="true"></span><span class="label-full brand-text">Oryn <span class="brand-tagline-side" lang="en">Stay close. Play on.</span></span></p>
-            <button id="sidebar-toggle" class="icon-btn" type="button" aria-controls="sidebar" aria-expanded="true" aria-label="Recolher barra lateral" title="Recolher barra lateral"><span id="sidebar-toggle-icon" aria-hidden="true">‹</span></button>
-            <button id="sidebar-close" class="icon-btn" type="button" aria-label="Fechar navegação"><span aria-hidden="true">×</span></button>
+            <div class="sidebar-title">
+              <p id="sidebar-room" class="sidebar-room">Oryn</p>
+              <p id="sidebar-room-detail" class="sidebar-room-detail" lang="en">Stay close. Play on.</p>
+            </div>
+            <button id="sidebar-close" class="icon-btn" type="button" aria-label="Fechar canais"><span aria-hidden="true">×</span></button>
           </div>
-          <button id="rooms-home-btn" class="nav-btn" type="button" aria-label="Minhas salas" title="Minhas salas"><span class="label-full">Minhas salas</span></button>
-          <p class="room-nav-heading label-full" aria-hidden="true">Salas ativas</p>
-          <div id="room-nav" class="room-nav"></div>
-          <!-- Canais do espaço selecionado (I-2). A lista é redesenhada pela consulta periódica; o formulário fica fora dela
-               para o texto digitado não se perder. -->
+          <p id="sidebar-hint" class="sidebar-hint">Escolha uma sala na barra à esquerda para ver os canais.</p>
+          <!-- Canais do espaço selecionado (I-2). A lista é redesenhada pela consulta periódica. Criar canal: o "+" de cada
+               seção abre o modal #channel-dialog, fora da lista, para o texto digitado não se perder. -->
           <section id="channel-nav" class="channel-nav label-full" aria-label="Canais do espaço" hidden>
             <div id="channel-list"></div>
-            <form id="channel-create-form" class="channel-create" autocomplete="off" hidden>
-              <!-- maxlength conta unidades UTF-16 (um emoji vale 2): o dobro do limite real, conferido em pontos de código. -->
-              <label><span class="visually-hidden">Nome do novo canal</span>
-                <input id="channel-create-name" type="text" maxlength="80" spellcheck="false" required placeholder="Novo canal" /></label>
-              <label><span class="visually-hidden">Tipo do canal</span>
-                <select id="channel-create-kind">
-                  <option value="text" selected>Texto</option>
-                  <option value="voice">Voz</option>
-                </select>
-              </label>
-              <button id="channel-create-btn" type="submit">Criar canal</button>
-            </form>
           </section>
-          <button id="create-open-btn" class="nav-btn" type="button" aria-label="Criar sala" title="Criar sala"><span class="label-full">Criar sala</span></button>
           <div id="account-box" class="sidebar-foot">
             <p class="account-line"><span class="user-avatar" aria-hidden="true"></span><span class="account-text"><strong id="user-label"></strong><span class="muted">Conectado</span></span></p>
             <button id="profile-open-btn" class="nav-btn" type="button" aria-controls="profile-panel" aria-expanded="false">Perfil</button>
@@ -91,52 +154,56 @@
         </nav>
 
         <section id="call-bar" class="call-bar" aria-label="Chamada em curso" hidden>
-          <span class="call-bar-icon" aria-hidden="true"></span>
-          <div class="call-bar-info">
-            <strong id="call-room">—</strong>
-            <p class="call-bar-status"><span id="call-phase" role="status"></span><span id="call-mic"></span></p>
+          <div class="call-bar-id">
+            <span class="call-bar-icon" aria-hidden="true"></span>
+            <div class="call-bar-info">
+              <strong id="call-room">—</strong>
+              <p class="call-bar-status"><span id="call-phase" role="status"></span><span id="call-mic"></span></p>
+              <!-- Queda e volta de um participante: o aviso fica nesta região, ao lado do estado da chamada. -->
+              <p id="call-notice" class="call-bar-notice" role="status" hidden></p>
+            </div>
           </div>
-          <div class="call-bar-actions">
+          <!-- Central de controles: microfone, áudio recebido, compartilhar tela (ainda indisponível) e sons da sala.
+               "Ouvir" só aparece se o navegador bloquear a reprodução automática. -->
+          <div class="call-bar-actions" role="group" aria-label="Controles da chamada">
             <button id="listen-btn" class="round-btn" type="button" hidden>Ouvir</button>
             <button id="mute-btn" class="round-btn" type="button" disabled>Mutar</button>
-            <button id="sound-toggle-btn" type="button" aria-expanded="false" aria-controls="soundboard" hidden>Sons</button>
-            <!-- Recursos futuros: só apresentação. Sem id lido por main.ts, sem ouvinte, sem pedido de permissão. aria-disabled
-                 mantém o botão no Tab e anunciado como indisponível; o clique não faz nada. -->
-            <div class="future-features" role="group" aria-labelledby="future-features-title">
-              <p id="future-features-title" class="future-features-title">Próximos recursos</p>
-              <button class="future-btn future-screen" type="button" aria-disabled="true" aria-describedby="future-features-note" title="Transmitir tela: em breve">Transmitir tela <span class="soon-badge">Em breve</span></button>
-              <button class="future-btn future-audio" type="button" aria-disabled="true" aria-describedby="future-features-note" title="Configurações avançadas de áudio: em breve">Configurações avançadas de áudio <span class="soon-badge">Em breve</span></button>
-              <p id="future-features-note" class="muted future-features-note">Ainda não disponíveis nesta versão.</p>
-            </div>
+            <button id="incoming-btn" class="round-btn" type="button" aria-pressed="false" disabled>Silenciar áudio da chamada</button>
+            <!-- Sem ouvinte, sem pedido de permissão e sem captura: aria-disabled mantém o nome no Tab, e o clique não faz nada. -->
+            <button id="screen-btn" class="round-btn" type="button" aria-disabled="true" title="Compartilhamento de tela — em breve">Compartilhamento de tela — em breve</button>
+            <button id="sound-toggle-btn" class="round-btn" type="button" aria-expanded="false" aria-controls="soundboard" disabled>Sons da sala</button>
           </div>
           <div class="call-bar-end">
             <button id="leave-btn" type="button" disabled>Sair da chamada</button>
           </div>
-        </section>
 
-        <!-- Painel flutuante, aberto pelo botão Sons da barra da chamada. Fora de #shell-main: a navegação não o alcança. -->
-        <section id="soundboard" class="sound-popover" aria-labelledby="soundboard-title" hidden>
-          <div class="panel-head">
-            <h3 id="soundboard-title">Sons da sala</h3>
-            <button id="sound-close-btn" class="ghost-btn" type="button" title="Fechar sons">Fechar sons</button>
-          </div>
-          <p id="soundboard-status" role="status" hidden></p>
-          <form id="sound-form" autocomplete="off" hidden>
-            <details>
-            <summary>Publicar som</summary>
-            <div class="sound-fields">
-            <!-- maxlength conta unidades UTF-16: fica no dobro do limite real, conferido em pontos de código. -->
-            <label>Nome (até 40 caracteres) <input id="sound-name" type="text" maxlength="80" spellcheck="false" required /></label>
-            <label>Arquivo MP3 ou WAV, até 2 MiB e 10 s <input id="sound-file" type="file" accept=".mp3,.wav,audio/mpeg,audio/wav" required /></label>
-            <button id="sound-publish-btn" type="submit">Publicar</button>
+          <!-- Sons da sala: painel flutuante acima da barra, aberto pelo botão "Sons da sala". O mesmo soundboard da chamada
+               (lista, publicar, volume e desativação local); fechado, não ocupa espaço na área principal. -->
+          <section id="soundboard" class="sound-panel sound-flyout" aria-labelledby="soundboard-title" hidden>
+            <div class="panel-head">
+              <h3 id="soundboard-title">Sons da sala</h3>
+              <button id="sound-close-btn" class="ghost-btn" type="button" aria-label="Fechar sons da sala" title="Fechar">×</button>
             </div>
-            </details>
-          </form>
-          <div id="soundboard-list"></div>
-          <div class="sound-controls">
-            <label class="sound-volume-label">Volume dos sons <input id="sound-volume" type="range" min="0" max="100" step="1" /></label>
-            <label class="check"><input id="sound-disabled" type="checkbox" /> Desativar sons neste aparelho</label>
-          </div>
+            <div class="sound-flyout-body">
+              <p id="soundboard-status" role="status" hidden></p>
+              <form id="sound-form" autocomplete="off" hidden>
+                <details>
+                <summary>Publicar som</summary>
+                <div class="sound-fields">
+                <!-- maxlength conta unidades UTF-16: fica no dobro do limite real, conferido em pontos de código. -->
+                <label>Nome (até 40 caracteres) <input id="sound-name" type="text" maxlength="80" spellcheck="false" required /></label>
+                <label>Arquivo MP3 ou WAV, até 2 MiB e 10 s <input id="sound-file" type="file" accept=".mp3,.wav,audio/mpeg,audio/wav" required /></label>
+                <button id="sound-publish-btn" type="submit">Publicar</button>
+                </div>
+                </details>
+              </form>
+              <div id="soundboard-list"></div>
+              <div class="sound-controls">
+                <label class="sound-volume-label">Volume dos sons <input id="sound-volume" type="range" min="0" max="100" step="1" /></label>
+                <label class="check"><input id="sound-disabled" type="checkbox" /> Desativar sons neste aparelho</label>
+              </div>
+            </div>
+          </section>
         </section>
 
         <div id="shell-main" class="shell-main">
@@ -180,8 +247,44 @@
               </div>
             </form>
           </dialog>
+          <!-- Criação de canal: aberta pelo "+" das seções Texto e Voz (só o dono de um espaço aberto; o servidor confere).
+               O tipo inicial vem da seção; o nome segue a regra do servidor, conferida em pontos de código. -->
+          <dialog id="channel-dialog" class="identity-panel create-dialog channel-dialog" aria-labelledby="channel-dialog-title" aria-describedby="channel-dialog-lead" hidden>
+            <div class="panel-head">
+              <h2 id="channel-dialog-title">Criar canal</h2>
+              <button id="channel-close-btn" class="ghost-btn create-close" type="button" aria-label="Fechar">×</button>
+            </div>
+            <p id="channel-dialog-lead" class="create-lead">O canal fica disponível para todos os membros desta sala.</p>
+            <form id="channel-create-form" autocomplete="off" aria-labelledby="channel-dialog-title">
+              <fieldset class="channel-kinds">
+                <legend>Tipo do canal</legend>
+                <label class="channel-kind channel-kind-text">
+                  <input id="channel-kind-text" type="radio" name="channel-kind" value="text" checked />
+                  <span class="channel-kind-icon" aria-hidden="true">#</span>
+                  <span class="channel-kind-text-box"><strong>Texto</strong><span class="channel-kind-desc">Mensagens e links que ficam no histórico.</span></span>
+                </label>
+                <label class="channel-kind channel-kind-voice">
+                  <input id="channel-kind-voice" type="radio" name="channel-kind" value="voice" />
+                  <span class="channel-kind-icon" aria-hidden="true">🔊</span>
+                  <span class="channel-kind-text-box"><strong>Voz</strong><span class="channel-kind-desc">Conversa por voz com quem entrar no canal.</span></span>
+                </label>
+              </fieldset>
+              <!-- maxlength conta unidades UTF-16 (um emoji vale 2): o dobro do limite real, conferido em pontos de código. -->
+              <label class="channel-name-field">Nome do canal
+                <span class="channel-name-input"><span class="channel-name-icon" aria-hidden="true"></span><input id="channel-create-name" type="text" maxlength="80" spellcheck="false" required placeholder="Ex.: estratégia" aria-describedby="channel-create-hint" /></span>
+              </label>
+              <p id="channel-create-hint" class="create-hint">De 1 a 40 caracteres.</p>
+              <p id="channel-create-error" class="error" role="alert" hidden></p>
+              <div class="create-actions">
+                <button id="channel-cancel-btn" class="ghost-btn" type="button">Cancelar</button>
+                <button id="channel-create-btn" type="submit" disabled>Criar canal</button>
+              </div>
+            </form>
+          </dialog>
           <header class="context-header">
-            <button id="shell-menu-btn" class="ghost-btn" type="button" aria-controls="sidebar" aria-expanded="false">Menu</button>
+            <!-- Tela larga: recolhe e mostra a lateral de canais. Celular: abre a gaveta de canais. -->
+            <button id="sidebar-toggle" class="icon-btn header-icon-btn" type="button" aria-controls="sidebar" aria-expanded="true" aria-label="Recolher canais" title="Recolher canais"><span id="sidebar-toggle-icon" aria-hidden="true">‹</span></button>
+            <button id="shell-menu-btn" class="icon-btn header-icon-btn" type="button" aria-controls="sidebar" aria-expanded="false" aria-label="Abrir canais" title="Canais"><span aria-hidden="true">☰</span></button>
             <span class="context-icon" aria-hidden="true"></span>
             <div class="context-text">
               <h1 id="context-title" tabindex="-1">Minhas salas</h1>
@@ -261,18 +364,9 @@
           </div>
         </section>
 
-        <section id="members" hidden>
-          <div class="panel-head">
-            <h3>Membros: <span id="members-room"></span></h3>
-            <button id="members-close-btn" class="ghost-btn" type="button">Fechar membros</button>
-          </div>
-          <p id="members-status" role="status" hidden></p>
-          <div id="members-list"></div>
-        </section>
-
         <section id="chat" hidden>
           <div class="panel-head">
-            <h3>Chat: <span id="chat-room"></span></h3>
+            <h3><span class="visually-hidden">Chat do canal </span><span id="chat-room"></span></h3>
             <button id="chat-close-btn" class="ghost-btn" type="button">Fechar chat</button>
           </div>
           <p id="chat-status" role="status" hidden></p>
@@ -284,8 +378,19 @@
           </form>
         </section>
 
+        <!-- Depois do chat: em Texto, o chat é o centro e os membros, o painel contextual; a ordem do teclado segue a tela. -->
+        <section id="members" hidden>
+          <div class="panel-head">
+            <h3>Membros<span class="visually-hidden"> da sala <span id="members-room"></span></span></h3>
+            <button id="members-close-btn" class="ghost-btn" type="button">Fechar membros</button>
+          </div>
+          <p id="members-status" role="status" hidden></p>
+          <div id="members-list"></div>
+        </section>
 
-        <details id="diagnostics">
+        <!-- Diagnóstico técnico: fora da interface comum (hidden). Os campos, o registro e a entrada por ID continuam
+             sendo alimentados, para suporte; nada aqui aparece para quem usa o Oryn. -->
+        <details id="diagnostics" hidden>
           <summary>Diagnóstico</summary>
           <label>ID da sala <input id="room" type="text" spellcheck="false" autocomplete="off" size="38" /></label>
           <button id="join-btn" type="button">Entrar na chamada por ID</button>

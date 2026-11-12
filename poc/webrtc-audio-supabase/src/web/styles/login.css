@@ -94,9 +94,6 @@ main:has(> #account[hidden]) .brand-tagline {
 .identity-panel h2 { margin: 0; font-size: 1.25rem; }
 .identity-panel .panel-head { flex-wrap: wrap; }
 #signup-form, #forgot-form, #reset-form { margin-top: var(--space-4); }
-/* Ações secundárias do login: afastadas do "Entrar" e entre si quando quebram de linha (telas estreitas). */
-#signup-open-btn, #forgot-open-btn { margin-top: var(--space-3); }
-#signup-open-btn { margin-right: var(--space-2); } /* + o espaço inline ≈ os 12px da vertical */
 
 #login-btn {
   display: block;

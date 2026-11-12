@@ -19,10 +19,13 @@ import { isUuid } from '../../supabase/functions/_shared/signal-contract.ts';
 import { authOptions, createAuthStorage, logout, restoreSession, type AuthStorage } from './auth-session.ts';
 import type { CallPhase, CallStats, PeerStates } from './call.ts';
 import { ChatController, type ChatState } from './chat.ts';
-import { ChannelsController, defaultChannel, renderChannelNav } from './channels.ts';
+import { ChannelsController, defaultChannel, isChannelName, renderChannelNav, type ChannelKind } from './channels.ts';
+import { DraftBook, draftKey } from './drafts.ts';
+import { IncomingAudio, incomingLabel } from './incoming-audio.ts';
+import { formatPhoneBR, passwordChecks, validateLogin, validateSignup, type SignupErrors, type SignupField, type SignupInput } from './auth-form.ts';
 import { chatStatusText, renderChatMessages } from './chat-view.ts';
 import { CallReturnController, ReturnRoomStore, type ReturnState } from './call-return.ts';
-import { parseWebConfig, type WebConfig } from './config.ts';
+import { parseWebConfig, publicLocation, type WebConfig } from './config.ts';
 import { ENTRY_CHECKING, ENTRY_RELEASED, ENTRY_STILL_BLOCKED, EntryGate, blockedMessage, entryErrorMessage, type EntryState } from './entry-gate.ts';
 import { InviteAcceptController, InviteShareController, buildInviteLink, inviteLoginHint, takeInviteFromLocation, type InviteAcceptState, type InviteArrival, type InviteShareState } from './invites.ts';
 import { MembersController, MEMBERS_LOAD_FAILED, type MembersState } from './members.ts';
@@ -30,9 +33,9 @@ import { renderMembers, renderParticipants } from './members-view.ts';
 import { MeshCall, type ParticipantView } from './mesh-call.ts';
 import { MeshSignaling } from './mesh-signaling.ts';
 import { DISCONNECT_CHECKING, LobbyController, disconnectPhase, explainDisconnect, formatCallError, isClosingOwnCall, peerProblemNotice, type Notice } from './rooms.ts';
-import { renderLobby, renderRoomNav, roomContext } from './rooms-view.ts';
+import { renderLobby, renderRoomNav, roomContext, type ContextChannel } from './rooms-view.ts';
 import { ShellController, replaceKeepingFocus, type ShellState } from './shell.ts';
-import { micLabel, otherRoomNote, voiceSummary } from './voice-view.ts';
+import { callBarStatus, callBarTitle, micLabel, otherRoomNote, voiceSummary } from './voice-view.ts';
 import { SoundBus } from './sound-bus.ts';
 import { SoundCache, createBrowserSoundStore } from './sound-cache.ts';
 import { loadSoundPrefs, saveSoundPrefs } from './sound-prefs.ts';
@@ -71,6 +74,21 @@ const ui = {
   signupBtn: el<HTMLButtonElement>('signup-btn'),
   signupCancel: el<HTMLButtonElement>('signup-cancel-btn'),
   signupStatus: el<HTMLElement>('signup-status'),
+  authTabs: el<HTMLElement>('auth-tabs'),
+  authTabLogin: el<HTMLButtonElement>('auth-tab-login'),
+  loginSubtitle: el<HTMLElement>('login-subtitle'),
+  authGoogle: el<HTMLElement>('auth-google'),
+  googleBtn: el<HTMLButtonElement>('google-btn'),
+  emailError: el<HTMLElement>('email-error'),
+  passwordError: el<HTMLElement>('password-error'),
+  signupPhone: el<HTMLInputElement>('signup-phone'),
+  signupConfirm: el<HTMLInputElement>('signup-confirm'),
+  signupRules: el<HTMLElement>('signup-rules'),
+  signupNameError: el<HTMLElement>('signup-name-error'),
+  signupEmailError: el<HTMLElement>('signup-email-error'),
+  signupPhoneError: el<HTMLElement>('signup-phone-error'),
+  signupPasswordError: el<HTMLElement>('signup-password-error'),
+  signupConfirmError: el<HTMLElement>('signup-confirm-error'),
   forgotOpen: el<HTMLButtonElement>('forgot-open-btn'),
   forgotForm: el<HTMLFormElement>('forgot-form'),
   forgotEmail: el<HTMLInputElement>('forgot-email'),
@@ -169,6 +187,7 @@ const ui = {
   soundPublishBtn: el<HTMLButtonElement>('sound-publish-btn'),
   soundToggleBtn: el<HTMLButtonElement>('sound-toggle-btn'),
   soundCloseBtn: el<HTMLButtonElement>('sound-close-btn'),
+  incomingBtn: el<HTMLButtonElement>('incoming-btn'),
   createCancelBtn: el<HTMLButtonElement>('create-cancel-btn'),
   log: el<HTMLOListElement>('log'),
   app: el<HTMLElement>('app'),
@@ -180,13 +199,21 @@ const ui = {
   shellBackdrop: el<HTMLButtonElement>('shell-backdrop'),
   shellMenuBtn: el<HTMLButtonElement>('shell-menu-btn'),
   roomsHomeBtn: el<HTMLButtonElement>('rooms-home-btn'),
+  sidebarRoom: el<HTMLElement>('sidebar-room'),
+  sidebarRoomDetail: el<HTMLElement>('sidebar-room-detail'),
+  sidebarHint: el<HTMLElement>('sidebar-hint'),
   roomNav: el<HTMLDivElement>('room-nav'),
   channelNav: el<HTMLElement>('channel-nav'),
   channelList: el<HTMLDivElement>('channel-list'),
   channelCreateForm: el<HTMLFormElement>('channel-create-form'),
   channelCreateName: el<HTMLInputElement>('channel-create-name'),
-  channelCreateKind: el<HTMLSelectElement>('channel-create-kind'),
+  channelKindText: el<HTMLInputElement>('channel-kind-text'),
+  channelKindVoice: el<HTMLInputElement>('channel-kind-voice'),
   channelCreateBtn: el<HTMLButtonElement>('channel-create-btn'),
+  channelDialog: el<HTMLDialogElement>('channel-dialog'),
+  channelCloseBtn: el<HTMLButtonElement>('channel-close-btn'),
+  channelCancelBtn: el<HTMLButtonElement>('channel-cancel-btn'),
+  channelCreateError: el<HTMLParagraphElement>('channel-create-error'),
   createOpenBtn: el<HTMLButtonElement>('create-open-btn'),
   accountBox: el<HTMLElement>('account-box'),
   contextTitle: el<HTMLElement>('context-title'),
@@ -197,6 +224,7 @@ const ui = {
   callBar: el<HTMLElement>('call-bar'),
   callPhase: el<HTMLElement>('call-phase'),
   callMic: el<HTMLElement>('call-mic'),
+  callNotice: el<HTMLParagraphElement>('call-notice'),
   voiceTitle: el<HTMLElement>('voice-title'),
   voiceState: el<HTMLParagraphElement>('voice-state'),
   voiceNote: el<HTMLParagraphElement>('voice-note'),
@@ -223,8 +251,12 @@ let restoringAuth = true;
 let selfUserId: string | null = null;
 let call: MeshCall | null = null;
 let signaling: MeshSignaling | null = null;
-/** Um elemento de áudio por participante: separados, para volume individual e deafen no futuro. */
+/** Um elemento de áudio por participante: separados, para volume individual e o silenciamento local do áudio recebido. */
 const remoteAudio = new Map<string, HTMLAudioElement>();
+/** Áudio recebido silenciado só neste aparelho (não é o mudo do microfone e não vai para os outros). */
+const incoming = new IncomingAudio();
+/** Painel de sons aberto pelo botão da barra. Só apresentação: o soundboard segue o da chamada. */
+let soundsOpen = false;
 /** Sala da chamada atual (ou da última, até ela terminar) e se a chamada está em curso. */
 let callRoomId: string | null = null;
 /** Canal de voz da chamada (0900). `null`: a voz padrão da sala, pelo caminho antigo. */
@@ -268,15 +300,34 @@ function setField(name: string, value: string): void {
 
 /** Fase da chamada em texto, a mesma do diagnóstico. */
 let voicePhase = '—';
-/** Painel flutuante de sons aberto pelo botão da barra. Só apresentação: o soundboard segue o da chamada. */
-let soundsOpen = false;
+/** Fase da chamada como estado, para os textos resumidos da barra. */
+let callPhaseNow: CallPhase = 'idle';
+/**
+ * Canal que ocupa o centro na sala selecionada. Independente da chamada: abrir Texto durante a chamada não a encerra, e a
+ * barra continua mostrando a voz conectada. Texto: o chat no centro e os membros ao lado. Voz: o palco no centro e o chat
+ * ao lado.
+ */
+let centerKind: ChannelKind = 'text';
+/** Canal de voz do palco, quando o centro é Voz. `null`: a voz padrão da sala. */
+let selectedVoiceId: string | null = null;
+/** Rascunhos por canal (só em memória) e a chave do canal cujo rascunho está no campo agora. */
+const drafts = new DraftBook();
+let draftAt: string | null = null;
 /** Botão que abriu o modal de criação, para devolver o foco a ele ao fechar. */
 let createOpener: HTMLElement | null = null;
+/** Seção ("+" de Texto ou de Voz) que abriu a criação de canal: o foco volta ao "+" dela, mesmo redesenhado. */
+let channelOpenerKind: ChannelKind | null = null;
+/** Canal com o menu de opções ("⋯") aberto na lateral: sobrevive ao redesenho periódico da lista. */
+let channelMenuOpen: string | null = null;
 /** Salas com "Gerenciar sala" aberto, para o redesenho da lista não recolhê-lo. */
 const adminOpen = new Set<string>();
 
 /** Painel e barra da chamada. Só lê estado: a barra acompanha a chamada, nunca a sala selecionada. */
 function renderVoice(): void {
+  // Os canais podem chegar depois da entrada: a barra ganha o nome da voz assim que a lista da sala da chamada estiver pronta.
+  if (callActive && callRoomId !== null && channels?.state.roomId === callRoomId && channels.state.status === 'ready') {
+    ui.callRoom.textContent = callIdentity(callRoomId, callChannelId);
+  }
   const room = ui.callRoom.textContent ?? '';
   const summary = voiceSummary({ active: callActive, phase: voicePhase, room });
   ui.voiceTitle.textContent = summary.title;
@@ -284,7 +335,9 @@ function renderVoice(): void {
   const note = otherRoomNote(callActive, shell.state.selectedRoomId, callRoomId, room);
   ui.voiceNote.textContent = note ?? '';
   ui.voiceNote.hidden = note === null;
-  ui.callPhase.textContent = callActive ? summary.state : '';
+  // Barra: só estados resumidos ("Em chamada", "Reconectando…"); a fase técnica fica no diagnóstico.
+  const reconnecting = shownParticipants.list.some((p) => p.state === 'reconnecting');
+  ui.callPhase.textContent = callActive ? callBarStatus(callPhaseNow, reconnecting) : '';
   // O botão usado saiu da tela com a barra: o foco do teclado não pode sumir com ele.
   const focusInBar = !callActive && ui.callBar.contains(document.activeElement);
   ui.callBar.hidden = !callActive;
@@ -332,6 +385,7 @@ function setRemote(session: string, stream: MediaStream | null): void {
     const audio = document.createElement('audio');
     audio.autoplay = true;
     audio.srcObject = stream;
+    incoming.adopt(audio); // quem entra com o áudio silenciado já chega silenciado
     ui.audioContainer.append(audio);
     remoteAudio.set(session, audio);
     audio.play().catch(() => {
@@ -351,18 +405,23 @@ ui.listenBtn.addEventListener('click', () => {
 // ---------- renderização ----------
 
 function renderPhase(phase: CallPhase, error?: string): void {
-  setField('phase', PHASES[phase]);
+  callPhaseNow = phase;
   const active = phase !== 'idle' && phase !== 'ended' && phase !== 'failed';
   callActive = active;
+  setField('phase', PHASES[phase]);
   ui.joinBtn.disabled = active;
   ui.room.disabled = active;
   ui.muteBtn.disabled = !active;
   ui.leaveBtn.disabled = !active;
+  ui.incomingBtn.disabled = !active;
   if (!active) {
     ui.muteBtn.textContent = 'Mutar';
     ui.muteBtn.dataset['muted'] = 'false';
+    incoming.reset(remoteAudio.values()); // a próxima chamada começa ouvindo
+    renderIncoming();
+    if (soundsOpen) setSoundsOpen(false, false); // sair da chamada fecha o painel de sons
   }
-  if (phase === 'ended' && ui.error.className === 'notice' && lastPeerNotice === ui.error.textContent) showNotice(null);
+  if (!active) setCallNotice(null); // o aviso de um participante vale só durante a chamada
   // A entrada na sala foi aceita: é a sala para a qual a aba pode voltar depois de recarregar.
   if ((phase === 'waiting-peer' || phase === 'negotiating' || phase === 'connected') && callRoomId) callReturn.remember(callRoomId);
   // O dono encerrou a sala desta chamada por aqui: a queda que isso causa não é erro para quem encerrou.
@@ -407,13 +466,17 @@ function renderPhase(phase: CallPhase, error?: string): void {
   renderRooms();
 }
 
+/** Sons da sala, no palco, abaixo dos participantes: aparecem com o soundboard da chamada e somem com ele. Recolher o
+ * catálogo pelo título é só apresentação (o <details> nativo). */
+/** Sons da sala num painel flutuante acima da barra, aberto pelo botão "Sons da sala". Abrir e fechar é só apresentação:
+ * o soundboard (lista, volume, desativação local) continua o mesmo, aberto ou fechado. */
 function renderSoundboardPanel(state: SoundboardState): void {
   const available = state.status !== 'closed';
   if (!available) soundsOpen = false;
   // O painel sumiu com a chamada: o foco do teclado não pode sumir com ele.
   const focusLost = !(available && soundsOpen) && ui.soundboard.contains(document.activeElement);
   ui.soundboard.hidden = !available || !soundsOpen;
-  ui.soundToggleBtn.hidden = !available;
+  ui.soundToggleBtn.disabled = !available;
   ui.soundToggleBtn.setAttribute('aria-expanded', String(available && soundsOpen));
   if (focusLost) (available ? ui.soundToggleBtn : ui.contextTitle).focus();
   ui.soundVolume.value = String(Math.round(state.volume * 100));
@@ -447,10 +510,17 @@ function renderCallParticipants(list: readonly ParticipantView[], standby: boole
   shownParticipants = { list, standby };
   drawParticipants();
   // O par voltou: o aviso de reconexão deixa de valer.
-  if (lastPeerNotice !== null && ui.error.textContent === lastPeerNotice && list.every((p) => p.state === 'connected')) {
-    showNotice(null);
-    lastPeerNotice = null;
-  }
+  if (lastPeerNotice !== null && list.every((p) => p.state === 'connected')) setCallNotice(null);
+  renderVoice(); // "Reconectando…" na barra acompanha os participantes
+}
+
+/** Aviso de um participante (queda ou volta), na região da barra da chamada, sempre como texto. */
+function setCallNotice(notice: Notice | null): void {
+  lastPeerNotice = notice?.text ?? null;
+  ui.callNotice.textContent = notice?.text ?? '';
+  ui.callNotice.hidden = notice === null;
+  ui.callNotice.className = notice?.tone === 'error' ? 'call-bar-notice error' : 'call-bar-notice';
+  ui.callNotice.setAttribute('role', notice?.tone === 'error' ? 'alert' : 'status');
 }
 
 function renderPeer(states: PeerStates | null): void {
@@ -484,6 +554,8 @@ function startCall(roomInput: string, channelId: string | null = null): void {
   if (!selfUserId) return showError('Faça login antes de entrar na chamada.');
   const userId = selfUserId;
   entryChannelId = channelId;
+  // Entrar numa voz da sala em tela abre o palco dela: a entrada e o pedido do microfone aparecem ali e na barra.
+  if (shell.state.selectedRoomId === roomId) showVoice(roomId, channelId);
   void entryGate.check(roomId).then((verdict) => {
     if (verdict !== 'go') return;
     if (!callActive && selfUserId === userId) beginCall(roomId, userId, channelId);
@@ -495,10 +567,7 @@ function beginCall(roomId: string, userId: string, channelId: string | null = nu
   callRoomId = roomId;
   callChannelId = channelId;
   ui.room.value = roomId;
-  const roomName = lobby.state.rooms.find((r) => r.room_id === roomId)?.name ?? roomId;
-  const voiceName = channels.state.roomId === roomId && channelId !== null
-    ? channels.state.channels.find((c) => c.channel_id === channelId)?.name ?? null : null;
-  ui.callRoom.textContent = voiceName === null ? roomName : `${roomName} · 🔊 ${voiceName}`;
+  ui.callRoom.textContent = callIdentity(roomId, channelId);
   const backend = createSupabaseBackend(client, { url: cfg.supabaseUrl, publishableKey: cfg.publishableKey, accessToken: () => accessToken });
   ui.status.hidden = false;
   ui.log.replaceChildren();
@@ -531,9 +600,7 @@ function beginCall(roomId: string, userId: string, channelId: string | null = nu
       },
       onPeerProblem: (name, kind) => {
         if (call !== current) return;
-        const notice = peerProblemNotice(name, kind);
-        lastPeerNotice = notice.text;
-        showNotice(notice);
+        setCallNotice(peerProblemNotice(name, kind)); // na barra da chamada, não no aviso da página
       },
     },
   );
@@ -542,6 +609,14 @@ function beginCall(roomId: string, userId: string, channelId: string | null = nu
   soundboard.enter(roomId, userId, lobby.state.rooms.find((r) => r.room_id === roomId)?.role === 'owner');
   renderRooms();
   void current.start();
+}
+
+/** Canal de voz conectado e a sala dele, para a barra. Sem canal escolhido, a voz padrão da sala. */
+function callIdentity(roomId: string, channelId: string | null): string {
+  const roomName = lobby.state.rooms.find((r) => r.room_id === roomId)?.name ?? roomId;
+  const voices = channels.state.roomId === roomId ? channels.state.channels : [];
+  const voice = channelId === null ? defaultChannel(voices, 'voice') : voices.find((c) => c.channel_id === channelId);
+  return callBarTitle(voice?.name ?? null, roomName);
 }
 
 /** Encerra a chamada e espera a saída da sala (leave_room precisa do JWT ainda válido). */
@@ -553,15 +628,36 @@ async function endCall(): Promise<void> {
 
 // ---------- sons ----------
 
-function setSoundsOpen(open: boolean): void {
+/** Abre ou fecha o painel de sons. Ao abrir, o foco vai para dentro dele; ao fechar pelo teclado, volta ao botão. */
+function setSoundsOpen(open: boolean, restoreFocus = true): void {
   soundsOpen = open;
   renderSoundboardPanel(soundboard.state);
   if (open) ui.soundCloseBtn.focus();
-  else if (!ui.soundToggleBtn.hidden) ui.soundToggleBtn.focus();
+  else if (restoreFocus && !ui.soundToggleBtn.disabled) ui.soundToggleBtn.focus();
 }
 
 ui.soundToggleBtn.addEventListener('click', () => setSoundsOpen(!soundsOpen));
 ui.soundCloseBtn.addEventListener('click', () => setSoundsOpen(false));
+// Clique fora do painel (e fora do botão que o abre) fecha; tocar um som, dentro dele, não fecha.
+document.addEventListener('pointerdown', (event) => {
+  if (!soundsOpen) return;
+  const target = event.target as Node;
+  if (ui.soundboard.contains(target) || ui.soundToggleBtn.contains(target)) return;
+  setSoundsOpen(false, false);
+});
+
+/** Botão do áudio recebido: nome, estado (aria-pressed) e ícone acompanham o controle local. */
+function renderIncoming(): void {
+  ui.incomingBtn.textContent = incomingLabel(incoming.muted);
+  ui.incomingBtn.setAttribute('aria-pressed', String(incoming.muted));
+  ui.incomingBtn.dataset['muted'] = String(incoming.muted);
+}
+
+// Silencia ou restaura só o que chega dos outros, neste aparelho. Não mexe no microfone nem na conexão.
+ui.incomingBtn.addEventListener('click', () => {
+  incoming.toggle(remoteAudio.values());
+  renderIncoming();
+});
 
 ui.soundVolume.addEventListener('input', () => soundboard.setVolume(Number(ui.soundVolume.value) / 100));
 ui.soundDisabled.addEventListener('change', () => soundboard.setDisabled(ui.soundDisabled.checked));
@@ -672,7 +768,7 @@ ui.returnDismissBtn.addEventListener('click', () => callReturn.dismiss());
 function renderShell(state: ShellState): void {
   ui.app.dataset['sidebar'] = state.collapsed ? 'collapsed' : 'expanded';
   ui.app.dataset['drawer'] = state.drawerOpen ? 'open' : 'closed';
-  const label = state.collapsed ? 'Expandir barra lateral' : 'Recolher barra lateral';
+  const label = state.collapsed ? 'Mostrar canais' : 'Recolher canais';
   ui.sidebarToggle.setAttribute('aria-expanded', String(!state.collapsed));
   ui.sidebarToggle.setAttribute('aria-label', label);
   ui.sidebarToggle.title = label;
@@ -680,8 +776,7 @@ function renderShell(state: ShellState): void {
   ui.shellMenuBtn.setAttribute('aria-expanded', String(state.drawerOpen));
   ui.shellBackdrop.hidden = !state.drawerOpen;
   ui.shellMain.inert = state.drawerOpen; // o foco fica na navegação enquanto ela cobre o conteúdo
-  ui.callBar.inert = state.drawerOpen;
-  ui.soundboard.inert = state.drawerOpen;
+  ui.callBar.inert = state.drawerOpen; // o painel de sons mora na barra: fica inerte com ela
   renderRooms();
 }
 
@@ -693,7 +788,7 @@ function renderRooms(): void {
   const busy = s.busy !== null;
   if (s.status === 'ready') shell.reconcile(s.rooms.map((r) => r.room_id));
   const { selectedRoomId } = shell.state;
-  const context = roomContext(s, selectedRoomId, callActive ? callRoomId : null);
+  const context = roomContext(s, selectedRoomId, callActive ? callRoomId : null, selectedRoomId === null ? null : centerChannel(selectedRoomId));
   ui.contextTitle.textContent = context.title;
   ui.contextDetail.textContent = context.detail ?? '';
   ui.contextDetail.hidden = context.detail === null;
@@ -708,6 +803,17 @@ function renderRooms(): void {
   if (!roomFirst && ui.callPanel.nextElementSibling !== ui.roomsBlock) ui.callPanel.after(ui.roomsBlock);
   renderVoice();
   ui.app.dataset['view'] = selectedRoomId === null ? 'all' : 'room';
+  // Cabeçalho da lateral contextual: a sala selecionada (nome e papel/lotação) ou a marca, na visão geral.
+  const selectedRoom = selectedRoomId === null ? undefined : s.rooms.find((r) => r.room_id === selectedRoomId);
+  ui.sidebarRoom.textContent = selectedRoom?.name ?? 'Oryn';
+  ui.sidebarRoomDetail.textContent = selectedRoom
+    ? `${selectedRoom.role === 'owner' ? 'dono' : 'membro'} · ${selectedRoom.member_count}/${selectedRoom.max_members}${selectedRoom.is_open ? '' : ' · encerrada'}`
+    : 'Stay close. Play on.';
+  if (selectedRoom) ui.sidebarRoomDetail.removeAttribute('lang');
+  else ui.sidebarRoomDetail.setAttribute('lang', 'en');
+  ui.sidebarHint.hidden = selectedRoom !== undefined;
+  // O canal do centro define a composição: Texto (chat no centro, membros ao lado) ou Voz (palco e sons, chat ao lado).
+  ui.app.dataset['channel'] = selectedRoomId === null ? 'none' : centerKind;
   if (selectedRoomId === null) ui.roomsHomeBtn.setAttribute('aria-current', 'true');
   else ui.roomsHomeBtn.removeAttribute('aria-current');
   replaceKeepingFocus(
@@ -725,13 +831,15 @@ function renderRooms(): void {
       selectedRoomId,
       callActive: callActive || entryGate.checking,
       activeRoomId: callActive ? callRoomId : null,
-      onJoin: (roomId) => startCall(roomId),
+      // Na sala aberta, "Entrar na chamada" entra na voz que está no palco (ou na padrão).
+      onJoin: (roomId) => startCall(roomId, roomId === selectedRoomId && centerKind === 'voice' ? selectedVoiceId : null),
       onClose: (roomId) => void lobby.close(roomId),
       inviteBusy: inviteShare.state.busy,
       onInvite: (roomId) => void inviteShare.open(roomId),
       onRevokeInvites: (roomId) => void inviteShare.revoke(roomId, lobby.state.rooms.find((r) => r.room_id === roomId)?.name ?? ''),
       chatRoomId: chat?.state.roomId ?? null,
-      onChat: openChat,
+      // Em Texto, o chat é o centro (vem pelos canais). Na visão geral e em Voz, a pílula abre o chat sob demanda.
+      ...(selectedRoomId === null || centerKind === 'voice' ? { onChat: openChat } : {}),
       membersRoomId: members?.state.roomId ?? null,
       onMembers: openMembers,
       adminOpenRoomIds: adminOpen,
@@ -783,68 +891,229 @@ function renderChannels(): void {
   ui.channelNav.hidden = !room || s.roomId !== room.room_id;
   if (!room || s.roomId !== room.room_id) {
     ui.channelList.replaceChildren();
-    ui.channelCreateForm.hidden = true;
+    if (ui.channelDialog.open && !channelCreating()) closeChannelCreate(false); // a sala do modal saiu da tela
     return;
   }
   const canManage = room.role === 'owner' && room.is_open;
-  ui.channelCreateForm.hidden = !canManage || s.status !== 'ready';
-  ui.channelCreateBtn.disabled = s.busy !== null;
-  ui.channelCreateName.disabled = s.busy !== null;
-  ui.channelCreateKind.disabled = s.busy !== null;
+  if (ui.channelDialog.open && !canManage && !channelCreating()) closeChannelCreate(false); // a permissão mudou
+  renderChannelDialog();
   // Chat aberto neste espaço sem canal escolhido = o texto padrão (RPCs antigas, mesmas mensagens).
-  const textId = chat?.state.status !== 'closed' && chat?.state.roomId === room.room_id
+  const textId = centerKind === 'text' && chat?.state.status !== 'closed' && chat?.state.roomId === room.room_id
     ? chat.state.channelId ?? defaultChannel(s.channels, 'text')?.channel_id ?? null : null;
   const voiceId = callActive && callRoomId === room.room_id ? callChannelId ?? defaultChannel(s.channels, 'voice')?.channel_id ?? null : null;
+  const shownVoiceId = centerKind === 'voice' ? selectedVoiceId ?? defaultChannel(s.channels, 'voice')?.channel_id ?? null : null;
+  // Com o modal aberto, a mensagem da criação aparece nele, e não repetida na lista.
+  const navState = ui.channelDialog.open && s.message?.tone === 'error' ? { ...s, message: null } : s;
   replaceKeepingFocus(
     ui.channelList,
-    renderChannelNav(document, s, {
+    renderChannelNav(document, navState, {
       canManage,
       closed: !room.is_open,
       openTextId: textId,
       activeVoiceId: voiceId,
+      selectedVoiceId: shownVoiceId,
       callBusy: callActive || entryGate.checking,
       onOpenText: (channelId) => openChannelChat(room.room_id, channelId),
       onJoinVoice: (channelId) => {
         closeDrawer(); // na tela estreita, a chamada aparece no lugar da navegação
         startCall(room.room_id, channelId);
       },
-      onArchive: (channelId) => void channels.archive(channelId),
+      onOpenVoice: (channelId) => {
+        closeDrawer();
+        showVoice(room.room_id, defaultChannel(s.channels, 'voice')?.channel_id === channelId ? null : channelId);
+        ui.contextTitle.focus();
+      },
+      onArchive: (channelId) => void channels.archive(channelId).finally(() => { channelMenuOpen = null; }),
+      onCreate: (kind) => openChannelCreate(kind),
+      openMenuId: channelMenuOpen,
+      onMenuToggle: (channelId, open) => { channelMenuOpen = open ? channelId : channelMenuOpen === channelId ? null : channelMenuOpen; },
     }),
   );
 }
 
-/** Abre o chat de um canal de texto. O canal padrão usa o caminho antigo da sala: as mensagens são as mesmas. */
-function openChannelChat(roomId: string, channelId: string): void {
+/** Canal do centro para o cabeçalho, quando a lista da sala já chegou. Ocupação da voz: uma vez por conta. */
+function centerChannel(roomId: string): ContextChannel | null {
+  if (!channels || channels.state.roomId !== roomId || channels.state.status !== 'ready') return null;
+  const list = channels.state.channels;
+  if (centerKind === 'text') {
+    const id = chat?.state.roomId === roomId ? chat.state.channelId : null;
+    const c = id === null ? defaultChannel(list, 'text') : list.find((x) => x.channel_id === id);
+    return c ? { kind: 'text', name: c.name } : null;
+  }
+  const c = selectedVoiceId === null ? defaultChannel(list, 'voice') : list.find((x) => x.channel_id === selectedVoiceId);
+  if (!c) return null;
+  const inVoice = new Set((channels.state.participants[c.channel_id] ?? []).map((p) => p.participant_ref)).size;
+  return { kind: 'voice', name: c.name, inVoice };
+}
+
+/**
+ * Centro em Texto: o chat do canal no centro e os membros da sala ao lado. A chamada em curso continua, e a barra segue
+ * mostrando a voz conectada. Sem canal: o texto padrão da sala.
+ */
+function showText(roomId: string, channelId: string | null = null): void {
   const room = lobby.state.rooms.find((r) => r.room_id === roomId);
   if (!room) return;
+  centerKind = 'text';
+  // Não troca o chat com mensagem pendente, que sumiria da tela; o mesmo canal não reabre.
+  const sameChat = chat.state.status !== 'closed' && chat.state.roomId === roomId && chat.state.channelId === channelId;
+  if (!sameChat && (chat.state.status === 'closed' || chat.state.roomId === roomId || chat.state.pending.length === 0)) chat.open(roomId, !room.is_open, channelId);
+  // Membros ao lado só onde há coluna para eles (tela larga); fora dela, abrem sob demanda pela pílula "Membros".
+  if (sidePanelFits()) {
+    if (members.state.status === 'closed' || members.state.roomId !== roomId) members.open(roomId, room.name, !room.is_open);
+  } else if (members.state.status !== 'closed' && members.state.roomId !== roomId) {
+    members.close(); // painel de outra sala não fica embaixo do chat
+  }
+  renderRooms();
+}
+
+/** Há coluna para o painel contextual (chat ou membros ao lado do centro): só na tela larga. */
+const sidePanelFits = (): boolean => window.matchMedia('(min-width: 1200px)').matches;
+/** Celular: a lateral de canais é uma gaveta ao lado da barra global. */
+const drawerLayout = (): boolean => window.matchMedia('(max-width: 768px)').matches;
+
+/** Centro em Voz: o palco (participantes e sons) no centro e o chat da sala ao lado. Não entra na chamada sozinho. */
+function showVoice(roomId: string, channelId: string | null): void {
+  const room = lobby.state.rooms.find((r) => r.room_id === roomId);
+  if (!room) return;
+  centerKind = 'voice';
+  selectedVoiceId = channelId;
+  if (members.state.status !== 'closed') members.close(); // em Voz, o painel ao lado é o chat
+  if (sidePanelFits()) {
+    if (chat.state.status === 'closed' || (chat.state.roomId !== roomId && chat.state.pending.length === 0)) chat.open(roomId, !room.is_open);
+  } else if (chat.state.status !== 'closed' && chat.state.pending.length === 0) {
+    chat.close(); // sem coluna ao lado: o chat abre sob demanda pela pílula "Chat"; o rascunho fica guardado no canal
+  }
+  renderRooms();
+}
+
+/** Abre o chat de um canal de texto no centro. O canal padrão usa o caminho antigo da sala: as mensagens são as mesmas. */
+function openChannelChat(roomId: string, channelId: string): void {
   const target = defaultChannel(channels.state.channels, 'text')?.channel_id === channelId ? null : channelId;
-  chat.open(roomId, !room.is_open, target);
+  showText(roomId, target);
   closeDrawer();
   ui.chat.scrollIntoView({ block: 'nearest' });
   ui.chatInput.focus({ preventScroll: true });
 }
 
+// ---------- criação de canal (modal) ----------
+
+const channelCreating = (): boolean => channels?.state.busy === 'create';
+const channelKindChosen = (): ChannelKind => (ui.channelKindVoice.checked ? 'voice' : 'text');
+
+/** Botão, campo e erro do modal, a partir do estado dos canais. O nome precisa ser válido para enviar. */
+function renderChannelDialog(): void {
+  if (!ui.channelDialog.open) return;
+  const busy = channelCreating();
+  ui.channelCreateBtn.disabled = busy || !isChannelName(ui.channelCreateName.value);
+  ui.channelCreateBtn.textContent = busy ? 'Criando…' : 'Criar canal';
+  ui.channelCancelBtn.disabled = busy;
+  ui.channelCloseBtn.disabled = busy;
+  ui.channelKindText.disabled = busy;
+  ui.channelKindVoice.disabled = busy;
+  ui.channelDialog.dataset['kind'] = channelKindChosen();
+  const message = channels.state.message;
+  setMessage(ui.channelCreateError, message?.tone === 'error' ? message : null);
+}
+
+/** Abre o modal com o tipo da seção do "+", nome vazio e foco no nome. */
+function openChannelCreate(kind: ChannelKind): void {
+  if (ui.channelDialog.open || channels.state.status !== 'ready') return;
+  if (shell.state.drawerOpen) shell.closeDrawer(); // o modal mora no conteúdo, inerte com a gaveta aberta
+  channelOpenerKind = kind;
+  ui.channelCreateName.value = '';
+  ui.channelKindText.checked = kind === 'text';
+  ui.channelKindVoice.checked = kind === 'voice';
+  channels.dismissMessage();
+  ui.channelDialog.hidden = false;
+  ui.channelDialog.showModal();
+  renderChannelDialog();
+  renderChannels();
+  ui.channelCreateName.focus();
+}
+
+/** Fecha sem criar (nunca durante o envio) e devolve o foco ao "+" de origem, mesmo depois de a lista ser redesenhada. */
+function closeChannelCreate(restoreFocus = true): void {
+  if (!ui.channelDialog.open || channelCreating()) return;
+  ui.channelDialog.close();
+  ui.channelDialog.hidden = true;
+  channels.dismissMessage();
+  const kind = channelOpenerKind;
+  channelOpenerKind = null;
+  renderChannels();
+  if (!restoreFocus) return;
+  // Na tela estreita, o "+" fica na gaveta fechada e não recebe foco: então o "Menu", que leva de volta a ele.
+  const plus = kind === null ? null : ui.channelList.querySelector<HTMLButtonElement>(`[data-create-kind="${kind}"]`);
+  plus?.focus();
+  if (plus && document.activeElement === plus) return;
+  ui.shellMenuBtn.focus();
+  if (document.activeElement !== ui.shellMenuBtn) ui.contextTitle.focus();
+}
+
+ui.channelCreateName.addEventListener('input', renderChannelDialog);
+ui.channelKindText.addEventListener('change', renderChannelDialog);
+ui.channelKindVoice.addEventListener('change', renderChannelDialog);
+ui.channelCancelBtn.addEventListener('click', () => closeChannelCreate());
+ui.channelCloseBtn.addEventListener('click', () => closeChannelCreate());
+// Escape (cancel nativo): fecha pelo mesmo caminho; durante o envio, nada acontece.
+ui.channelDialog.addEventListener('cancel', (event) => { event.preventDefault(); closeChannelCreate(); });
+ui.channelDialog.addEventListener('close', () => { ui.channelDialog.hidden = true; });
+ui.channelDialog.addEventListener('click', (event) => {
+  if (event.target !== ui.channelDialog) return;
+  const r = ui.channelDialog.getBoundingClientRect();
+  if (event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom) closeChannelCreate();
+});
+// Tab circula só dentro do modal, como no "Criar sala".
+ui.channelDialog.addEventListener('keydown', (event) => {
+  if (event.key !== 'Tab') return;
+  const items = [...ui.channelDialog.querySelectorAll<HTMLElement>('button, input, select, textarea, [href], [tabindex]:not([tabindex="-1"])')]
+    .filter((n) => !(n as HTMLButtonElement).disabled && n.offsetParent !== null && !(n instanceof HTMLInputElement && n.type === 'radio' && !n.checked));
+  if (items.length === 0) return;
+  const first = items[0]!;
+  const last = items[items.length - 1]!;
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+});
+
 ui.channelCreateForm.addEventListener('submit', (event) => {
   event.preventDefault();
-  if (ui.channelCreateForm.hidden || ui.channelCreateBtn.disabled) return; // só o dono, e um envio por vez
-  const kind = ui.channelCreateKind.value === 'voice' ? 'voice' : 'text';
+  if (!ui.channelDialog.open || ui.channelCreateBtn.disabled || channelCreating()) return; // um envio por vez, nome válido
+  const kind = channelKindChosen();
+  const roomId = channels.state.roomId;
   void channels.create(ui.channelCreateName.value, kind).then((id) => {
-    if (id === null) return;
-    ui.channelCreateName.value = '';
-    // Canal de texto novo: já abre o chat dele. Voz: fica na lista, para entrar quando quiser.
-    if (kind === 'text' && channels.state.roomId) openChannelChat(channels.state.roomId, id);
+    if (id === null) {
+      // Erro (permissão, nome repetido, limite, rede): o modal segue aberto, com o nome e o tipo preenchidos.
+      renderChannelDialog();
+      ui.channelCreateName.focus();
+      return;
+    }
+    channels.dismissMessage();
+    closeChannelCreate(false);
+    // O canal aparece na seção dele. Texto: já abre no centro. Voz: fica na lista, para entrar quando quiser.
+    if (kind === 'text' && roomId !== null && channels.state.roomId === roomId) openChannelChat(roomId, id);
+    else ui.channelList.querySelector<HTMLButtonElement>('[data-create-kind="voice"]')?.focus();
   });
 });
 
-/** Abre uma sala ou a visão geral. Só muda o que é mostrado: entrar na chamada segue sendo uma ação à parte. */
+/** Abre uma sala ou a visão geral. Só muda o que é mostrado: entrar na chamada segue sendo uma ação à parte. Abrir uma
+ * sala mostra o canal de texto padrão dela; a chamada em curso, de qualquer sala, continua. */
 function navigate(roomId: string | null): void {
   if (roomId === null) channels?.close();
   else channels?.open(roomId);
   const covering = shell.state.drawerOpen;
-  // Chat contextual: o chat aberto acompanha a sala escolhida. Não troca com mensagem pendente, que sumiria da tela.
   const room = roomId === null ? undefined : lobby.state.rooms.find((r) => r.room_id === roomId);
-  if (room && chat.state.status !== 'closed' && chat.state.roomId !== room.room_id && chat.state.pending.length === 0) chat.open(room.room_id, !room.is_open);
+  const changed = roomId !== shell.state.selectedRoomId;
   shell.select(roomId);
+  if (room && changed) {
+    selectedVoiceId = null;
+    showText(room.room_id); // texto padrão, com os membros ao lado
+  } else if (roomId === null && members.state.status !== 'closed') {
+    members.close(); // na visão geral não há painel de membros de uma sala
+  }
+  // Celular: escolher uma sala na barra global abre a gaveta de canais dela (a barra global segue visível e com o foco).
+  if (room && drawerLayout()) {
+    shell.openDrawer();
+    return;
+  }
   if (covering) ui.contextTitle.focus(); // a navegação saiu da tela, e o foco não pode sumir com ela
 }
 
@@ -931,13 +1200,20 @@ ui.createProfileBtn.addEventListener('click', () => { closeCreate(false); ui.pro
 
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
-  if (ui.profilePanel.open || ui.createDialog.open) return; // o cancel nativo fecha a camada, sem agir nos painéis de fundo
-  if (soundsOpen && !shell.state.drawerOpen) return setSoundsOpen(false);
+  if (ui.profilePanel.open || ui.createDialog.open || ui.channelDialog.open) return; // o cancel nativo fecha a camada
+  if (soundsOpen && !shell.state.drawerOpen) return setSoundsOpen(false); // Escape fecha os sons e devolve o foco
   closeDrawer();
 });
 // A janela cresceu com a navegação aberta: na tela grande ela não cobre mais nada.
 window.matchMedia('(max-width: 768px)').addEventListener('change', (event) => {
   if (!event.matches) shell.closeDrawer();
+});
+// A janela ganhou a coluna do painel contextual: membros (Texto) ou chat (Voz) voltam para o lado, sem mudar o centro.
+window.matchMedia('(min-width: 1200px)').addEventListener('change', (event) => {
+  const roomId = shell.state.selectedRoomId;
+  if (!event.matches || roomId === null || !lobby) return;
+  if (centerKind === 'text') showText(roomId, chat.state.roomId === roomId ? chat.state.channelId : null);
+  else showVoice(roomId, selectedVoiceId);
 });
 
 ui.refreshBtn.addEventListener('click', () => void lobby.refresh());
@@ -997,12 +1273,20 @@ let chatRenderedChannel: string | null = null;
 let chatDeniedRefreshed = false;
 
 function renderChat(s: ChatState): void {
+  // Rascunho por canal: ao trocar de canal (ou de sala), o texto digitado fica no canal de origem e o campo recebe o do
+  // destino. O que foi escrito para um canal nunca sai em outro.
+  const key = s.status === 'closed' ? null : draftKey(s.roomId, s.channelId);
+  if (key !== draftAt) {
+    ui.chatInput.value = drafts.switch(draftAt, key, ui.chatInput.value);
+    draftAt = key;
+  }
   ui.chat.hidden = s.status === 'closed';
   const chatRoomName = lobby.state.rooms.find((r) => r.room_id === s.roomId)?.name ?? '';
   const chatChannel = channels?.state.roomId === s.roomId
     ? s.channelId === null ? defaultChannel(channels.state.channels, 'text') : channels.state.channels.find((c) => c.channel_id === s.channelId)
     : undefined;
-  ui.chatRoom.textContent = chatChannel ? `${chatRoomName} · #${chatChannel.name}` : chatRoomName;
+  // Só o canal: a sala já está no cabeçalho e na lateral. Sem a lista de canais ainda, o nome da sala.
+  ui.chatRoom.textContent = chatChannel ? `#${chatChannel.name}` : chatRoomName;
   setMessage(ui.chatStatus, chatStatusText(s));
   // Só desce sozinho se a pessoa já estava no fim: quem está lendo o histórico não perde o lugar.
   const box = ui.chatMessages;
@@ -1037,7 +1321,10 @@ function renderChat(s: ChatState): void {
 }
 
 function submitChat(): void {
-  if (chat.send(ui.chatInput.value)) ui.chatInput.value = '';
+  if (chat.send(ui.chatInput.value)) {
+    ui.chatInput.value = '';
+    drafts.clear(draftAt); // enviado ao canal do campo: o rascunho dele acabou
+  }
   ui.chatInput.focus();
 }
 
@@ -1179,6 +1466,14 @@ function showLoggedOut(): void {
   entryChannelId = null;
   ui.channelCreateName.value = '';
   ui.chatInput.value = '';
+  drafts.reset(); // nada do que foi digitado sobrevive à saída da conta
+  draftAt = null;
+  centerKind = 'text';
+  selectedVoiceId = null;
+  if (ui.channelDialog.open) ui.channelDialog.close(); // logout fecha a criação de canal, mesmo com envio em curso
+  ui.channelDialog.hidden = true;
+  channelOpenerKind = null;
+  setCallNotice(null);
   lobby.reset();
   inviteShare.reset();
   callReturn.reset();
@@ -1254,22 +1549,135 @@ ui.profileForm.addEventListener('submit', (event) => {
 });
 
 type LoginMode = 'login' | 'signup' | 'forgot' | 'reset';
-const LOGIN_TITLES: Record<LoginMode, string> = { login: 'Entrar na sua conta', signup: 'Criar conta', forgot: 'Recuperar senha', reset: 'Criar nova senha' };
-/** Um formulário por vez na área de login; os campos de senha sempre saem limpos. */
+const LOGIN_TITLES: Record<LoginMode, string> = { login: 'Bem-vindo de volta!', signup: 'Crie sua conta', forgot: 'Recuperar senha', reset: 'Criar nova senha' };
+const LOGIN_SUBTITLES: Record<LoginMode, string> = {
+  login: 'Entre para voltar às suas salas.',
+  signup: 'Leva menos de um minuto. Seu nome aparece para o seu grupo.',
+  forgot: 'Enviaremos um link para você criar uma nova senha.',
+  reset: 'Escolha a nova senha da sua conta.',
+};
+/** Um formulário por vez no cartão de acesso; os campos de senha sempre saem limpos e ocultos. As abas valem para
+ * Entrar e Criar conta; recuperar e redefinir a senha usam o mesmo cartão, sem elas. */
 function loginMode(mode: LoginMode): void {
   ui.loginTitle.textContent = LOGIN_TITLES[mode];
+  ui.loginSubtitle.textContent = LOGIN_SUBTITLES[mode];
   ui.loginForm.hidden = mode !== 'login';
   ui.signupForm.hidden = mode !== 'signup';
   ui.forgotForm.hidden = mode !== 'forgot';
   ui.resetForm.hidden = mode !== 'reset';
-  ui.signupOpen.hidden = mode !== 'login';
+  ui.authTabs.hidden = mode === 'forgot' || mode === 'reset';
+  for (const [tab, selected] of [[ui.authTabLogin, mode === 'login'], [ui.signupOpen, mode === 'signup']] as const) {
+    tab.setAttribute('aria-selected', String(selected));
+    tab.tabIndex = selected ? 0 : -1;
+  }
   ui.forgotOpen.hidden = mode !== 'login';
   ui.signupPassword.value = '';
+  ui.signupConfirm.value = '';
   ui.resetPassword.value = '';
   ui.resetConfirm.value = '';
+  hideAllPasswords();
+  clearFieldErrors();
+  signupTouched = false;
+  renderPasswordRules();
   ({ login: ui.email, signup: ui.signupName, forgot: ui.forgotEmail, reset: ui.resetPassword })[mode].focus();
 }
+
+// ---------- formulários de acesso: erros por campo, senha visível, requisitos e telefone ----------
+
+/** Depois da primeira tentativa de envio, os erros do cadastro acompanham a digitação. */
+let signupTouched = false;
+
+const SIGNUP_FIELDS: { field: SignupField; input: () => HTMLInputElement; error: () => HTMLElement }[] = [
+  { field: 'name', input: () => ui.signupName, error: () => ui.signupNameError },
+  { field: 'email', input: () => ui.signupEmail, error: () => ui.signupEmailError },
+  { field: 'phone', input: () => ui.signupPhone, error: () => ui.signupPhoneError },
+  { field: 'password', input: () => ui.signupPassword, error: () => ui.signupPasswordError },
+  { field: 'confirmation', input: () => ui.signupConfirm, error: () => ui.signupConfirmError },
+];
+
+/** Erro junto do campo, como texto fixo; o campo fica marcado como inválido para leitores de tela. */
+function fieldError(input: HTMLInputElement, node: HTMLElement, text: string | undefined): void {
+  node.textContent = text ?? '';
+  node.hidden = text === undefined;
+  if (text === undefined) input.removeAttribute('aria-invalid');
+  else input.setAttribute('aria-invalid', 'true');
+}
+
+function clearFieldErrors(): void {
+  fieldError(ui.email, ui.emailError, undefined);
+  fieldError(ui.password, ui.passwordError, undefined);
+  for (const f of SIGNUP_FIELDS) fieldError(f.input(), f.error(), undefined);
+}
+
+const signupInput = (): SignupInput => ({
+  name: ui.signupName.value, email: ui.signupEmail.value, phone: ui.signupPhone.value,
+  password: ui.signupPassword.value, confirmation: ui.signupConfirm.value,
+});
+
+function showSignupErrors(errors: SignupErrors): void {
+  for (const f of SIGNUP_FIELDS) fieldError(f.input(), f.error(), errors[f.field]);
+}
+
+/** Requisitos da senha: o estado aparece no ícone e no texto escondido para leitores de tela, não só na cor. */
+function renderPasswordRules(): void {
+  const checks = passwordChecks(ui.signupPassword.value, ui.signupConfirm.value);
+  for (const item of ui.signupRules.querySelectorAll<HTMLElement>('[data-rule]')) {
+    const met = checks[item.dataset['rule'] as keyof typeof checks] === true;
+    item.dataset['met'] = String(met);
+    item.setAttribute('aria-label', `${item.textContent ?? ''}: ${met ? 'atendido' : 'pendente'}`);
+  }
+}
+
+function hideAllPasswords(): void {
+  for (const button of ui.login.querySelectorAll<HTMLButtonElement>('[data-reveal]')) setPasswordVisible(button, false);
+}
+
+function setPasswordVisible(button: HTMLButtonElement, visible: boolean): void {
+  const input = document.getElementById(button.dataset['reveal'] ?? '');
+  if (!(input instanceof HTMLInputElement)) return;
+  input.type = visible ? 'text' : 'password';
+  button.setAttribute('aria-pressed', String(visible));
+  const what = button.getAttribute('aria-label')?.includes('confirmação') ? 'confirmação da senha' : 'senha';
+  button.setAttribute('aria-label', `${visible ? 'Ocultar' : 'Mostrar'} ${what}`);
+}
+
+// Mostrar/ocultar senha: um ouvinte para todos os botões; o foco continua no botão.
+ui.login.addEventListener('click', (event) => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-reveal]');
+  if (button) setPasswordVisible(button, button.getAttribute('aria-pressed') !== 'true');
+});
+
+// Abas: setas trocam entre Entrar e Criar conta (padrão de abas do WAI-ARIA).
+ui.authTabs.addEventListener('keydown', (event) => {
+  if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight' && event.key !== 'Home' && event.key !== 'End') return;
+  event.preventDefault();
+  const toSignup = ui.signupForm.hidden;
+  (toSignup ? ui.signupOpen : ui.authTabLogin).click();
+  (toSignup ? ui.signupOpen : ui.authTabLogin).focus();
+});
+ui.authTabLogin.addEventListener('click', () => {
+  if (!ui.loginForm.hidden) return;
+  setMessage(ui.signupStatus, null);
+  loginMode('login');
+  ui.authTabLogin.focus();
+});
+
+ui.signupPhone.addEventListener('input', () => {
+  const formatted = formatPhoneBR(ui.signupPhone.value);
+  if (formatted !== ui.signupPhone.value) ui.signupPhone.value = formatted;
+});
+for (const input of [ui.signupPassword, ui.signupConfirm]) input.addEventListener('input', renderPasswordRules);
+ui.signupForm.addEventListener('input', () => {
+  if (signupTouched) showSignupErrors(validateSignup(signupInput()));
+});
+
+ui.googleBtn.addEventListener('click', () => {
+  // Só em builds de revisão (VITE_ORYN_AUTH_GOOGLE=preview): nenhum fluxo OAuth é iniciado.
+  setMessage(ui.signupStatus, { tone: 'info', text: 'Entrar com Google ainda não está disponível: depende da configuração do provedor.' });
+});
+
 ui.signupOpen.addEventListener('click', () => {
+  if (!ui.signupForm.hidden) return;
   setMessage(ui.signupStatus, null); // aviso de outro fluxo (ex.: link de recuperação enviado) não vale para o cadastro
   loginMode('signup');
 });
@@ -1277,8 +1685,16 @@ ui.signupCancel.addEventListener('click', () => loginMode('login'));
 ui.signupForm.addEventListener('submit', (event) => {
   event.preventDefault();
   if (ui.signupBtn.disabled) return;
+  // Validação antes do envio: erros junto dos campos, foco no primeiro. O telefone é conferido, mas não sai daqui.
+  signupTouched = true;
+  const errors = validateSignup(signupInput());
+  showSignupErrors(errors);
+  const first = SIGNUP_FIELDS.find((f) => errors[f.field] !== undefined);
+  if (first) return first.input().focus();
   const password = ui.signupPassword.value;
   ui.signupPassword.value = '';
+  ui.signupConfirm.value = '';
+  renderPasswordRules();
   ui.signupBtn.disabled = true;
   ui.signupCancel.disabled = true;
   void registerAccount(client.auth, ui.signupEmail.value, password, ui.signupName.value).then(async (result) => {
@@ -1305,7 +1721,7 @@ ui.forgotForm.addEventListener('submit', (event) => {
   if (ui.forgotBtn.disabled) return;
   ui.forgotBtn.disabled = true;
   ui.forgotCancel.disabled = true;
-  void requestPasswordReset(client.auth, ui.forgotEmail.value, recoveryRedirect(window.location)).then((notice) => {
+  void requestPasswordReset(client.auth, ui.forgotEmail.value, recoveryRedirect(publicLocation(window.location, cfg.publicOrigin))).then((notice) => {
     ui.forgotBtn.disabled = false;
     ui.forgotCancel.disabled = false;
     setMessage(ui.signupStatus, notice);
@@ -1369,13 +1785,28 @@ ui.resetCancel.addEventListener('click', () => {
 ui.loginForm.addEventListener('submit', (event) => {
   event.preventDefault();
   showError(null);
+  // Preenchimento e formato do e-mail antes de ir ao Auth; o resto quem decide é o servidor.
+  const invalid = validateLogin(ui.email.value, ui.password.value);
+  fieldError(ui.email, ui.emailError, invalid.email);
+  fieldError(ui.password, ui.passwordError, invalid.password);
+  if (invalid.email !== undefined) return ui.email.focus();
+  if (invalid.password !== undefined) return ui.password.focus();
   const email = ui.email.value.trim();
   const password = ui.password.value;
   ui.password.value = ''; // a senha não fica no DOM
   ui.loginBtn.disabled = true;
   void client.auth.signInWithPassword({ email, password }).then(async ({ data, error }) => {
     ui.loginBtn.disabled = false;
-    if (error || !data.session || !data.user) return showError(`Login recusado (${authCode(error?.code)}).`);
+    if (error || !data.session || !data.user) {
+      // No próprio cartão, com texto fixo: nunca a mensagem do Auth, que pode conter dados da conta.
+      const code = authCode(error?.code);
+      const text = code === 'invalid_credentials' ? 'E-mail ou senha incorretos.'
+        : code === 'email_not_confirmed' ? 'Confirme seu e-mail pelo link que enviamos antes de entrar.'
+          : `Não foi possível entrar agora (${code}). Tente de novo.`;
+      setMessage(ui.signupStatus, { tone: 'error', text });
+      return ui.password.focus();
+    }
+    setMessage(ui.signupStatus, null);
     loginMode('login');
     await enterSession(data.session);
   });
@@ -1409,6 +1840,7 @@ function restoreLogin(): void {
 
 try {
   cfg = parseWebConfig(import.meta.env as unknown as Record<string, string | undefined>);
+  ui.authGoogle.hidden = cfg.googleAuth !== 'preview'; // oculto até o fluxo OAuth ser autorizado e configurado
   // Sessão persistida pelo Auth; autoRefreshToken renova o JWT (o supabase-js repassa o token novo ao Realtime).
   // Nenhuma chave além da publicável.
   authStorage = createAuthStorage();
@@ -1433,7 +1865,7 @@ try {
   });
   inviteShare = new InviteShareController({
     rpc: (fn, args) => backend.rpc(fn, args),
-    link: (token) => buildInviteLink(window.location, token),
+    link: (token) => buildInviteLink(publicLocation(window.location, cfg.publicOrigin), token),
     copy: (link) => navigator.clipboard.writeText(link),
     share: (link) =>
       navigator.share({ title: 'Convite para uma sala do Oryn', url: link }).then(
@@ -1542,11 +1974,13 @@ try {
     setTimer: (fn, ms) => setTimeout(fn, ms),
     clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
     onChange: () => {
-      renderChannels();
+      renderRooms(); // inclui renderChannels; o cabeçalho usa o nome do canal e a ocupação da voz
       if (chat.state.status !== 'closed') renderChat(chat.state); // o título do chat usa o nome do canal
     },
     // Canal arquivado com o chat aberto nele: volta para o texto padrão do espaço (o histórico segue legível na lista).
+    // Voz arquivada no palco: o palco volta para a voz padrão.
     onChannelGone: (channelId) => {
+      if (selectedVoiceId === channelId) selectedVoiceId = null;
       const { roomId } = chat.state;
       const room = lobby.state.rooms.find((r) => r.room_id === roomId);
       if (room && chat.state.channelId === channelId && chat.state.pending.length === 0) chat.open(room.room_id, !room.is_open, null);

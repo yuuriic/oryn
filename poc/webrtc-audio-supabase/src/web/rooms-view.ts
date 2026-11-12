@@ -60,10 +60,27 @@ export function statusText(state: LobbyState): string {
   return '';
 }
 
-/** Título e resumo do cabeçalho, para a sala selecionada ou para a visão geral. */
-export function roomContext(state: LobbyState, selectedRoomId: string | null, activeRoomId: string | null = null): { title: string; detail: string | null } {
+/** Canal aberto no centro, para o cabeçalho. Em voz, `inVoice` é quem está conectado nele (uma vez por conta). */
+export type ContextChannel = { kind: 'text'; name: string } | { kind: 'voice'; name: string; inVoice: number };
+
+/** Título e resumo do cabeçalho, para a sala selecionada ou para a visão geral. Com um canal: "#nome" em texto; nome e
+ * ocupação em voz. A sala vem no resumo, para a pessoa saber onde o canal está. */
+export function roomContext(
+  state: LobbyState,
+  selectedRoomId: string | null,
+  activeRoomId: string | null = null,
+  channel: ContextChannel | null = null,
+): { title: string; detail: string | null } {
   const room = selectedRoomId === null ? undefined : state.rooms.find((r) => r.room_id === selectedRoomId);
   if (!room) return { title: 'Minhas salas', detail: null };
+  if (channel?.kind === 'text') {
+    const situation = room.is_open ? `${room.member_count}/${room.max_members} membros` : `encerrada em ${formatWhen(room.closed_at ?? '')}`;
+    return { title: `#${channel.name}`, detail: `${room.name} · ${situation}` };
+  }
+  if (channel?.kind === 'voice') {
+    const situation = room.is_open ? `${channel.inVoice}/${room.max_members} na voz` : `encerrada em ${formatWhen(room.closed_at ?? '')}`;
+    return { title: channel.name, detail: `${room.name} · ${situation}` };
+  }
   if (room.is_open && room.room_id === activeRoomId) return { title: room.name, detail: `Em chamada · ${room.member_count}/${room.max_members} membros` };
   const situation = room.is_open ? `${room.member_count}/${room.max_members} membros · aberta` : `encerrada em ${formatWhen(room.closed_at ?? '')}`;
   return { title: room.name, detail: `${ROLE[room.role]} · ${situation}` };
