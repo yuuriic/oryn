@@ -78,8 +78,10 @@ enabled = true
 verify_jwt = true
 
 [functions.turn]
-# Credenciais TURN temporárias para quem está numa voz (integration/TURN-RELAY.md). NÃO publicada: `enabled = false` é a
-# trava até a autorização de deploy, como a `signal` começou. Chamada só com o JWT do usuário; a função valida de novo.
-enabled = false
+# Credenciais TURN temporárias para quem está numa voz (integration/TURN-RELAY.md). Habilitada para `supabase functions
+# deploy turn --project-ref … --use-api`, mas a publicação depende de autorização explícita (como a `signal`). A
+# integração GitHub não lê esta pasta: nada é publicado automaticamente. Chamada só com o JWT do usuário; a função valida
+# de novo.
+enabled = true
 verify_jwt = true
 entrypoint = "./functions/turn/index.ts"
