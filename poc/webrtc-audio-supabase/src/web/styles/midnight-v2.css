@@ -682,3 +682,55 @@ main[data-view='room'][data-channel='text'] #chat > .panel-head {
     line-height: 0;
   }
 }
+
+/* Botões que viram só ícone nos cartões de sala: Chat e Membros (tela inicial em qualquer largura; cabeçalho da sala
+   abaixo de 1200 px) e o "⋮". As regras de origem (gold.css: gap e padding de botão com texto, num seletor com
+   :not(:first-child); rooms.css: margem do ícone do antigo "+ Gerenciar sala") empurravam o ícone ~4 px para a
+   esquerda. O #account só dá o peso necessário para vencê-las; o tamanho de cada contexto continua o mesmo. */
+main[data-view='all'] #account #rooms .buttons button.room-chat,
+main[data-view='all'] #account #rooms .buttons button.room-members {
+  justify-content: center;
+  gap: 0;
+  padding: 0;
+}
+
+@media (max-width: 1199px) {
+  #account #rooms .buttons button.room-chat,
+  #account #rooms .buttons button.room-members {
+    justify-content: center;
+    gap: 0;
+    padding: 0;
+  }
+}
+
+#account #rooms .room-admin > summary::before {
+  margin: 0;
+}
+
+/* Convite como modal: rooms.css dava margem de seção (margin: 0 0 16px), que tiraria o <dialog> do centro. */
+#invite-share.invite-dialog {
+  margin: auto;
+}
+
+#invite-share.invite-dialog h3 {
+  margin-top: 0;
+}
+
+/* "⋮" é um <summary> (content-box): a borda somava 2 px (50 no desktop, 46 no celular). Igual aos botões vizinhos. */
+#account #rooms .room-admin > summary {
+  box-sizing: border-box;
+}
+
+/* Celular: Chat e Membros quadrados, do tamanho dos outros controles (44), também na tela inicial. */
+@media (max-width: 768px) {
+  #account #rooms .buttons button.room-chat,
+  #account #rooms .buttons button.room-members {
+    width: 44px;
+    min-height: 44px;
+  }
+}
+
+/* O título recebe o foco ao abrir (como o título da página): sem contorno de controle, porque não é interativo. */
+#invite-share-title:focus {
+  outline: none;
+}

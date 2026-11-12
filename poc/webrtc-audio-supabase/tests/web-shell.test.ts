@@ -333,7 +333,7 @@ describe('Hybrid Midnight Gold: criação sob demanda e chat contextual', () => 
     expect(main).toMatch(/ui\.createDialog\.addEventListener\('click', \(event\) => \{\n  if \(event\.target !== ui\.createDialog\) return;[^]*?if \(outside\) closeCreate\(\);/);
     // Tab preso ao modal; Escape global não age nos painéis de fundo com o modal aberto.
     expect(main).toMatch(/ui\.createDialog\.addEventListener\('keydown', \(event\) => \{\n  if \(event\.key !== 'Tab'\) return;/);
-    expect(main).toContain('if (ui.profilePanel.open || ui.createDialog.open || ui.channelDialog.open) return;');
+    expect(main).toContain('if (ui.profilePanel.open || ui.createDialog.open || ui.channelDialog.open || ui.inviteShare.open) return;');
     // Durante o envio: botões de fechar desabilitados; erros do create_room aparecem no modal, não atrás dele.
     const render = fn('renderRooms');
     expect(render).toContain('ui.createCancelBtn.disabled = busy');

@@ -122,6 +122,45 @@ describe('acabamento', () => {
   });
 });
 
+describe('convite: um único modal centralizado', () => {
+  it('é um <dialog> (não uma seção no fluxo), com os mesmos ids do controlador', () => {
+    expect(html).toMatch(/<dialog id="invite-share" class="identity-panel invite-dialog" aria-labelledby="invite-share-title" hidden>/);
+    expect(html).not.toMatch(/<section id="invite-share"/);
+    for (const id of ['invite-share-room', 'invite-share-box', 'invite-link', 'invite-copy-btn', 'invite-share-status', 'invite-share-message', 'invite-new-btn', 'invite-close-btn']) {
+      expect(html, id).toContain(`id="${id}"`);
+    }
+  });
+
+  it('abre como modal, fecha o menu "⋮" de origem e não rola nem insere nada na página', () => {
+    const render = fn('renderInviteShare');
+    expect(render).toContain('adminOpen.delete(s.roomId);');
+    expect(render).toContain('ui.inviteShare.showModal();');
+    expect(render).toContain("document.getElementById('invite-share-title')?.focus();");
+    expect(render).not.toMatch(/scrollIntoView/);
+  });
+
+  it('Escape fecha pelo controlador (que não fecha durante a geração); o foco volta ao "⋮"', () => {
+    expect(main).toContain("ui.inviteShare.addEventListener('cancel', (event) => { event.preventDefault(); inviteShare.close(); });");
+    expect(main).toMatch(/ui\.inviteShare\.addEventListener\('close', \(\) => \{[^]*?menu\.focus\(\);/);
+    expect(main).toContain('|| ui.inviteShare.open) return;');
+    // A margem de seção do rooms.css tiraria o modal do centro.
+    expect(css).toMatch(/#invite-share\.invite-dialog \{\n\s*margin: auto;/);
+  });
+});
+
+describe('ícones dos cartões de sala (tela inicial e cabeçalho)', () => {
+  it('Chat, Membros e "⋮" só com ícone: sem o espaço e a margem herdados do botão com texto', () => {
+    expect(css).toMatch(/main\[data-view='all'\] #account #rooms \.buttons button\.room-chat,\nmain\[data-view='all'\] #account #rooms \.buttons button\.room-members \{\n\s*justify-content: center;\n\s*gap: 0;\n\s*padding: 0;/);
+    expect(css).toMatch(/@media \(max-width: 1199px\) \{\n\s*#account #rooms \.buttons button\.room-chat,\n\s*#account #rooms \.buttons button\.room-members \{\n\s*justify-content: center;\n\s*gap: 0;\n\s*padding: 0;/);
+    expect(css).toMatch(/#account #rooms \.room-admin > summary::before \{\n\s*margin: 0;/);
+  });
+
+  it('tamanhos iguais aos vizinhos: o "⋮" (<summary>) em border-box e Chat/Membros quadrados no celular', () => {
+    expect(css).toMatch(/#account #rooms \.room-admin > summary \{\n\s*box-sizing: border-box;/);
+    expect(css).toMatch(/@media \(max-width: 768px\) \{\n\s*#account #rooms \.buttons button\.room-chat,\n\s*#account #rooms \.buttons button\.room-members \{\n\s*width: 44px;\n\s*min-height: 44px;/);
+  });
+});
+
 // ---------- menu do canal ----------
 class FakeEl {
   children: FakeEl[] = [];

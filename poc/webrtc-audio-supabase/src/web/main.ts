@@ -124,7 +124,7 @@ const ui = {
   inviteDeclineBtn: el<HTMLButtonElement>('invite-decline-btn'),
   inviteAcceptMessage: el<HTMLParagraphElement>('invite-accept-message'),
   inviteDismissBtn: el<HTMLButtonElement>('invite-dismiss-btn'),
-  inviteShare: el<HTMLElement>('invite-share'),
+  inviteShare: el<HTMLDialogElement>('invite-share'),
   inviteShareRoom: el<HTMLElement>('invite-share-room'),
   inviteShareBox: el<HTMLElement>('invite-share-box'),
   inviteLink: el<HTMLInputElement>('invite-link'),
@@ -1200,7 +1200,7 @@ ui.createProfileBtn.addEventListener('click', () => { closeCreate(false); ui.pro
 
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
-  if (ui.profilePanel.open || ui.createDialog.open || ui.channelDialog.open) return; // o cancel nativo fecha a camada
+  if (ui.profilePanel.open || ui.createDialog.open || ui.channelDialog.open || ui.inviteShare.open) return; // o cancel nativo fecha a camada
   if (soundsOpen && !shell.state.drawerOpen) return setSoundsOpen(false); // Escape fecha os sons e devolve o foco
   closeDrawer();
 });
@@ -1349,9 +1349,21 @@ function setMessage(node: HTMLElement, message: { tone: 'info' | 'error'; text: 
   node.className = message?.tone === 'error' ? 'error' : 'notice';
 }
 
+/** Convite num único modal centralizado (o mesmo controlador de sempre). Abrir fecha o menu "⋮" de onde veio; fechar
+ * devolve o foco a ele. Nada é inserido no fluxo da página, então ela não pula nem duplica o convite. */
 function renderInviteShare(s: InviteShareState): void {
-  const opening = ui.inviteShare.hidden && s.roomId !== null;
-  ui.inviteShare.hidden = s.roomId === null;
+  const show = s.roomId !== null;
+  if (s.roomId !== null && !ui.inviteShare.open) {
+    adminOpen.delete(s.roomId); // o menu "Gerenciar sala" não fica aberto atrás do modal
+    if (shell.state.drawerOpen) shell.closeDrawer(); // o modal mora no conteúdo, inerte com a gaveta aberta
+    ui.inviteShare.hidden = false;
+    ui.inviteShare.showModal();
+    // Ao abrir, o link ainda está sendo gerado e o Fechar fica desabilitado: o foco vai para o título do modal.
+    document.getElementById('invite-share-title')?.focus();
+  } else if (!show && ui.inviteShare.open) {
+    ui.inviteShare.close();
+  }
+  if (!show) ui.inviteShare.hidden = true;
   ui.inviteShareRoom.textContent = lobby.state.rooms.find((r) => r.room_id === s.roomId)?.name ?? '';
   ui.inviteShareBox.hidden = s.link === null;
   ui.inviteLink.value = s.link ?? '';
@@ -1362,7 +1374,6 @@ function renderInviteShare(s: InviteShareState): void {
   setMessage(ui.inviteShareMessage, s.message);
   ui.inviteNewBtn.hidden = !s.expired;
   ui.inviteCloseBtn.disabled = s.busy;
-  if (opening) ui.inviteShare.scrollIntoView({ block: 'nearest' });
   renderRooms();
 }
 
@@ -1391,6 +1402,16 @@ ui.inviteNewBtn.addEventListener('click', () => {
   if (roomId) void inviteShare.open(roomId);
 });
 ui.inviteCloseBtn.addEventListener('click', () => inviteShare.close());
+// Escape (cancel nativo): fecha pelo controlador, que não fecha durante a geração ou a revogação.
+ui.inviteShare.addEventListener('cancel', (event) => { event.preventDefault(); inviteShare.close(); });
+// Fechou (pelo controlador ou forçado pelo navegador): estado e foco acompanham; o foco volta ao "⋮" da sala.
+ui.inviteShare.addEventListener('close', () => {
+  ui.inviteShare.hidden = true;
+  if (inviteShare.state.roomId !== null) inviteShare.close();
+  const menu = document.querySelector<HTMLElement>('.context-actions #rooms .room-admin > summary, #rooms .room-admin > summary');
+  if (menu && menu.offsetParent !== null) menu.focus();
+  else ui.contextTitle.focus();
+});
 ui.inviteAcceptForm.addEventListener('submit', (event) => {
   event.preventDefault();
   if (globalName === null) return; // o botão já fica desabilitado; Enter também não aceita sem nome

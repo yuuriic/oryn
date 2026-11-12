@@ -346,8 +346,10 @@
           <p id="rooms-error" class="error" role="alert" hidden></p>
         </div>
 
-        <section id="invite-share" hidden>
-          <h3>Convite para <span id="invite-share-room"></span></h3>
+        <!-- Convite (e o resultado de revogar): um único modal centralizado, como o "Criar sala". Antes era uma seção no
+             fluxo do conteúdo, que aparecia abaixo dos participantes enquanto o menu "⋮" seguia aberto no topo. -->
+        <dialog id="invite-share" class="identity-panel invite-dialog" aria-labelledby="invite-share-title" hidden>
+          <h3 id="invite-share-title" tabindex="-1">Convite para <span id="invite-share-room"></span></h3>
           <div id="invite-share-box" hidden>
             <label>Link do convite (uso único) <input id="invite-link" type="text" readonly spellcheck="false" autocomplete="off" /></label>
             <p class="muted">Válido até <strong id="invite-expiry"></strong>. Envie só para quem vai participar: quem tiver o link e uma conta pode entrar. Ao recarregar a página, o link não é mostrado de novo.</p>
@@ -362,7 +364,7 @@
             <button id="invite-new-btn" type="button" hidden>Gerar novo convite</button>
             <button id="invite-close-btn" type="button">Fechar</button>
           </div>
-        </section>
+        </dialog>
 
         <section id="chat" hidden>
           <div class="panel-head">
