@@ -76,3 +76,10 @@ entrypoint = "./functions/signal/index.ts"
 # Valida sons em quarentena e apaga objetos pendentes (0700). Publicação só pela CLI, com autorização própria.
 enabled = true
 verify_jwt = true
+
+[functions.turn]
+# Credenciais TURN temporárias para quem está numa voz (integration/TURN-RELAY.md). NÃO publicada: `enabled = false` é a
+# trava até a autorização de deploy, como a `signal` começou. Chamada só com o JWT do usuário; a função valida de novo.
+enabled = false
+verify_jwt = true
+entrypoint = "./functions/turn/index.ts"

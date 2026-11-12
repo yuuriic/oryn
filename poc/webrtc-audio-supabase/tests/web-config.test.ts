@@ -19,9 +19,9 @@ const KEY_OK = 'sb_publishable_' + 'AbC123_x-Y';
 const ok = (over: Record<string, string | undefined> = {}) => parseWebConfig({ VITE_SUPABASE_URL: URL_OK, VITE_SUPABASE_PUBLISHABLE_KEY: KEY_OK, ...over });
 
 describe('configuração do cliente (só a chave publicável)', () => {
-  it('aceita URL do projeto e chave publicável; STUN padrão sem TURN; sala opcional', () => {
+  it('aceita URL do projeto e chave publicável; STUN padrão sem TURN; modo auto; sala opcional', () => {
     const c = ok({ VITE_ORYN_ROOM_ID: '0C2A0000-0000-4000-8000-000000000001'.toLowerCase() });
-    expect(c).toEqual({ supabaseUrl: URL_OK, publishableKey: KEY_OK, defaultRoomId: '0c2a0000-0000-4000-8000-000000000001', iceServers: [{ urls: DEFAULT_STUN }], publicOrigin: null, googleAuth: 'off' });
+    expect(c).toEqual({ supabaseUrl: URL_OK, publishableKey: KEY_OK, defaultRoomId: '0c2a0000-0000-4000-8000-000000000001', iceServers: [{ urls: DEFAULT_STUN }], iceMode: 'auto', publicOrigin: null, googleAuth: 'off' });
     expect(ok({ VITE_ORYN_STUN_URLS: 'stun:stun.cloudflare.com:3478, stun:stun.l.google.com:19302' }).iceServers).toEqual([{ urls: ['stun:stun.cloudflare.com:3478', 'stun:stun.l.google.com:19302'] }]);
   });
 
@@ -45,7 +45,29 @@ describe('configuração do cliente (só a chave publicável)', () => {
     expect(() => ok({ VITE_SUPABASE_URL: undefined })).toThrow('VITE_SUPABASE_URL');
     expect(() => ok({ VITE_ORYN_ROOM_ID: 'sala-1' })).toThrow('VITE_ORYN_ROOM_ID');
     expect(() => ok({ VITE_ORYN_STUN_URLS: 'turn:turn.example.com:3478' })).toThrow('só URLs stun:');
+    expect(() => ok({ VITE_ORYN_STUN_URLS: 'turns:turn.example.com:443?transport=tcp' })).toThrow('TURN só pela função turn');
     expect(() => ok({ VITE_ORYN_STUN_URLS: 'stun:a.example,stun:b.example,stun:c.example,stun:d.example,stun:e.example' })).toThrow('no máximo 4');
+  });
+});
+
+describe('modo ICE e TURN (sem credencial estática no bundle)', () => {
+  it('VITE_ORYN_ICE_MODE: vazio é auto; aceita os quatro modos; recusa outro valor', () => {
+    expect(ok().iceMode).toBe('auto');
+    for (const m of ['auto', 'direct', 'relay', 'relay-tls'] as const) expect(ok({ VITE_ORYN_ICE_MODE: m }).iceMode).toBe(m);
+    expect(() => ok({ VITE_ORYN_ICE_MODE: 'turn' })).toThrow('VITE_ORYN_ICE_MODE');
+  });
+
+  it('a chamada usa o modo da configuração (auto) e a fonte compartilhada; não fixa direct; credencial só pela função turn', () => {
+    const main = code(web['main.ts']!);
+    expect(main).not.toMatch(/iceMode: 'direct'/);
+    expect(main).toMatch(/const iceMode = chosenIceMode\(window\.location\.search, cfg\.iceMode\);/);
+    expect(main).toMatch(/ice: \(mode\) => iceShare\.request\(mode\)/);
+    expect(code(web['supabase-backend.ts']!)).toMatch(/functions\.invoke\('turn'/);
+    // Nenhum módulo do cliente lê credencial TURN de variável de build nem a guarda no navegador.
+    for (const [f, t] of Object.entries(web)) {
+      expect(code(t), f).not.toMatch(/VITE_ORYN_TURN|import\.meta\.env\.VITE_[A-Z_]*(USERNAME|CREDENTIAL|TOKEN)/);
+      if (f === 'ice-share.ts') expect(code(t)).not.toMatch(/localStorage|sessionStorage|indexedDB|console\./);
+    }
   });
 });
 

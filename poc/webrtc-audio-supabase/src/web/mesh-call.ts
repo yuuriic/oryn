@@ -15,6 +15,7 @@ import { describeMediaError } from './errors.ts';
 import type { IceServerConfig } from './ice.ts';
 import type { IceMode } from './ice.ts';
 import type { ClientMessage, Role, ServerMessage, SignalPayload, SignalingHandlers } from './protocol.ts';
+import { describePair } from './stats.ts';
 import type { MeshEvents, MeshParticipant } from './mesh-signaling.ts';
 import type { PeerLossReason } from './supabase-signaling.ts';
 
@@ -42,6 +43,11 @@ export interface MeshCallDeps {
   createPeerConnection(config: RTCConfiguration): RTCPeerConnection;
   createRoom(events: MeshEvents, onDisconnected: (code: number) => void): MeshRoom;
   iceServers: IceServerConfig[];
+  /**
+   * Resposta ao pedido ICE de um par (IceShare em produção: uma configuração TURN por chamada, compartilhada). Sem ela,
+   * cada par recebe só `iceServers` (STUN), localmente, como antes.
+   */
+  ice?: (mode: IceMode) => Promise<Extract<ServerMessage, { type: 'ice-config' } | { type: 'error' }>>;
   audioCodecs?: () => RTCRtpCodec[] | null | undefined;
   iceMode?: IceMode;
   statsIntervalMs?: number;
@@ -72,11 +78,18 @@ class PairLink implements SignalingLike {
   private readonly send_: (epoch: number, payload: SignalPayload) => boolean;
   private readonly unreachable: (epoch: number, reason: PeerLossReason) => boolean;
   private readonly iceServers: IceServerConfig[];
+  private readonly ice: MeshCallDeps['ice'];
 
-  constructor(send: (epoch: number, payload: SignalPayload) => boolean, unreachable: (epoch: number, reason: PeerLossReason) => boolean, iceServers: IceServerConfig[]) {
+  constructor(
+    send: (epoch: number, payload: SignalPayload) => boolean,
+    unreachable: (epoch: number, reason: PeerLossReason) => boolean,
+    iceServers: IceServerConfig[],
+    ice?: MeshCallDeps['ice'],
+  ) {
     this.send_ = send;
     this.unreachable = unreachable;
     this.iceServers = iceServers;
+    this.ice = ice;
   }
 
   async connect(): Promise<void> {
@@ -101,7 +114,14 @@ class PairLink implements SignalingLike {
       case 'signal':
         return this.send_(message.epoch, message.payload);
       case 'ice-request':
-        // Só STUN, sem credenciais: respondido aqui, depois do retorno, como no 1:1.
+        if (this.ice) {
+          // A configuração da chamada (compartilhada entre os pares). Par já encerrado: a resposta é descartada.
+          void this.ice(message.mode).then((answer) => {
+            if (this.handlers) this.deliver(answer);
+          });
+          return true;
+        }
+        // Sem fonte de configuração: só STUN, sem credenciais, respondido aqui depois do retorno, como no 1:1.
         queueMicrotask(() => this.deliver({ type: 'ice-config', mode: message.mode, iceServers: this.iceServers, expiresAt: null }));
         return true;
       default:
@@ -127,6 +147,8 @@ interface Entry {
   disposed: boolean;
   pc: PeerStates | null;
   stats: CallStats | null;
+  /** Último caminho de mídia registrado deste par (para registrar só as mudanças). */
+  path: string | null;
 }
 
 export class MeshCall {
@@ -246,8 +268,9 @@ export class MeshCall {
       (e, payload) => this.room?.sendTo(session, e, payload) ?? false,
       (e, reason) => this.room?.peerLost(session, e, reason) ?? false,
       this.deps.iceServers,
+      this.deps.ice,
     );
-    const entry: Entry = { peer, link, state: 'connecting', disposed: false, pc: null, stats: null, call: undefined as unknown as PeerCall };
+    const entry: Entry = { peer, link, state: 'connecting', disposed: false, pc: null, stats: null, path: null, call: undefined as unknown as PeerCall };
     const call = new PeerCall(
       {
         sharedMic: this.stream,
@@ -278,6 +301,7 @@ export class MeshCall {
         onStats: (stats) => {
           if (entry.disposed) return;
           entry.stats = stats;
+          this.notePath(entry);
           this.emitDisplay();
         },
         onLog: (message) => {
@@ -361,6 +385,24 @@ export class MeshCall {
       if (!list.some((p) => p.session === e.peer.session)) list.push({ session: e.peer.session, ref: e.peer.ref, displayName: e.peer.displayName, state: e.state });
     }
     this.cb.onParticipants(list, this.standby);
+  }
+
+  /**
+   * Evidência sanitizada do caminho de cada par, só quando muda: tipo do par selecionado (direto ou relay), tipos dos
+   * candidatos, transporte e o transporte do relay. Nunca endereços, portas, SDP ou credenciais (describePair).
+   */
+  private notePath(entry: Entry): void {
+    const s = entry.stats;
+    if (!s?.path || !s.pair) return;
+    const text = `${s.path === 'relay' ? 'relay (TURN)' : 'direto'} — ${describePair(s.pair)}`;
+    if (text === entry.path) return;
+    entry.path = text;
+    this.cb.onLog(`[${entry.peer.displayName}] Caminho de mídia: ${text}.`);
+  }
+
+  /** Caminho atual de cada par conectado, para diagnóstico e evidência (sanitizado). */
+  get paths(): { displayName: string; path: string }[] {
+    return [...this.entries.values()].filter((e) => e.path !== null).map((e) => ({ displayName: e.peer.displayName, path: e.path! }));
   }
 
   private emitDisplay(): void {

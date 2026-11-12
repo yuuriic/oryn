@@ -9,6 +9,7 @@ import { FunctionsHttpError, type SupabaseClient } from '@supabase/supabase-js';
 import type { SignalRequest } from '../../supabase/functions/_shared/signal-contract.ts';
 import type { TransportResponse } from '../signal-sender.ts';
 import type { ChannelHandle, ChannelHandlers, RoomBackend, RpcResult } from './supabase-signaling.ts';
+import type { InvokeTurn } from './ice-share.ts';
 
 /** Prazo para a entrada no canal privado (o harness usa 10–12 s). */
 export const CHANNEL_JOIN_TIMEOUT_MS = 12_000;
@@ -93,5 +94,22 @@ export function createSupabaseBackend(client: SupabaseClient, unload?: UnloadCon
         });
       });
     },
+  };
+}
+
+/**
+ * Chamada à Edge Function `turn` com o JWT da sessão atual (functions.invoke). Devolve status e corpo curto; falha de
+ * rede, CORS ou função ausente lança, e quem chama trata como TURN indisponível. Nada aqui registra a resposta.
+ */
+export function createTurnInvoker(client: SupabaseClient): InvokeTurn {
+  return async (target) => {
+    const { data, error } = await client.functions.invoke('turn', { body: target });
+    if (!error) return { status: 200, body: isObj(data) ? data : {} };
+    if (error instanceof FunctionsHttpError) {
+      const res = error.context as Response;
+      const body: unknown = await res.json().catch(() => ({}));
+      return { status: res.status, body: isObj(body) ? body : {} };
+    }
+    throw new Error('turn-unreachable');
   };
 }

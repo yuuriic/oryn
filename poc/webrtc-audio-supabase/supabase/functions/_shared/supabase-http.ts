@@ -27,11 +27,20 @@ export function serverHeaders(cfg: EdgeConfig): Record<string, string> {
   return { apikey: cfg.secretKey };
 }
 
-async function rpcError(res: Response): Promise<RpcError> {
+export async function rpcError(res: Response): Promise<RpcError> {
   // 401 do gateway/PostgREST = credencial recusada (JWT vencido, chave inválida): nunca "banco fora".
   if (res.status === 401) return new RpcError('jwt-invalid');
   const body = (await res.json().catch(() => ({}))) as { message?: unknown };
   return new RpcError(typeof body.message === 'string' ? body.message : `http-${res.status}`);
+}
+
+/** Valida o JWT pelo Auth (GET /auth/v1/user). null: recusado (401/403). Lança se o Auth estiver indisponível. */
+export async function verifyUserJwt(cfg: EdgeConfig, fetchImpl: FetchLike, jwt: string, timeoutMs = TIMEOUT_MS): Promise<string | null> {
+  const res = await fetchImpl(`${cfg.url}/auth/v1/user`, { method: 'GET', signal: AbortSignal.timeout(timeoutMs), headers: userHeaders(cfg, jwt) });
+  if (res.status === 401 || res.status === 403) return null;
+  if (!res.ok) throw new Error(`auth-${res.status}`); // indisponível → 503 no núcleo
+  const user = (await res.json().catch(() => ({}))) as { id?: unknown };
+  return isUuid(user.id) ? user.id : null;
 }
 
 export function createSignalDeps(cfg: EdgeConfig, fetchImpl: FetchLike, log: SignalDeps['log'], timeoutMs = TIMEOUT_MS): SignalDeps {
@@ -44,13 +53,7 @@ export function createSignalDeps(cfg: EdgeConfig, fetchImpl: FetchLike, log: Sig
     });
 
   return {
-    async verifyUser(jwt) {
-      const res = await fetchImpl(`${cfg.url}/auth/v1/user`, { method: 'GET', signal: AbortSignal.timeout(timeoutMs), headers: userHeaders(cfg, jwt) });
-      if (res.status === 401 || res.status === 403) return null;
-      if (!res.ok) throw new Error(`auth-${res.status}`); // indisponível → 503 no núcleo
-      const user = (await res.json().catch(() => ({}))) as { id?: unknown };
-      return isUuid(user.id) ? user.id : null;
-    },
+    verifyUser: (jwt) => verifyUserJwt(cfg, fetchImpl, jwt, timeoutMs),
 
     async authorize(jwt: string, request: SignalRequest, bytes: number): Promise<AuthorizeResult> {
       const res = await post('/rest/v1/rpc/authorize_signal', userHeaders(cfg, jwt), {
