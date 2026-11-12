@@ -1,0 +1,251 @@
+/* Central de controles da chamada (Midnight V2): identificação à esquerda, os controles no centro e Sair à direita.
+   Sons da sala num painel flutuante ancorado na própria barra (sempre acima dela, qualquer que seja a altura da barra).
+   Só tokens existentes. A geometria única dos botões de ícone (midnight-v2.css) vale para todos os controles. */
+
+/* ---------- Barra: três colunas, controles no centro exato ---------- */
+.call-bar {
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  padding-bottom: max(var(--space-3), env(safe-area-inset-bottom));
+}
+
+.call-bar-id {
+  grid-column: 1;
+  grid-row: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+/* gold.css fixa .call-bar-info (flex: none): aqui ela encolhe e o texto termina em reticências, sem passar por baixo
+   dos controles nem do Sair. */
+.call-bar-id .call-bar-info {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+}
+
+.call-bar-id #call-room,
+.call-bar-id .call-bar-status {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.call-bar-actions {
+  grid-column: 2;
+  grid-row: 1;
+  display: flex;
+  justify-content: center;
+  gap: var(--space-3);
+}
+
+.call-bar-end {
+  grid-column: 3;
+  grid-row: 1;
+  justify-self: end;
+}
+
+/* ---------- Estados dos controles (sempre também no nome, em aria-pressed ou aria-expanded) ---------- */
+#incoming-btn {
+  --i: var(--icon-headphones);
+}
+
+#incoming-btn:not(:disabled) {
+  background: var(--color-elevated);
+  border: 1px solid var(--color-border-control);
+  color: var(--color-text);
+}
+
+/* Áudio recebido silenciado: fone riscado em vermelho, como o microfone mutado. */
+#incoming-btn[aria-pressed='true'] {
+  --i: var(--icon-headphones-off);
+  background: rgb(255 138 150 / 10%);
+  border: 2px solid var(--color-error);
+  color: var(--color-error);
+}
+
+#screen-btn {
+  --i: var(--icon-screen);
+}
+
+/* Compartilhar tela: indisponível. Borda tracejada e texto secundário (não só opacidade); o hover genérico não acende. */
+.call-bar-actions #screen-btn[aria-disabled='true'],
+.call-bar-actions #screen-btn[aria-disabled='true']:hover {
+  background: transparent;
+  border: 1px dashed var(--color-border-control);
+  box-shadow: none;
+  color: var(--color-text-secondary);
+  cursor: not-allowed;
+}
+
+#sound-toggle-btn {
+  --i: var(--icon-music);
+}
+
+#sound-toggle-btn:not(:disabled) {
+  background: var(--color-elevated);
+  border: 1px solid var(--color-border-control);
+  color: var(--color-text);
+}
+
+/* Sons abertos: dourado, como os controles ativos. */
+#sound-toggle-btn[aria-expanded='true'] {
+  background: var(--color-gold-soft);
+  border: 2px solid var(--color-gold);
+  box-shadow: var(--glow-gold);
+  color: var(--color-gold);
+}
+
+/* ---------- Sons da sala: painel flutuante acima da barra ---------- */
+.call-bar {
+  --flyout-reserve: 132px; /* barra + respiro: o painel nunca passa do topo da janela */
+}
+
+.sound-flyout {
+  position: absolute;
+  bottom: calc(100% + var(--space-3));
+  left: 50%;
+  z-index: 2;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  width: min(560px, calc(100% - var(--space-4)));
+  max-height: calc(100dvh - var(--flyout-reserve) - var(--space-4));
+  margin: 0;
+  padding: 0;
+  background: linear-gradient(180deg, rgb(33 27 60 / 98%), rgb(21 17 42 / 99%));
+  border: 1px solid rgb(242 181 68 / 55%);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--glow-gold), 0 24px 60px rgb(0 0 0 / 55%);
+  transform: translateX(-50%);
+}
+
+.sound-flyout > .panel-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin: 0;
+  padding: var(--space-3) var(--space-3) var(--space-3) var(--space-5);
+  border-bottom: 1px solid var(--color-divider);
+}
+
+.sound-flyout > .panel-head h3 {
+  margin: 0;
+}
+
+#sound-close-btn {
+  --i: var(--icon-close);
+  display: grid;
+  place-items: center;
+  place-content: center;
+  width: 40px;
+  min-height: 40px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  font-size: 0;
+  line-height: 0;
+}
+
+#sound-close-btn::before {
+  content: '' / '';
+  width: 18px;
+  height: 18px;
+  background: currentColor;
+  -webkit-mask: var(--i) center / contain no-repeat;
+  mask: var(--i) center / contain no-repeat;
+}
+
+/* Rolagem interna: lista, publicar, volume e "desativar sons" sempre alcançáveis dentro do painel. */
+.sound-flyout-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-4) var(--space-5) var(--space-5);
+  overscroll-behavior: contain;
+}
+
+.sound-flyout #sound-form {
+  margin: 0 0 var(--space-4);
+}
+
+/* ---------- Janela intermediária: os controles primeiro ---------- */
+@media (min-width: 769px) and (max-width: 1199px) {
+  .call-bar-id .call-bar-icon {
+    display: none;
+  }
+
+  .call-bar-status {
+    font-size: 0.8125rem;
+  }
+
+  /* Sair só com o ícone (o nome do botão continua "Sair da chamada"). */
+  #leave-btn {
+    justify-content: center;
+    width: 52px;
+    padding: 0;
+    gap: 0;
+    font-size: 0;
+    line-height: 0;
+  }
+}
+
+/* ---------- Celular: identificação e Sair em cima, controles embaixo, sem rolagem horizontal ---------- */
+@media (max-width: 768px) {
+  .call-bar {
+    --flyout-reserve: 170px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    bottom: calc(var(--space-2) + env(safe-area-inset-bottom));
+  }
+
+  .call-bar-id {
+    grid-column: 1;
+  }
+
+  .call-bar-end {
+    grid-column: 2;
+  }
+
+  /* Grupo centralizado com espaço fixo (não space-evenly): a sobra da linha não entra entre os botões, o espaçamento
+     é o mesmo em qualquer largura e os botões não caem em posições fracionárias (ícone deslocado meio pixel). */
+  .call-bar-actions {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-self: center;
+    justify-content: center;
+    gap: var(--space-4);
+    width: auto;
+  }
+
+  .call-bar-actions .round-btn {
+    flex: none;
+    width: 48px;
+    height: 48px;
+    min-height: 48px;
+  }
+
+  .sound-flyout {
+    width: calc(100% - var(--space-2));
+  }
+
+  .sound-flyout-body {
+    padding: var(--space-3) var(--space-4) var(--space-4);
+  }
+}
+
+@media (max-width: 380px) {
+  /* Mesma proporção botão/espaço das outras faixas (56/12 e 48/16): 44/12. */
+  .call-bar-actions {
+    gap: var(--space-3);
+  }
+
+  .call-bar-actions .round-btn {
+    width: 44px;
+    height: 44px;
+    min-height: 44px;
+  }
+}

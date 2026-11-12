@@ -23,10 +23,7 @@ body {
 #rooms .buttons button::before,
 #rooms .room-admin > summary::before,
 .round-btn::before,
-#sound-toggle-btn::before,
-button.future-btn::before,
 #leave-btn::before,
-#sound-close-btn::before,
 #chat-close-btn::before,
 #members-close-btn::before,
 #soundboard-title::before,
@@ -34,7 +31,7 @@ button.future-btn::before,
 #members .panel-head h3::before,
 #sound-form > details > summary::before,
 .sound-play::before,
-.sound-popover .sound-list button.danger::before,
+.sound-panel .sound-list button.danger::before,
 #chat-send-btn::before,
 .chat-empty::before,
 #participants .participant-waiting::after,
@@ -998,8 +995,7 @@ main[data-view='room'] #call-panel:has(> #participants[hidden]) > #voice-state {
   gap: var(--space-3);
 }
 
-.call-bar-actions .round-btn,
-.call-bar-actions #sound-toggle-btn {
+.call-bar-actions .round-btn {
   display: grid;
   place-items: center;
   width: 56px;
@@ -1013,14 +1009,12 @@ main[data-view='room'] #call-panel:has(> #participants[hidden]) > #voice-state {
   font-size: 0;
 }
 
-.call-bar-actions .round-btn::before,
-.call-bar-actions #sound-toggle-btn::before {
+.call-bar-actions .round-btn::before {
   width: 24px;
   height: 24px;
 }
 
-.call-bar-actions .round-btn:hover:not(:disabled),
-.call-bar-actions #sound-toggle-btn:hover:not(:disabled) {
+.call-bar-actions .round-btn:hover:not(:disabled) {
   background: var(--color-accent-soft);
 }
 
@@ -1046,17 +1040,6 @@ main[data-view='room'] #call-panel:has(> #participants[hidden]) > #voice-state {
   border-color: var(--color-error);
   box-shadow: none;
   color: var(--color-error);
-}
-
-#sound-toggle-btn {
-  --i: var(--icon-music);
-}
-
-#sound-toggle-btn[aria-expanded='true'] {
-  background: var(--color-gold-soft);
-  border: 2px solid var(--color-gold);
-  box-shadow: var(--glow-gold);
-  color: var(--color-gold);
 }
 
 .call-bar-end {
@@ -1096,23 +1079,6 @@ main:has(#call-bar:not([hidden])) > #error {
 }
 
 /* ---------- Painel de sons ---------- */
-.sound-popover {
-  right: auto;
-  bottom: 120px;
-  left: calc(var(--sidebar-width, 0px) + (100vw - var(--sidebar-width, 0px)) / 2);
-  width: min(560px, calc(100vw - var(--sidebar-width, 0px) - 48px));
-  padding: var(--space-4) var(--space-5) var(--space-5);
-  background: linear-gradient(180deg, rgb(33 27 60 / 98%), rgb(21 17 42 / 98%));
-  border: 1px solid rgb(242 181 68 / 60%);
-  border-radius: var(--radius-xl);
-  box-shadow: var(--glow-gold), 0 24px 60px rgb(0 0 0 / 55%);
-  transform: translateX(-50%);
-}
-
-.sound-popover .panel-head {
-  margin-bottom: var(--space-4);
-}
-
 #soundboard-title {
   --i: var(--icon-music);
   display: flex;
@@ -1127,7 +1093,6 @@ main:has(#call-bar:not([hidden])) > #error {
   color: var(--color-gold);
 }
 
-#sound-close-btn,
 #chat-close-btn,
 #members-close-btn {
   --i: var(--icon-close);
@@ -1177,12 +1142,12 @@ main:has(#call-bar:not([hidden])) > #error {
   content: '' / '';
 }
 
-.sound-popover .sound-list {
+.sound-panel .sound-list {
   grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
   gap: var(--space-3);
 }
 
-.sound-popover .sound-list li {
+.sound-panel .sound-list li {
   position: relative;
   display: flex;
   flex-direction: column;
@@ -1193,7 +1158,7 @@ main:has(#call-bar:not([hidden])) > #error {
   border: 0;
 }
 
-.sound-popover .sound-play {
+.sound-panel .sound-play {
   --i: var(--icon-play-ring);
   display: flex;
   flex: none;
@@ -1211,28 +1176,28 @@ main:has(#call-bar:not([hidden])) > #error {
   font-weight: 600;
 }
 
-.sound-popover .sound-play::before {
+.sound-panel .sound-play::before {
   width: 40px;
   height: 40px;
   color: var(--color-gold);
 }
 
-.sound-popover .sound-play:hover:not(:disabled) {
+.sound-panel .sound-play:hover:not(:disabled) {
   background: var(--color-gold-soft);
   border-color: var(--color-gold);
 }
 
-.sound-popover .sound-detail {
+.sound-panel .sound-detail {
   text-align: center;
   font-size: 0.75rem;
 }
 
-.sound-popover .sound-detail:empty {
+.sound-panel .sound-detail:empty {
   display: none;
 }
 
 /* Remover: ação secundária, no canto do cartão. O nome acessível segue "Remover <som>". */
-.sound-popover .sound-list button.danger {
+.sound-panel .sound-list button.danger {
   --i: var(--icon-close);
   position: absolute;
   top: var(--space-1);
@@ -1250,17 +1215,17 @@ main:has(#call-bar:not([hidden])) > #error {
   font-size: 0;
 }
 
-.sound-popover .sound-list button.danger::before {
+.sound-panel .sound-list button.danger::before {
   width: 16px;
   height: 16px;
 }
 
-.sound-popover .sound-list button.danger:hover:not(:disabled) {
+.sound-panel .sound-list button.danger:hover:not(:disabled) {
   background: var(--color-surface);
   color: var(--color-error);
 }
 
-.sound-popover .sound-controls {
+.sound-panel .sound-controls {
   margin-top: var(--space-4);
   padding-top: var(--space-3);
   border-top: 1px solid var(--color-divider);
@@ -1489,9 +1454,7 @@ main:has(#call-bar:not([hidden])) > #error {
     width: auto;
   }
 
-  .call-bar-actions .round-btn,
-  .call-bar-actions #sound-toggle-btn,
-  .call-bar-actions button.future-btn[aria-disabled='true'] {
+  .call-bar-actions .round-btn {
     flex: none;
     width: 48px;
     height: 48px;
@@ -1517,22 +1480,12 @@ main:has(#call-bar:not([hidden])) > #error {
     bottom: 160px;
   }
 
-  .sound-popover {
-    right: var(--space-2);
-    bottom: 160px;
-    left: var(--space-2);
-    width: auto;
-    max-height: calc(100dvh - 224px);
-    padding: var(--space-3) var(--space-4) var(--space-4);
-    transform: none;
-  }
-
-  .sound-popover .sound-list {
+  .sound-panel .sound-list {
     grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
     gap: var(--space-2);
   }
 
-  .sound-popover .sound-play {
+  .sound-panel .sound-play {
     min-height: 92px;
   }
 }

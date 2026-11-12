@@ -6,6 +6,10 @@
 @import './styles/voice.css';
 @import './styles/panels.css';
 @import './styles/gold.css';
+@import './styles/midnight.css';
+@import './styles/midnight-v2.css';
+@import './styles/call-controls.css';
+@import './styles/auth.css';
 
 /* Telas ainda não redesenhadas: só a paleta mudou. */
 main { max-width: 760px; margin: 0 auto; padding: var(--space-4); }

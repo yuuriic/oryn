@@ -1,0 +1,44 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Oryn",
+  "version": "0.1.0",
+  "identifier": "dev.oryn.desktop",
+  "build": {
+    "devUrl": "http://127.0.0.1:5173",
+    "frontendDist": "../dist",
+    "beforeDevCommand": "pnpm dev",
+    "beforeBuildCommand": "pnpm build:desktop"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Oryn",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 360,
+        "minHeight": 560,
+        "resizable": true,
+        "useHttpsScheme": true,
+        "dragDropEnabled": false
+      }
+    ],
+    "security": {
+      "freezePrototype": true,
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["icons/icon.ico"],
+    "windows": {
+      "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true },
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["PortugueseBR"]
+      }
+    }
+  }
+}

@@ -56,14 +56,25 @@ describe('barra da chamada', () => {
     expect(bar).toMatch(/<button id="listen-btn" class="round-btn" type="button" hidden>Ouvir<\/button>/);
   });
 
-  it('só ganhou o botão Sons, que abre o painel existente: nenhuma função de áudio nova', () => {
-    // Os 4 controles que funcionam e, ao lado deles, os 2 futuros, que são só apresentação (aria-disabled, sem id).
-    expect(bar.match(/<button\b/g)).toHaveLength(6);
-    expect(bar.match(/<button\b(?![^>]*aria-disabled="true")/g)).toHaveLength(4);
-    expect(bar.match(/<button class="future-btn[^"]*" type="button" aria-disabled="true"/g)).toHaveLength(2);
-    expect(bar).toMatch(/<button id="sound-toggle-btn" type="button" aria-expanded="false" aria-controls="soundboard" hidden>Sons<\/button>/);
-    expect(html).not.toMatch(/deafen|ensurdecer|enumerateDevices|setSinkId/i);
+  it('central de controles: microfone, áudio recebido, tela (indisponível) e sons no centro; Sair à parte', () => {
+    const actions = /<div class="call-bar-actions"[^]*?<\/div>/.exec(bar)![0];
+    expect(actions).toMatch(/role="group" aria-label="Controles da chamada"/);
+    const ids = [...actions.matchAll(/<button id="([^"]+)"/g)].map((m) => m[1]);
+    expect(ids).toEqual(['listen-btn', 'mute-btn', 'incoming-btn', 'screen-btn', 'sound-toggle-btn']);
+    expect(/<div class="call-bar-end">[^]*?<\/div>/.exec(bar)![0]).toContain('<button id="leave-btn"');
+    // Só o compartilhamento de tela fica indisponível; nenhuma escolha de dispositivo de áudio.
+    expect(bar.match(/aria-disabled="true"/g)).toHaveLength(1);
+    expect(html).not.toMatch(/enumerateDevices|setSinkId|future-|soon-badge/i);
     expect(main).not.toMatch(/enumerateDevices|setSinkId/);
+  });
+
+  it('estado resumido e aviso de participante na própria barra, sem diagnóstico', () => {
+    expect(bar).toMatch(/<p id="call-notice" class="call-bar-notice" role="status" hidden><\/p>/);
+    const render = /function renderVoice[^]*?\n}\n/.exec(main)![0];
+    expect(render).toContain('ui.callPhase.textContent = callActive ? callBarStatus(callPhaseNow, reconnecting) : \'\';');
+    expect(render).toContain("const reconnecting = shownParticipants.list.some((p) => p.state === 'reconnecting');");
+    // Queda ou volta de um participante: na barra (setCallNotice), não no aviso da página.
+    expect(main).toMatch(/onPeerProblem: \(name, kind\) => \{\n\s*if \(call !== current\) return;\n\s*setCallNotice\(peerProblemNotice\(name, kind\)\);/);
   });
 
   it('a visibilidade segue a chamada, não a sala selecionada', () => {
@@ -81,9 +92,9 @@ describe('barra da chamada', () => {
 });
 
 describe('diagnóstico', () => {
-  it('fechado por padrão e com os mesmos dados dentro', () => {
+  it('fora da interface comum (hidden), com os mesmos dados e mecanismos dentro', () => {
     const box = element('diagnostics');
-    expect(box).toMatch(/^<details id="diagnostics">/);
+    expect(box).toMatch(/^<details id="diagnostics" hidden>/);
     for (const field of ['phase', 'mic', 'peer', 'ice', 'path', 'codec', 'rate', 'quality']) expect(box).toContain(`data-field="${field}"`);
     for (const id of ['status', 'log', 'room', 'join-btn']) expect(box).toContain(`id="${id}"`);
   });
@@ -177,20 +188,20 @@ describe('painéis', () => {
     for (const id of ['sound-volume', 'sound-disabled']) expect(board).toContain(`id="${id}"`);
   });
 
-  it('sons: painel flutuante fora do painel de voz e da área central, logo depois da barra da chamada', () => {
-    expect(element('call-panel')).not.toContain('id="soundboard"');
-    expect(element('shell-main')).not.toContain('id="soundboard"');
-    expect(html.indexOf('id="soundboard"')).toBeGreaterThan(html.indexOf('id="sound-toggle-btn"'));
-    expect(element('soundboard')).toMatch(/^<section id="soundboard" class="sound-popover" aria-labelledby="soundboard-title" hidden>/);
-    expect(element('soundboard').indexOf('id="sound-close-btn"')).toBeLessThan(element('soundboard').indexOf('id="soundboard-list"'));
+  it('sons: painel flutuante dentro da barra, fora do palco; fechar vem antes do conteúdo', () => {
+    expect(element('call-panel')).not.toContain('id="soundboard"'); // fechado, não ocupa a área principal
+    const board = element('soundboard');
+    expect(element('call-bar')).toContain('id="soundboard"');
+    expect(board).toMatch(/^<section id="soundboard" class="sound-panel sound-flyout" aria-labelledby="soundboard-title" hidden>/);
+    expect(board.indexOf('id="sound-close-btn"')).toBeLessThan(board.indexOf('id="soundboard-list"'));
+    expect(html).toMatch(/<button id="sound-toggle-btn" class="round-btn" type="button" aria-expanded="false" aria-controls="soundboard" disabled>Sons da sala<\/button>/);
   });
 
-  it('sons: o botão só existe com o soundboard da chamada, e abrir ou fechar é só apresentação', () => {
+  it('sons: abrir e fechar é só apresentação; o soundboard (lista, volume, desativação) segue o da chamada', () => {
     const render = /function renderSoundboardPanel[^]*?\n}\n/.exec(main)![0];
     expect(render).toContain("const available = state.status !== 'closed'");
-    expect(render).toContain('ui.soundboard.hidden = !available || !soundsOpen');
-    expect(render).toContain('ui.soundToggleBtn.hidden = !available');
-    expect(render).toContain("setAttribute('aria-expanded', String(available && soundsOpen))");
+    expect(render).toContain('ui.soundboard.hidden = !available || !soundsOpen;');
+    expect(render).toContain("ui.soundToggleBtn.setAttribute('aria-expanded', String(available && soundsOpen));");
     const toggle = /function setSoundsOpen[^]*?\n}\n/.exec(main)![0];
     expect(toggle).not.toMatch(/soundboard\.(enter|leave|trigger|publish|remove|setVolume|setDisabled|unlock)/);
   });
