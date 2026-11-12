@@ -45,7 +45,8 @@ import { describePair, formatCodec, formatMetric } from './stats.ts';
 import { VoiceMix, placeMenu } from './voice-mix.ts';
 import { VoicePrefs, browserPrefStorage } from './voice-prefs.ts';
 import { createBrowserLedger, type SessionLedger } from './session-ledger.ts';
-import { createSupabaseBackend } from './supabase-backend.ts';
+import { createSupabaseBackend, createTurnInvoker } from './supabase-backend.ts';
+import { IceShare, chosenIceMode, requestTurn } from './ice-share.ts';
 import { DISCONNECT, DISCONNECT_MESSAGES, JOIN_LIMIT_MESSAGE } from './supabase-signaling.ts';
 
 // Primeiro passo da página: o token do convite não fica na barra de endereço.
@@ -376,6 +377,8 @@ function showError(message: string | null): void {
   showNotice(message === null ? null : { tone: 'error', text: message });
 }
 
+/** Sem TURN, o auto segue só com STUN: avisa sem prometer conexão (some quando todos os pares conectam). */
+const TURN_DEGRADED: Notice = { tone: 'info', text: 'Retransmissão (TURN) indisponível: entre algumas redes, a voz pode não conectar.' };
 const SESSION_ENDED: Notice = { tone: 'info', text: 'Sua sessão de login terminou. Faça login de novo.' };
 const ACCOUNT_CHANGED: Notice = { tone: 'info', text: 'Outra aba entrou com outra conta: esta chamada foi encerrada.' };
 const SESSION_UNVERIFIED: Notice = { tone: 'error', text: 'Não foi possível verificar seu login agora (sem conexão com o servidor). Tente recarregar ou faça login.' };
@@ -713,17 +716,38 @@ function beginCall(roomId: string, userId: string, channelId: string | null = nu
   ui.status.hidden = false;
   ui.log.replaceChildren();
 
+  // Uma configuração ICE por chamada, compartilhada pelos pares: a função `turn` é chamada uma vez (e de novo só perto do
+  // fim da validade). O servidor confere, com o JWT, que esta sessão está viva nesta voz.
+  const iceMode = chosenIceMode(window.location.search, cfg.iceMode);
+  const invokeTurn = createTurnInvoker(client);
+  let room: MeshSignaling | null = null;
+  const iceShare = new IceShare({
+    fetch: () => {
+      const session = room?.ownSession ?? null;
+      if (!session) return Promise.resolve({ ok: false, code: 'no-session' });
+      return requestTurn(invokeTurn, { room_id: roomId, channel_id: channelId, session_id: session }, Date.now);
+    },
+    stun: cfg.iceServers,
+    now: Date.now,
+    log: (m) => call === current && log(m),
+    onDegraded: () => {
+      if (call === current) setCallNotice(TURN_DEGRADED);
+    },
+  });
+  log(`Modo ICE: ${iceMode}.`);
+
   const current: MeshCall = new MeshCall(
     {
       getUserMedia: (c) => navigator.mediaDevices.getUserMedia(c),
       createPeerConnection: (c) => new RTCPeerConnection(c),
       createRoom: (events, onDisconnected) => {
-        signaling = new MeshSignaling({ backend, roomId, channelId, selfUserId: userId, events, onDisconnected, iceServers: cfg.iceServers, tracker: sessionLedger.tracker(userId, roomId), log: (m) => call === current && log(m) });
+        room = signaling = new MeshSignaling({ backend, roomId, channelId, selfUserId: userId, events, onDisconnected, iceServers: cfg.iceServers, tracker: sessionLedger.tracker(userId, roomId), log: (m) => call === current && log(m) });
         return signaling;
       },
       iceServers: cfg.iceServers,
       audioCodecs: () => RTCRtpReceiver.getCapabilities?.('audio')?.codecs ?? null,
-      iceMode: 'direct', // só STUN nesta etapa
+      ice: (mode) => iceShare.request(mode),
+      iceMode, // auto na operação normal: direto quando houver rota, relay (TURN) quando preciso
     },
     {
       onPhase: (phase, error) => call === current && renderPhase(phase, error),

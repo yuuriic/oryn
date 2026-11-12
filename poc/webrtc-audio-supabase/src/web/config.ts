@@ -4,7 +4,7 @@
 // iniciar (falha fechada). As mensagens citam só o NOME da variável, nunca o valor.
 
 import { isSupabaseUrl } from '../csp.ts';
-import { parseIceUrl, type IceServerConfig } from './ice.ts';
+import { isIceMode, parseIceUrl, type IceMode, type IceServerConfig } from './ice.ts';
 import { isUuid } from '../../supabase/functions/_shared/signal-contract.ts';
 
 export interface WebConfig {
@@ -12,7 +12,13 @@ export interface WebConfig {
   publishableKey: string;
   /** Sala padrão (opcional): a sala da C2, por exemplo. Pode ser trocada na tela. */
   defaultRoomId: string | null;
+  /** STUN do cliente: modo direct e o fallback do auto. Credenciais TURN nunca vêm daqui (só da função `turn`). */
   iceServers: IceServerConfig[];
+  /**
+   * Modo ICE padrão da build (VITE_ORYN_ICE_MODE). `auto` na operação normal; os outros servem a testes técnicos
+   * (`?oryn-ice=` na URL também troca o modo, sem nenhum controle na interface).
+   */
+  iceMode: IceMode;
   /**
    * Origem pública da web para os links que saem do aplicativo (convite e recuperação de senha). Só o desktop a
    * define: lá, `location.origin` é a origem interna do WebView (`https://tauri.localhost`), inútil fora dele. Na web
@@ -50,7 +56,7 @@ export function publicLocation(
   return { protocol: url.protocol, hostname: url.hostname, origin: url.origin, pathname: '/' };
 }
 
-/** STUN público e gratuito, sem credencial (sem TURN nesta etapa). */
+/** STUN público e gratuito, sem credencial. TURN só chega com credencial temporária, pela função `turn`. */
 export const DEFAULT_STUN = ['stun:stun.l.google.com:19302'];
 
 export class WebConfigError extends Error {}
@@ -75,7 +81,11 @@ export function parseWebConfig(env: Record<string, string | undefined>): WebConf
   const stunRaw = (env['VITE_ORYN_STUN_URLS'] ?? '').trim();
   const stun = stunRaw ? stunRaw.split(',').map((u) => u.trim()).filter(Boolean) : DEFAULT_STUN;
   if (stun.length > 4) throw new WebConfigError('VITE_ORYN_STUN_URLS: no máximo 4 URLs');
-  for (const u of stun) if (parseIceUrl(u)?.scheme !== 'stun') throw new WebConfigError('VITE_ORYN_STUN_URLS: só URLs stun: (sem TURN nesta etapa)');
+  // TURN aqui seria credencial estática no bundle: recusado. As credenciais vêm só da função `turn`, com validade.
+  for (const u of stun) if (parseIceUrl(u)?.scheme !== 'stun') throw new WebConfigError('VITE_ORYN_STUN_URLS: só URLs stun: (TURN só pela função turn, com credencial temporária)');
+  const modeRaw = (env['VITE_ORYN_ICE_MODE'] ?? '').trim();
+  if (modeRaw !== '' && !isIceMode(modeRaw)) throw new WebConfigError('VITE_ORYN_ICE_MODE: use auto, direct, relay ou relay-tls');
+  const iceMode: IceMode = modeRaw === '' ? 'auto' : (modeRaw as IceMode);
 
   const publicOrigin = parsePublicOrigin(env['VITE_ORYN_PUBLIC_ORIGIN']);
 
@@ -83,5 +93,5 @@ export function parseWebConfig(env: Record<string, string | undefined>): WebConf
   if (google !== '' && google !== 'off' && google !== 'preview') throw new WebConfigError('VITE_ORYN_AUTH_GOOGLE: use off ou preview (o fluxo OAuth ainda não foi autorizado)');
   const googleAuth = google === 'preview' ? 'preview' : 'off';
 
-  return { supabaseUrl: url, publishableKey: key, defaultRoomId: room || null, iceServers: [{ urls: stun }], publicOrigin, googleAuth };
+  return { supabaseUrl: url, publishableKey: key, defaultRoomId: room || null, iceServers: [{ urls: stun }], iceMode, publicOrigin, googleAuth };
 }

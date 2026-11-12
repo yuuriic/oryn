@@ -175,7 +175,8 @@ Chamada de voz entre OWNER e MEMBER, nas contas de e-mail e senha já existentes
   Os dois lados chegam ao mesmo valor sem contador local.
 - **Áudio:** `PeerCall` da POC-02B, com Opus, mute por `track.enabled` e métricas. Três mudanças pontuais, marcadas
   `02C` em `src/web/call.ts`.
-- **ICE:** só STUN (padrão `stun:stun.l.google.com:19302`); sem TURN.
+- **ICE:** em produção, só STUN (padrão `stun:stun.l.google.com:19302`), modo `direct`. A branch `feat/turn-relay` prepara o
+  modo `auto` com TURN temporário pela função `turn` (`integration/TURN-RELAY.md`), não publicado nem homologado.
 - **1:1:** uma terceira conta é ignorada enquanto houver par; outra aba da própria conta nunca vira par.
 - **Segurança da configuração:** o frontend recebe só a chave publicável. A página se recusa a iniciar se qualquer
   `VITE_*` parecer chave secreta, PAT ou `service_role`.
@@ -210,7 +211,8 @@ um túnel HTTPS temporário:
 **Não validado:**
 - **NAT e operadoras:** o WAN cobre um único cenário (uma rede Wi-Fi e uma operadora móvel). NAT restritivo
   (simétrico, CGNAT) e redes corporativas não foram testados.
-- **TURN:** não existe; sem ele, redes restritivas podem não conectar.
+- **TURN:** implementado localmente (função `turn`, credenciais temporárias, `IceShare` por chamada), sem provedor
+  provisionado e sem evidência real; até a homologação, redes restritivas podem não conectar.
 - **Grupo:** até 4 contas por sala em produção; 5 preparadas (migração 1000 pendente), em mesh, na seção "Salas de grupo".
   Com 5 pessoas reais, CPU, perda e tempo de entrada não foram medidos.
 
@@ -268,7 +270,7 @@ Implantação: checklist de deploy, Etapa 6 ⛔. Operação, homologação e ris
   Guardado por conta e `participant_ref` (`oryn.voice.v1`), por isso sobrevive à reconexão. Sem amplificação acima de 100%.
 - **Identidade:** `get_voice_participants` distingue contas de sessões. De cada conta, só a sessão mais antiga entra no mesh; a outra fica em espera e assume quando a primeira sair, ou quando um par a chamar por ter perdido a primeira (navegador que caiu sem avisar).
 - **Isolamento:** a falha de um par não derruba os demais. Sem SFU e sem servidor de mídia.
-- **Fora do escopo:** TURN, amplificação acima de 100% e transferência de propriedade.
+- **Fora do escopo:** amplificação acima de 100% e transferência de propriedade. TURN: ver `integration/TURN-RELAY.md`.
 
 ## Soundboard
 

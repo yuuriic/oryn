@@ -3,7 +3,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PeerCall, type CallCallbacks, type CallPhase } from '../src/web/call.ts';
 import { MAX_MESH_PEERS, MeshSignaling, pickPrimaries } from '../src/web/mesh-signaling.ts';
-import { MeshCall, type ParticipantView } from '../src/web/mesh-call.ts';
+import { MeshCall, type MeshCallDeps, type ParticipantView } from '../src/web/mesh-call.ts';
+import { IceShare, type TurnGrant } from '../src/web/ice-share.ts';
 import { SupabaseSignaling, pairEpoch } from '../src/web/supabase-signaling.ts';
 import { FakePeerConnection, FakeStream, FakeSupabase, ROOM, USERS, VOICE_2, VOICE_DEFAULT, settle } from './helpers/web-fakes.ts';
 
@@ -31,7 +32,7 @@ interface Client {
 let server: FakeSupabase;
 const clients: Client[] = [];
 
-function client(user: string, negotiationTimeoutMs?: number, channelId: string | null = null): Client {
+function client(user: string, negotiationTimeoutMs?: number, channelId: string | null = null, extra: Partial<MeshCallDeps> = {}): Client {
   const c: Client = { user, call: undefined as unknown as MeshCall, phases: [], errors: [], logs: [], problems: [], participants: [], standby: false, audio: new Map(), streams: [], pcs: [], signaling: null };
   c.call = new MeshCall(
     {
@@ -52,6 +53,7 @@ function client(user: string, negotiationTimeoutMs?: number, channelId: string |
       iceServers: STUN,
       iceMode: 'direct',
       ...(negotiationTimeoutMs ? { negotiationTimeoutMs } : {}),
+      ...extra,
     },
     {
       onPhase: (phase, error) => {
@@ -680,5 +682,110 @@ describe('canais de voz (0900): a malha fica no canal escolhido', () => {
     await settle();
     expect(c.call.phase).toBe('failed');
     expect(c.errors.join(' ')).toMatch(/canal de voz foi arquivado/);
+  });
+});
+
+describe('TURN: uma configuração ICE por chamada, compartilhada entre os pares', () => {
+  const TURN = { urls: ['turn:turn.cloudflare.com:3478?transport=udp', 'turns:turn.cloudflare.com:443?transport=tcp'], username: 'u-temp', credential: 'c-temp' };
+  const PROVIDER_STUN = { urls: ['stun:stun.cloudflare.com:3478'] };
+
+  /** Cliente com IceShare próprio; `grant` decide o que a função "devolve". Conta as buscas e os avisos. */
+  function turnClient(user: string, mode: MeshCallDeps['iceMode'], grant: () => TurnGrant) {
+    const counter = { fetches: 0, degraded: 0 };
+    const share = new IceShare({
+      fetch: async () => {
+        counter.fetches += 1;
+        return grant();
+      },
+      stun: STUN,
+      now: Date.now,
+      onDegraded: () => (counter.degraded += 1),
+    });
+    const c = client(user, undefined, null, { ice: (m) => share.request(m), ...(mode ? { iceMode: mode } : {}) });
+    return { c, counter };
+  }
+  async function enterTurn(mode: MeshCallDeps['iceMode'], grant: () => TurnGrant, users: string[]) {
+    const list = [];
+    for (const u of users) {
+      const t = turnClient(u, mode, grant);
+      list.push(t);
+      await t.c.call.start();
+      await settle();
+    }
+    await settle();
+    return list;
+  }
+
+  it('sala de 5 em auto: cada cliente busca UMA vez, os 4 pares recebem STUN + TURN com política all e todos conectam', async () => {
+    server.members.set(USERS.stranger, 'it-quinto');
+    const list = await enterTurn('auto', () => ({ ok: true, iceServers: [PROVIDER_STUN, TURN], expiresAt: Date.now() + 2 * 60 * 60_000 }), FIVE);
+    fullMesh(list.map((t) => t.c));
+    for (const t of list) {
+      expect(t.counter.fetches, t.c.user).toBe(1);
+      expect(t.c.pcs).toHaveLength(4);
+      for (const pc of t.c.pcs) {
+        expect(pc.config.iceTransportPolicy).toBe('all');
+        expect(pc.config.iceServers).toEqual([{ urls: PROVIDER_STUN.urls }, TURN]);
+      }
+      // O registro diz o modo e o resumo (contagem e transportes), nunca credencial ou URL.
+      const logs = t.c.logs.join('\n');
+      expect(logs).toMatch(/Configuração ICE recebida \(modo auto: STUN 1 · TURN 2/);
+      for (const secret of ['u-temp', 'c-temp', 'turn:', 'turns:', 'cloudflare.com']) expect(logs).not.toContain(secret);
+    }
+  });
+
+  it('auto com TURN indisponível: segue só com STUN (avisa uma vez por cliente) e a malha conecta onde houver rota', async () => {
+    const list = await enterTurn('auto', () => ({ ok: false, code: 'turn-unavailable' }), [USERS.owner, USERS.member, USERS.third]);
+    fullMesh(list.map((t) => t.c));
+    for (const t of list) {
+      expect(t.counter.degraded).toBe(1);
+      expect(t.counter.fetches).toBe(1);
+      for (const pc of t.c.pcs) expect(pc.config.iceServers).toEqual([{ urls: STUN[0]!.urls }]);
+    }
+  });
+
+  it('relay sem TURN: falha fechada em cada par, nenhuma RTCPeerConnection criada (sem fallback direto)', async () => {
+    const list = await enterTurn('relay', () => ({ ok: false, code: 'turn-unavailable' }), [USERS.owner, USERS.member]);
+    await settle(2000);
+    for (const t of list) {
+      expect(t.c.pcs).toEqual([]);
+      expect(t.c.call.phase).not.toBe('connected');
+      expect(t.c.participants.every((p) => p.state !== 'connected')).toBe(true);
+    }
+  });
+
+  it('evidência por par: o caminho selecionado (relay e o transporte do relay) é registrado sem IP, porta ou credencial', async () => {
+    const list = await enterTurn('auto', () => ({ ok: true, iceServers: [PROVIDER_STUN, TURN], expiresAt: Date.now() + 2 * 60 * 60_000 }), [USERS.owner, USERS.member]);
+    const a = list[0]!.c;
+    // Estatísticas como as do navegador: transporte → par selecionado → candidato local relay sobre TLS, com endereço.
+    const relayStats = new Map<string, unknown>([
+      ['T1', { id: 'T1', type: 'transport', selectedCandidatePairId: 'P1' }],
+      ['P1', { id: 'P1', type: 'candidate-pair', state: 'succeeded', nominated: true, localCandidateId: 'L1', remoteCandidateId: 'R1', currentRoundTripTime: 0.08 }],
+      ['L1', { id: 'L1', type: 'local-candidate', candidateType: 'relay', protocol: 'udp', relayProtocol: 'tls', address: '203.0.113.7', port: 50000, url: 'turns:turn.cloudflare.com:443?transport=tcp' }],
+      ['R1', { id: 'R1', type: 'remote-candidate', candidateType: 'srflx', protocol: 'udp', address: '198.51.100.9', port: 40000 }],
+    ]);
+    for (const pc of a.pcs) pc.getStats = async () => relayStats;
+    await vi.advanceTimersByTimeAsync(2500);
+    await settle();
+    const lines = a.logs.filter((l) => l.includes('Caminho de mídia'));
+    expect(lines).toEqual(['[it-member] Caminho de mídia: relay (TURN) — relay ↔ srflx · udp · TURN/tls (succeeded).']); // só na mudança
+    expect(a.call.paths).toEqual([{ displayName: 'it-member', path: 'relay (TURN) — relay ↔ srflx · udp · TURN/tls (succeeded)' }]);
+    for (const leak of ['203.0.113.7', '198.51.100.9', ':50000', ':40000', 'turn.cloudflare.com', 'u-temp']) expect(a.logs.join('\n')).not.toContain(leak);
+  });
+
+  it('relay com TURN: só TURN, política relay', async () => {
+    const list = await enterTurn('relay', () => ({ ok: true, iceServers: [PROVIDER_STUN, TURN], expiresAt: Date.now() + 2 * 60 * 60_000 }), [USERS.owner, USERS.member]);
+    for (const t of list) for (const pc of t.c.pcs) expect(pc.config).toMatchObject({ iceTransportPolicy: 'relay', iceServers: [TURN] });
+  });
+
+  it('um par que sai e volta: quem ficou reaproveita a configuração (nenhuma emissão nova); quem voltou busca a sua', async () => {
+    const grant = () => ({ ok: true as const, iceServers: [PROVIDER_STUN, TURN], expiresAt: Date.now() + 2 * 60 * 60_000 });
+    const [a, , c] = await enterTurn('auto', grant, [USERS.owner, USERS.member, USERS.third]);
+    c!.c.call.end();
+    await settle();
+    const [back] = await enterTurn('auto', grant, [USERS.third]);
+    expect(a!.counter.fetches).toBe(1);
+    expect(back!.counter.fetches).toBe(1);
+    expect(connected(a!.c)).toHaveLength(2);
   });
 });
