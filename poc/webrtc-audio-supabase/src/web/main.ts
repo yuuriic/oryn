@@ -1,5 +1,5 @@
 // Página da integração 02C: cadastro/login por e-mail, identidade global, sala,
-// chamada de voz em grupo (MeshCall: até 4 contas, uma conexão por par) e sinalização pelo Supabase (MeshSignaling).
+// chamada de voz em grupo (MeshCall: até 5 contas, uma conexão por par, com volume individual em voice-mix.ts) e sinalização pelo Supabase (MeshSignaling).
 // MVP 01: lobby com as salas da conta (listar, criar com 2 lugares, entrar e encerrar), em rooms.ts e
 // rooms-view.ts; o campo de UUID ficou em "Diagnóstico". Chat por sala, em chat.ts e chat-view.ts, sem nenhuma
 // ligação com a chamada.
@@ -21,7 +21,7 @@ import type { CallPhase, CallStats, PeerStates } from './call.ts';
 import { ChatController, type ChatState } from './chat.ts';
 import { ChannelsController, defaultChannel, isChannelName, renderChannelNav, type ChannelKind } from './channels.ts';
 import { DraftBook, draftKey } from './drafts.ts';
-import { IncomingAudio, incomingLabel } from './incoming-audio.ts';
+import { incomingLabel } from './incoming-audio.ts';
 import { formatPhoneBR, passwordChecks, validateLogin, validateSignup, type SignupErrors, type SignupField, type SignupInput } from './auth-form.ts';
 import { chatStatusText, renderChatMessages } from './chat-view.ts';
 import { CallReturnController, ReturnRoomStore, type ReturnState } from './call-return.ts';
@@ -29,7 +29,7 @@ import { parseWebConfig, publicLocation, type WebConfig } from './config.ts';
 import { ENTRY_CHECKING, ENTRY_RELEASED, ENTRY_STILL_BLOCKED, EntryGate, blockedMessage, entryErrorMessage, type EntryState } from './entry-gate.ts';
 import { InviteAcceptController, InviteShareController, buildInviteLink, inviteLoginHint, takeInviteFromLocation, type InviteAcceptState, type InviteArrival, type InviteShareState } from './invites.ts';
 import { MembersController, MEMBERS_LOAD_FAILED, type MembersState } from './members.ts';
-import { renderMembers, renderParticipants } from './members-view.ts';
+import { renderMembers, renderParticipants, volumeButtonLabel } from './members-view.ts';
 import { MeshCall, type ParticipantView } from './mesh-call.ts';
 import { MeshSignaling } from './mesh-signaling.ts';
 import { DISCONNECT_CHECKING, LobbyController, disconnectPhase, explainDisconnect, formatCallError, isClosingOwnCall, peerProblemNotice, type Notice } from './rooms.ts';
@@ -42,6 +42,8 @@ import { loadSoundPrefs, saveSoundPrefs } from './sound-prefs.ts';
 import { SoundboardController, type SoundboardState } from './soundboard.ts';
 import { renderSoundboard, soundboardStatus } from './soundboard-view.ts';
 import { describePair, formatCodec, formatMetric } from './stats.ts';
+import { VoiceMix, placeMenu } from './voice-mix.ts';
+import { VoicePrefs, browserPrefStorage } from './voice-prefs.ts';
 import { createBrowserLedger, type SessionLedger } from './session-ledger.ts';
 import { createSupabaseBackend } from './supabase-backend.ts';
 import { DISCONNECT, DISCONNECT_MESSAGES, JOIN_LIMIT_MESSAGE } from './supabase-signaling.ts';
@@ -188,6 +190,12 @@ const ui = {
   soundToggleBtn: el<HTMLButtonElement>('sound-toggle-btn'),
   soundCloseBtn: el<HTMLButtonElement>('sound-close-btn'),
   incomingBtn: el<HTMLButtonElement>('incoming-btn'),
+  voiceMenu: el<HTMLDivElement>('voice-menu'),
+  voiceMenuName: el<HTMLElement>('voice-menu-name'),
+  voiceMenuValue: el<HTMLOutputElement>('voice-menu-value'),
+  voiceMenuVolume: el<HTMLInputElement>('voice-menu-volume'),
+  voiceMenuMute: el<HTMLButtonElement>('voice-menu-mute'),
+  voiceMenuClose: el<HTMLButtonElement>('voice-menu-close'),
   createCancelBtn: el<HTMLButtonElement>('create-cancel-btn'),
   log: el<HTMLOListElement>('log'),
   app: el<HTMLElement>('app'),
@@ -251,10 +259,14 @@ let restoringAuth = true;
 let selfUserId: string | null = null;
 let call: MeshCall | null = null;
 let signaling: MeshSignaling | null = null;
-/** Um elemento de áudio por participante: separados, para volume individual e o silenciamento local do áudio recebido. */
-const remoteAudio = new Map<string, HTMLAudioElement>();
-/** Áudio recebido silenciado só neste aparelho (não é o mudo do microfone e não vai para os outros). */
-const incoming = new IncomingAudio();
+/**
+ * Um elemento de áudio por sessão remota, com o volume individual de cada pessoa (por conta e participant_ref, neste
+ * aparelho) composto com o áudio recebido silenciado. Nada disso é o mudo do microfone nem vai para os outros.
+ */
+const voiceMix = new VoiceMix<HTMLAudioElement>(new VoicePrefs(browserPrefStorage()));
+const incoming = voiceMix.incoming;
+/** Menu de volume aberto: de quem (a sessão muda numa reconexão; a referência, não). */
+let voiceMenu: { session: string; ref: string; displayName: string } | null = null;
 /** Painel de sons aberto pelo botão da barra. Só apresentação: o soundboard segue o da chamada. */
 let soundsOpen = false;
 /** Sala da chamada atual (ou da última, até ela terminar) e se a chamada está em curso. */
@@ -374,30 +386,28 @@ const authCode = (code: unknown): string => (typeof code === 'string' && /^[a-z0
 // ---------- áudio remoto ----------
 
 function setRemote(session: string, stream: MediaStream | null): void {
-  const current = remoteAudio.get(session);
+  const current = voiceMix.detach(session);
   if (current) {
     current.pause();
     current.srcObject = null;
     current.remove();
-    remoteAudio.delete(session);
   }
   if (stream) {
     const audio = document.createElement('audio');
     audio.autoplay = true;
     audio.srcObject = stream;
-    incoming.adopt(audio); // quem entra com o áudio silenciado já chega silenciado
+    voiceMix.attach(session, audio); // volume e silenciamentos (o geral e o desta pessoa) antes de tocar
     ui.audioContainer.append(audio);
-    remoteAudio.set(session, audio);
     audio.play().catch(() => {
       ui.listenBtn.hidden = false; // autoplay bloqueado: o usuário libera com um clique
       log('Reprodução do áudio remoto bloqueada pelo navegador: clique em "Ouvir".');
     });
   }
-  if (remoteAudio.size === 0) ui.listenBtn.hidden = true;
+  if (voiceMix.size === 0) ui.listenBtn.hidden = true;
 }
 
 ui.listenBtn.addEventListener('click', () => {
-  void Promise.all([...remoteAudio.values()].map((a) => a.play()))
+  void Promise.all([...voiceMix.values()].map((a) => a.play()))
     .then(() => (ui.listenBtn.hidden = true))
     .catch(() => undefined);
 });
@@ -417,7 +427,8 @@ function renderPhase(phase: CallPhase, error?: string): void {
   if (!active) {
     ui.muteBtn.textContent = 'Mutar';
     ui.muteBtn.dataset['muted'] = 'false';
-    incoming.reset(remoteAudio.values()); // a próxima chamada começa ouvindo
+    incoming.reset(voiceMix.values()); // a próxima chamada começa ouvindo (o volume de cada pessoa continua guardado)
+    closeVoiceMenu(false);
     renderIncoming();
     if (soundsOpen) setSoundsOpen(false, false); // sair da chamada fecha o painel de sons
   }
@@ -500,19 +511,149 @@ let shownParticipants: { list: readonly ParticipantView[]; standby: boolean } = 
 function drawParticipants(): void {
   const { list, standby } = shownParticipants;
   const room = lobby?.state.rooms.find((r) => r.room_id === callRoomId);
-  const stage = { owner: room?.role === 'owner', muted: call?.muted ?? false, freeSlots: Math.max(0, (room?.max_members ?? 0) - 1 - list.length) };
+  const stage = {
+    owner: room?.role === 'owner',
+    muted: call?.muted ?? false,
+    freeSlots: Math.max(0, (room?.max_members ?? 0) - 1 - list.length),
+    voice: (ref: string) => voiceMix.pref(ref),
+  };
+  // O palco tem botões de volume: o redesenho devolve o foco ao botão da MESMA pessoa (a ordem pode mudar), ou ao título.
+  const active = document.activeElement;
+  const focused = active instanceof HTMLButtonElement && ui.participants.contains(active) ? (active.dataset['session'] ?? null) : null;
   ui.participants.replaceChildren(renderParticipants(document, list, standby, stage));
+  markVoiceMenuButton();
+  if (focused !== null) (volumeButton(focused) ?? ui.contextTitle).focus();
 }
 
 function renderCallParticipants(list: readonly ParticipantView[], standby: boolean): void {
   soundboard.setStandby(standby);
   ui.participants.hidden = !callActive;
   shownParticipants = { list, standby };
+  voiceMix.setParticipants(list);
+  syncVoiceMenu();
   drawParticipants();
   // O par voltou: o aviso de reconexão deixa de valer.
   if (lastPeerNotice !== null && list.every((p) => p.state === 'connected')) setCallNotice(null);
   renderVoice(); // "Reconectando…" na barra acompanha os participantes
 }
+
+// ---------- volume de cada participante ----------
+
+/**
+ * Abre o menu de volume de um participante. `at`: o ponto do clique direito; sem ele (teclado, toque, botão), junto ao
+ * botão "Volume de …" do cartão. O foco vai para a barra de volume.
+ */
+function openVoiceMenu(session: string, at?: { x: number; y: number }): void {
+  const p = shownParticipants.list.find((x) => x.session === session);
+  if (!p || !callActive || shownParticipants.standby) return;
+  if (voiceMenu !== null && voiceMenu.session !== session) closeVoiceMenu(false);
+  voiceMenu = { session: p.session, ref: p.ref, displayName: p.displayName };
+  renderVoiceMenu();
+  ui.voiceMenu.hidden = false;
+  const button = volumeButton(session);
+  const rect = button?.getBoundingClientRect();
+  const point = at ?? (rect ? { x: rect.left, y: rect.bottom + 4 } : { x: 16, y: 16 });
+  const pos = placeMenu(point, { width: ui.voiceMenu.offsetWidth, height: ui.voiceMenu.offsetHeight }, { width: window.innerWidth, height: window.innerHeight });
+  // Posição por propriedades CSS (CSSOM): a CSP não aceita estilo em linha no HTML.
+  ui.voiceMenu.style.setProperty('--voice-menu-x', `${pos.left}px`);
+  ui.voiceMenu.style.setProperty('--voice-menu-y', `${pos.top}px`);
+  button?.setAttribute('aria-expanded', 'true');
+  ui.voiceMenuVolume.focus();
+}
+
+/** Fecha o menu. `restoreFocus`: o foco volta ao botão de volume do mesmo participante (o cartão pode ter sido redesenhado). */
+function closeVoiceMenu(restoreFocus: boolean): void {
+  if (voiceMenu === null) return;
+  const session = voiceMenu.session;
+  voiceMenu = null;
+  const hadFocus = ui.voiceMenu.contains(document.activeElement);
+  ui.voiceMenu.hidden = true;
+  const button = volumeButton(session);
+  button?.setAttribute('aria-expanded', 'false');
+  // O foco estava no menu, que sumiu: não pode se perder com ele.
+  if (restoreFocus || hadFocus) (button ?? ui.contextTitle).focus();
+}
+
+function volumeButton(session: string): HTMLButtonElement | null {
+  return [...ui.participants.querySelectorAll<HTMLButtonElement>('button.participant-volume')].find((b) => b.dataset['session'] === session) ?? null;
+}
+
+/** Estado do menu a partir da preferência guardada: barra, porcentagem e o botão de silenciar. */
+function renderVoiceMenu(): void {
+  if (voiceMenu === null) return;
+  const pref = voiceMix.pref(voiceMenu.ref);
+  const pct = Math.round(pref.volume * 100);
+  ui.voiceMenuName.textContent = voiceMenu.displayName;
+  ui.voiceMenuVolume.value = String(pct);
+  ui.voiceMenuVolume.setAttribute('aria-valuetext', `${pct}%${pref.muted ? ', silenciado para você' : ''}`);
+  ui.voiceMenuVolume.setAttribute('aria-label', volumeButtonLabel(voiceMenu.displayName));
+  ui.voiceMenuValue.textContent = `${pct}%`;
+  ui.voiceMenuMute.textContent = pref.muted ? 'Ativar para mim' : 'Silenciar para mim';
+  ui.voiceMenuMute.setAttribute('aria-pressed', String(pref.muted));
+  ui.voiceMenu.dataset['muted'] = String(pref.muted);
+}
+
+/** A lista mudou: quem reconectou segue com o menu (nova sessão, mesma pessoa); quem saiu fecha o menu. */
+function syncVoiceMenu(): void {
+  if (voiceMenu === null) return;
+  const ref = voiceMenu.ref;
+  const p = shownParticipants.standby ? undefined : shownParticipants.list.find((x) => x.ref === ref);
+  if (!p) return closeVoiceMenu(false);
+  voiceMenu = { session: p.session, ref: p.ref, displayName: p.displayName };
+  renderVoiceMenu();
+}
+
+/** O palco foi redesenhado: o botão de quem está com o menu aberto continua marcado como expandido. */
+function markVoiceMenuButton(): void {
+  if (voiceMenu !== null) volumeButton(voiceMenu.session)?.setAttribute('aria-expanded', 'true');
+}
+
+ui.participants.addEventListener('click', (event) => {
+  const button = (event.target as Element).closest<HTMLButtonElement>('button.participant-volume');
+  const session = button?.dataset['session'];
+  if (!session) return;
+  if (voiceMenu?.session === session) closeVoiceMenu(true);
+  else openVoiceMenu(session);
+});
+// Clique direito no cartão (ou a tecla de menu, ou o toque longo onde o sistema o converte): o menu de volume, não o do navegador.
+ui.participants.addEventListener('contextmenu', (event) => {
+  const card = (event.target as Element).closest<HTMLElement>('li[data-session]');
+  const session = card?.dataset['session'];
+  if (!session) return;
+  event.preventDefault();
+  // Pela tecla de menu não há ponteiro (coordenadas 0): o menu abre junto ao botão do cartão.
+  openVoiceMenu(session, event.clientX === 0 && event.clientY === 0 ? undefined : { x: event.clientX, y: event.clientY });
+});
+ui.voiceMenuVolume.addEventListener('input', () => {
+  if (voiceMenu === null) return;
+  voiceMix.setVolume(voiceMenu.ref, Number(ui.voiceMenuVolume.value));
+  renderVoiceMenu();
+  drawParticipants(); // o cartão mostra "Volume 40%" fora do padrão
+});
+ui.voiceMenuMute.addEventListener('click', () => {
+  if (voiceMenu === null) return;
+  voiceMix.setMuted(voiceMenu.ref, !voiceMix.pref(voiceMenu.ref).muted);
+  renderVoiceMenu();
+  drawParticipants();
+});
+ui.voiceMenuClose.addEventListener('click', () => closeVoiceMenu(true));
+// Clique fora fecha (o botão do próprio cartão alterna, pelo clique acima).
+document.addEventListener('pointerdown', (event) => {
+  if (voiceMenu === null) return;
+  const target = event.target as Element;
+  if (ui.voiceMenu.contains(target) || target.closest?.('button.participant-volume')) return;
+  closeVoiceMenu(false);
+});
+// O foco saiu do menu pelo teclado (Tab além do último controle): fecha sem puxar o foco de volta.
+ui.voiceMenu.addEventListener('focusout', (event) => {
+  const next = event.relatedTarget as Node | null;
+  if (voiceMenu !== null && next !== null && !ui.voiceMenu.contains(next) && !(next as Element).closest?.('button.participant-volume')) closeVoiceMenu(false);
+});
+// Menu ancorado a um ponto: a janela mudou, o ponto perdeu o sentido. No celular é uma folha fixa embaixo, e a barra de
+// endereço que aparece ou some ao rolar também dispara resize: ali o menu fica.
+window.addEventListener('resize', () => {
+  if (!window.matchMedia('(max-width: 560px)').matches) closeVoiceMenu(false);
+});
 
 /** Aviso de um participante (queda ou volta), na região da barra da chamada, sempre como texto. */
 function setCallNotice(notice: Notice | null): void {
@@ -655,7 +796,7 @@ function renderIncoming(): void {
 
 // Silencia ou restaura só o que chega dos outros, neste aparelho. Não mexe no microfone nem na conexão.
 ui.incomingBtn.addEventListener('click', () => {
-  incoming.toggle(remoteAudio.values());
+  incoming.toggle(voiceMix.values());
   renderIncoming();
 });
 
@@ -1201,6 +1342,7 @@ ui.createProfileBtn.addEventListener('click', () => { closeCreate(false); ui.pro
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
   if (ui.profilePanel.open || ui.createDialog.open || ui.channelDialog.open || ui.inviteShare.open) return; // o cancel nativo fecha a camada
+  if (voiceMenu !== null) return closeVoiceMenu(true); // Escape fecha o volume e devolve o foco ao cartão
   if (soundsOpen && !shell.state.drawerOpen) return setSoundsOpen(false); // Escape fecha os sons e devolve o foco
   closeDrawer();
 });
@@ -1437,6 +1579,7 @@ function showLoggedIn(email: string | undefined): void {
 async function enterSession(session: Session): Promise<void> {
   if (selfUserId === session.user.id) { applyIdentity(session.user); return; }
   selfUserId = session.user.id;
+  voiceMix.setAccount(selfUserId); // o volume de cada pessoa é desta conta
   currentUser = session.user;
   applyIdentity(session.user);
   const ticket = ++identityTicket;
@@ -1474,6 +1617,7 @@ function showLoggedOut(): void {
   soundboard.leave();
   if (selfUserId !== null) void soundCache.purgeAccount(selfUserId);
   selfUserId = null;
+  voiceMix.setAccount(null);
   accessToken = null;
   disconnectTicket += 1;
   if (ui.error.textContent === DISCONNECT_CHECKING.text) showNotice(null); // a explicação pendente foi descartada

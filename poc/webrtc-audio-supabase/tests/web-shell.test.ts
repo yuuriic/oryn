@@ -294,7 +294,7 @@ describe('Hybrid Midnight Gold: criação sob demanda e chat contextual', () => 
     expect(dialog).toMatch(/<dialog id="create-dialog" class="identity-panel create-dialog" aria-labelledby="create-room-title"[^>]*hidden>/);
     expect(dialog).not.toMatch(/create-display|Seu nome na sala|create-identity|Você entra como|Alterar no perfil/);
     expect(dialog).toMatch(/id="create-name"/);
-    expect(dialog).toMatch(/<select id="create-capacity">\s*<option value="2" selected>2<\/option>\s*<option value="3">3<\/option>\s*<option value="4">4<\/option>\s*<\/select>/);
+    expect(dialog).toMatch(/<select id="create-capacity">\s*<option value="2" selected>2<\/option>\s*<option value="3">3<\/option>\s*<option value="4">4<\/option>\s*<option value="5">5<\/option>\s*<\/select>/);
     expect(dialog).toMatch(/<button id="create-close-btn"[^>]*type="button" aria-label="Fechar">/);
     expect(dialog).toMatch(/<button id="create-cancel-btn"[^>]*type="button">Cancelar<\/button>\s*<button id="create-btn" type="submit">Criar sala<\/button>/);
     expect(dialog).toMatch(/id="create-error" class="error" role="alert"/);

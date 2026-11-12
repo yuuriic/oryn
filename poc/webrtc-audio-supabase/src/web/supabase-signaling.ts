@@ -283,6 +283,9 @@ export class SupabaseSignaling implements SignalingLike {
       ackDelayMs: 1_500,
       ackRetryMs: 2_000,
       ackMaxAttempts: 3,
+      // Uma janela para todos os pares, abaixo dos 40 por sessão do servidor (authorize_signal). Com 5 contas, quem entra
+      // negocia com 4 pares: offer/answer, 2 a 5 candidatos (só STUN) e o fim de candidatos dão 16 a 28 sinais, dentro de
+      // 30. Só um caso extremo passa disso, e o excedente espera na fila (não é descartado). Medir antes de subir.
       rateMax: 30,
       rateWindowMs: 10_000,
       maxQueue: 64,

@@ -31,7 +31,8 @@ describe('migração 0900 sobre dados legados', () => {
     db = await TestDb.createBare();
     try {
       const files = migrationFiles();
-      expect(files.map(([f]) => f)).toHaveLength(9);
+      // A 0900 é a nona; as posteriores (1000: capacidade) não entram neste cenário.
+      expect(files[8]![0]).toBe('20261110000900_oryn_channels.sql');
       for (const [, m] of files.slice(0, 8)) await db.migrate(m);
       // Estado anterior, montado pelas RPCs da 0800: duas salas, mensagens, sessão viva e encerrada, sala encerrada.
       const s = await scenario(db);
@@ -306,8 +307,8 @@ describe('canais (0900)', () => {
     expect(await db.rpcError(s.owner, 'public.join_voice_channel', { p_channel_id: (await defaults(room2)).voice })).toMatch(/not-member/);
   });
 
-  it('capacidade inalterada: sala nova com mais de 4 lugares continua recusada; canais não mudam o limite de membros', async () => {
-    expect(await db.rpcError(s.owner, 'public.create_room', { p_name: 'Grande', p_display_name: 'Dono', p_max_members: 5 })).toMatch(/invalid-argument/);
+  it('canais não mudam o limite de membros: sala nova acima de 5 lugares (1000) continua recusada', async () => {
+    expect(await db.rpcError(s.owner, 'public.create_room', { p_name: 'Grande', p_display_name: 'Dono', p_max_members: 6 })).toMatch(/invalid-argument/);
     await createChannel(s.owner, s.room, 'sala 2', 'voice');
     expect((await db.admin<{ max_members: number }>('select max_members from oryn.rooms where id = $1', [s.room]))[0]!.max_members).toBe(3);
   });

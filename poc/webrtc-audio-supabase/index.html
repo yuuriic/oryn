@@ -234,6 +234,7 @@
                   <option value="2" selected>2</option>
                   <option value="3">3</option>
                   <option value="4">4</option>
+                  <option value="5">5</option>
                 </select>
               </label>
               <div id="create-missing-name" class="identity-note" role="status" hidden>
@@ -337,6 +338,22 @@
         <p id="voice-state"></p>
         <p id="voice-note" hidden></p>
         <div id="participants" hidden></div>
+
+        <!-- Volume de um participante, só neste aparelho: abre pelo clique direito no cartão, pela tecla de menu ou pelo
+             botão "Volume de …" (teclado e toque). Fora de #participants, que é redesenhado a cada mudança da chamada. -->
+        <div id="voice-menu" class="voice-menu" role="dialog" aria-labelledby="voice-menu-title" aria-describedby="voice-menu-hint" hidden>
+          <p id="voice-menu-title" class="voice-menu-title" tabindex="-1"><span class="visually-hidden">Volume de </span><span id="voice-menu-name"></span></p>
+          <div class="voice-menu-row">
+            <label for="voice-menu-volume">Volume</label>
+            <output id="voice-menu-value" for="voice-menu-volume">100%</output>
+          </div>
+          <input id="voice-menu-volume" type="range" min="0" max="100" step="1" value="100" />
+          <p id="voice-menu-hint" class="muted">Só para você, neste aparelho. Ninguém mais é afetado.</p>
+          <div class="buttons">
+            <button id="voice-menu-mute" type="button" aria-pressed="false">Silenciar para mim</button>
+            <button id="voice-menu-close" class="ghost-btn" type="button">Fechar</button>
+          </div>
+        </div>
 
         </section>
 

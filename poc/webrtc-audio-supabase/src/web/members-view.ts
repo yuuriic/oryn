@@ -5,6 +5,7 @@ import type { ParticipantState, ParticipantView } from './mesh-call.ts';
 import type { MembersState } from './members.ts';
 import type { ViewDocument } from './rooms-view.ts';
 import { roomInitials } from './shell.ts';
+import { voicePrefLabel, type VoicePref } from './voice-prefs.ts';
 
 export interface MembersViewOptions {
   canManage: boolean;
@@ -77,7 +78,15 @@ export interface ParticipantStage {
   muted: boolean;
   /** Lugares ainda livres na chamada. */
   freeSlots: number;
+  /**
+   * Volume individual de cada participante remoto, pela referência. Presente: cada cartão ganha o botão "Volume de …"
+   * (teclado e toque) e responde ao clique direito. O menu em si fica fora do palco, que é redesenhado a cada mudança.
+   */
+  voice?: (ref: string) => VoicePref;
 }
+
+/** Nome acessível do botão de volume de um participante. */
+export const volumeButtonLabel = (displayName: string): string => `Volume de ${displayName}`;
 
 export function renderParticipants(doc: ViewDocument, list: readonly ParticipantView[], standby: boolean, stage?: ParticipantStage): HTMLElement {
   const el = (tag: string, text?: string, className?: string): HTMLElement => {
@@ -105,6 +114,21 @@ export function renderParticipants(doc: ViewDocument, list: readonly Participant
     item.setAttribute('data-initial', roomInitials(p.displayName));
     item.setAttribute('data-state', p.state);
     item.append(el('strong', p.displayName), el('span', ` ${standby ? 'na chamada' : STATE_TEXT[p.state]}`, p.state === 'failed' && !standby ? 'error' : 'muted'));
+    // Em espera esta sessão não recebe áudio de ninguém: não há o que regular.
+    if (stage?.voice && !standby) {
+      const pref = stage.voice(p.ref);
+      const label = voicePrefLabel(pref);
+      item.setAttribute('data-session', p.session);
+      item.setAttribute('data-voice-muted', String(pref.muted));
+      if (label !== null) item.append(el('span', label, 'participant-voice'));
+      const btn = el('button', undefined, 'participant-volume') as HTMLButtonElement;
+      btn.type = 'button';
+      btn.setAttribute('data-session', p.session);
+      btn.setAttribute('aria-haspopup', 'dialog');
+      btn.setAttribute('aria-label', volumeButtonLabel(p.displayName));
+      btn.title = volumeButtonLabel(p.displayName);
+      item.append(btn);
+    }
     items.append(item);
   }
   if (stage && stage.freeSlots > 0) {
@@ -112,7 +136,7 @@ export function renderParticipants(doc: ViewDocument, list: readonly Participant
     waiting.append(el('strong', 'Aguardando participantes'), el('span', stage.freeSlots === 1 ? 'Até 1 vaga disponível' : `Até ${stage.freeSlots} vagas disponíveis`, 'muted'));
     items.append(waiting);
   }
-  if (stage) items.setAttribute('data-count', String(Math.min(4, list.length + 1 + (stage.freeSlots > 0 ? 1 : 0)))); // só o desenho da grade
+  if (stage) items.setAttribute('data-count', String(Math.min(6, list.length + 1 + (stage.freeSlots > 0 ? 1 : 0)))); // só o desenho da grade
   root.append(items);
   return root;
 }

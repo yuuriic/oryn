@@ -135,6 +135,7 @@ Requisitos: Node 24+ e pnpm 12+. Não há serviço a instalar: o PGlite e o Post
 | `supabase/migrations/…0400_oryn_room_management.sql` | MVP 01: `list_my_rooms` e `close_room` (aditiva; aplicada no remoto em 2026-10-28) |
 | `supabase/migrations/…0600_oryn_room_membership.sql` | Salas de grupo: capacidade de até 4 contas, lista de membros, saída, remoção e identidade de participante (aditiva; aplicada no remoto em 2026-11-06) |
 | `supabase/migrations/…0500_oryn_room_messages.sql` | Chat por sala: `oryn.room_messages`, `oryn.room_message_counters`, `send_room_message` e `list_room_messages` (aditiva; aplicada no remoto em 2026-11-06) |
+| `supabase/migrations/…1000_oryn_room_capacity_5.sql` | Capacidade de salas novas: até 5 contas. Só redefine o corpo de `oryn.enforce_room_capacity()`; salas existentes intactas. **Preparada e testada localmente; NÃO aplicada no remoto** (procedimento: `oryn-push-step.ps1 -Step 10`, SQL 40/41/97) |
 | `supabase/migrations/…0700_oryn_soundboard.sql` | Soundboard: `oryn.sound_assets`, `oryn.sound_trigger_state`, 9 RPCs, 2 predicados, bucket privado `oryn-sounds` e 2 políticas em `storage.objects` (aditiva; aplicada no remoto em 2026-11-07) |
 | `supabase/functions/sound-media/`, `_shared/sound-media-core.ts`, `_shared/sound-validate.ts` | Validação do conteúdo dos sons e limpeza de objetos (publicada no remoto, versão 2) |
 | `supabase/functions/_shared/` | Contrato da sinalização e núcleo da Edge Function (puros e testados) |
@@ -210,7 +211,8 @@ um túnel HTTPS temporário:
 - **NAT e operadoras:** o WAN cobre um único cenário (uma rede Wi-Fi e uma operadora móvel). NAT restritivo
   (simétrico, CGNAT) e redes corporativas não foram testados.
 - **TURN:** não existe; sem ele, redes restritivas podem não conectar.
-- **Grupo:** até 4 contas por sala, em mesh, na seção "Salas de grupo".
+- **Grupo:** até 4 contas por sala em produção; 5 preparadas (migração 1000 pendente), em mesh, na seção "Salas de grupo".
+  Com 5 pessoas reais, CPU, perda e tempo de entrada não foram medidos.
 
 ## MVP 01 — gerenciamento de salas pela interface
 
@@ -256,12 +258,17 @@ cenários sem evidência em aparelho e riscos: runbook §14.12. Implantação: c
 **Estado: a migração 0600 foi aplicada no remoto em 2026-11-06, com pós-voo aprovado, e o cliente de grupo está em produção desde o merge do PR #19.**
 Implantação: checklist de deploy, Etapa 6 ⛔. Operação, homologação e riscos: runbook §14.13.
 
-- **Capacidade:** 2, 3 ou 4 contas por sala, com o dono. O backend recusa sala nova acima de 4 e o resgate que ultrapassaria a capacidade.
+- **Capacidade:** 2 a 5 contas por sala, com o dono. O backend recusa sala nova acima do limite e o resgate que ultrapassaria a
+  capacidade. Em produção o limite ainda é 4: o de 5 depende da migração 1000, preparada e não aplicada. Salas existentes
+  não mudam de capacidade.
 - **Membros:** `list_room_members`, `leave_room_membership` e `remove_room_member`. A referência de um membro é opaca, por sala, e não revela a conta.
-- **Voz:** uma `RTCPeerConnection` por participante remoto: até 3 por cliente e 6 no total. Uma única captura de microfone. Cada áudio remoto fica separado.
+- **Voz:** uma `RTCPeerConnection` por participante remoto: até 4 por cliente e 10 no total. Uma única captura de microfone. Cada áudio remoto fica separado.
+- **Volume individual:** clique direito no cartão (ou o botão "Volume de …", pelo teclado e no toque) abre o volume de 0 a 100% e
+  "Silenciar para mim". Só neste aparelho: muda o `<audio>` local, não o microfone de ninguém nem o que os outros ouvem.
+  Guardado por conta e `participant_ref` (`oryn.voice.v1`), por isso sobrevive à reconexão. Sem amplificação acima de 100%.
 - **Identidade:** `get_voice_participants` distingue contas de sessões. De cada conta, só a sessão mais antiga entra no mesh; a outra fica em espera e assume quando a primeira sair, ou quando um par a chamar por ter perdido a primeira (navegador que caiu sem avisar).
 - **Isolamento:** a falha de um par não derruba os demais. Sem SFU e sem servidor de mídia.
-- **Fora do escopo:** espaços, canais, TURN, deafen, volume individual e transferência de propriedade.
+- **Fora do escopo:** TURN, amplificação acima de 100% e transferência de propriedade.
 
 ## Soundboard
 

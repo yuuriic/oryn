@@ -8,8 +8,8 @@
 import { hasRoomSummaryShape, isDisplayName, isRoomName, parseRoomSummary, type RoomSummary } from '../contracts.ts';
 import { shortCode, type RpcResult } from './supabase-signaling.ts';
 
-/** Capacidades oferecidas ao criar uma sala, em contas, com o dono. O backend recusa mais de 4. */
-export const ROOM_CAPACITIES = [2, 3, 4] as const;
+/** Capacidades oferecidas ao criar uma sala, em contas, com o dono. O backend recusa mais de 5 (migração 1000). */
+export const ROOM_CAPACITIES = [2, 3, 4, 5] as const;
 export type RoomCapacity = (typeof ROOM_CAPACITIES)[number];
 export const isRoomCapacity = (v: unknown): v is RoomCapacity => ROOM_CAPACITIES.includes(v as RoomCapacity);
 /** Capacidade padrão: a sala de 2 lugares de sempre. */
@@ -20,7 +20,7 @@ export const ROOM_LIST_LIMIT = 50;
 export const CREATE_ERRORS: Record<string, string> = {
   unauthorized: 'Esta conta não tem permissão para criar salas.',
   'limit-reached': 'Limite de salas abertas atingido: encerre uma sala antes de criar outra.',
-  'invalid-argument': 'Nome da sala ou nome de exibição inválido.',
+  'invalid-argument': 'Nome da sala, nome de exibição ou número de lugares inválido.',
 };
 export const CREATE_FAILED = 'Não foi possível criar a sala (falha de rede ou do servidor). Tente de novo.';
 export const CLOSE_ERRORS: Record<string, string> = {
@@ -242,7 +242,7 @@ export class LobbyController {
       return null;
     }
     if (!isRoomCapacity(capacity)) {
-      this.set({ actionError: 'Capacidade inválida: escolha 2, 3 ou 4 lugares.' });
+      this.set({ actionError: `Capacidade inválida: escolha de ${ROOM_CAPACITIES[0]} a ${ROOM_CAPACITIES[ROOM_CAPACITIES.length - 1]} lugares.` });
       return null;
     }
     const epoch = this.epoch;

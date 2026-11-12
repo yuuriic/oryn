@@ -40,7 +40,7 @@ const history = async (actor: Actor, room: string = s.room) => (await db.rpc<{ d
 const sessionReason = async (session: string) => (await db.admin<{ r: string | null }>('select revoke_reason as r from oryn.room_sessions where id = $1', [session]))[0]!.r;
 
 describe('capacidade', () => {
-  it.each([2, 3, 4])('sala de %i lugares aceita exatamente essa quantidade de contas', async (capacity) => {
+  it.each([2, 3, 4, 5])('sala de %i lugares aceita exatamente essa quantidade de contas', async (capacity) => {
     const owner = await makeCreator(db);
     const room = await createRoom(db, owner, capacity, `Sala ${capacity}`);
     for (let i = 1; i < capacity; i++) await joinWithInvite(db, room, owner, `M${i}`);
@@ -59,17 +59,56 @@ describe('capacidade', () => {
     expect((await db.admin<{ used: boolean }>('select used_at is not null as used from oryn.room_invites where token_hash = oryn.token_hash($1)', [spare]))[0]!.used).toBe(false);
   });
 
-  it.each([5, 10])('sala nova com %i lugares é recusada pelo backend', async (capacity) => {
+  it('a sexta conta é recusada numa sala de cinco (1000), mesmo com convite emitido antes de lotar', async () => {
+    const owner = await makeCreator(db);
+    const room = await createRoom(db, owner, 5, 'Cinco');
+    const spare = await roomInvite(db, owner, room);
+    for (const name of ['A', 'B', 'C', 'D']) await joinWithInvite(db, room, owner, name);
+    expect(await redeem(await db.newUser(), spare)).toMatch(/^room-full$/);
+    expect(await members(owner, room)).toHaveLength(5);
+    expect(await db.rpcError(owner, 'public.create_room_invite', { p_room_id: room, p_ttl_minutes: 10 })).toMatch(/^room-full$/);
+    expect((await db.admin<{ used: boolean }>('select used_at is not null as used from oryn.room_invites where token_hash = oryn.token_hash($1)', [spare]))[0]!.used).toBe(false);
+  });
+
+  it('sala de cinco: as cinco contas entram na voz e cada uma vê as outras quatro', async () => {
+    const owner = await makeCreator(db);
+    const room = await createRoom(db, owner, 5, 'Cinco na voz');
+    const people = [owner];
+    for (const name of ['A', 'B', 'C', 'D']) people.push(await joinWithInvite(db, room, owner, name));
+    for (const p of people) await openSession(db, p, room);
+    for (const p of people) {
+      const list = await voice(p, room);
+      expect(list).toHaveLength(5);
+      expect(list.filter((x) => !x.is_self)).toHaveLength(4);
+      expect(new Set(list.map((x) => x.participant_ref)).size).toBe(5);
+    }
+  });
+
+  it('saída e substituição numa sala de cinco: a vaga liberada aceita uma conta nova, e a sexta continua recusada', async () => {
+    const owner = await makeCreator(db);
+    const room = await createRoom(db, owner, 5, 'Rodízio');
+    const joined = [];
+    for (const name of ['A', 'B', 'C', 'D']) joined.push(await joinWithInvite(db, room, owner, name));
+    expect(await leave(joined[0]!, room)).toBeNull();
+    expect(await members(owner, room)).toHaveLength(4);
+    const substitute = await joinWithInvite(db, room, owner, 'E');
+    expect(substitute).toBeTruthy();
+    expect(await members(owner, room)).toHaveLength(5);
+    expect(await db.rpcError(owner, 'public.create_room_invite', { p_room_id: room, p_ttl_minutes: 10 })).toMatch(/^room-full$/);
+  });
+
+  it.each([6, 10])('sala nova com %i lugares é recusada pelo backend', async (capacity) => {
     const owner = await makeCreator(db);
     expect(await db.rpcError(owner, 'public.create_room', { p_name: 'Grande', p_display_name: 'Dono', p_max_members: capacity })).toMatch(/^invalid-argument$/);
     expect((await db.admin<{ n: number }>('select count(*)::int as n from oryn.rooms where owner_id = $1', [owner.uid]))[0]!.n).toBe(0);
   });
 
-  it('inserção direta com mais de 4 também é recusada; o limite está na tabela, não só na RPC', async () => {
-    await expect(db.admin(`insert into oryn.rooms (owner_id, name, max_members) values ($1, 'x', 5)`, [s.owner.uid])).rejects.toThrow(/invalid-argument/);
+  it('inserção direta com mais de 5 também é recusada; o limite está na tabela, não só na RPC', async () => {
+    await expect(db.admin(`insert into oryn.rooms (owner_id, name, max_members) values ($1, 'x', 6)`, [s.owner.uid])).rejects.toThrow(/invalid-argument/);
+    await db.admin(`insert into oryn.rooms (owner_id, name, max_members) values ($1, 'cinco', 5)`, [s.owner.uid]);
   });
 
-  it('sala antiga com mais de 4 lugares não é invalidada', async () => {
+  it('sala antiga com mais de 5 lugares não é invalidada', async () => {
     await db.admin('alter table oryn.rooms disable trigger oryn_room_capacity');
     await db.admin(`insert into oryn.rooms (owner_id, name, max_members) values ($1, 'antiga', 10)`, [s.owner.uid]);
     await db.admin('alter table oryn.rooms enable trigger oryn_room_capacity');

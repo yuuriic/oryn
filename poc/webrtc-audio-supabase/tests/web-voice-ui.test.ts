@@ -38,7 +38,8 @@ describe('áudio remoto', () => {
   });
 
   it('nenhuma renderização de tela mexe nos elementos de áudio: só setRemote', () => {
-    const uses = main.split('\n').filter((line) => /ui\.audioContainer|remoteAudio\.(set|delete)/.test(line));
+    // Criar, ligar à mixagem (volume individual), inserir e desligar: só dentro de setRemote.
+    const uses = main.split('\n').filter((line) => /ui\.audioContainer|voiceMix\.(attach|detach)\(/.test(line));
     expect(uses).toHaveLength(3);
     const setRemote = /function setRemote[^]*?\n}\n/.exec(main)![0];
     for (const line of uses) expect(setRemote).toContain(line.trim());

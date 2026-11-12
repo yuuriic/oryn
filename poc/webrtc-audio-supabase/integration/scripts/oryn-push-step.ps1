@@ -32,8 +32,11 @@
   - Etapa 9 (canais, 0900): mesmo procedimento da 8, com o manifesto channels-09-manifest.json (as nove
     migrações) e os SELECTs 30 (pré-voo) e 31 (pós-voo). Recusa histórico diferente das oito versões anteriores,
     reaplicação e deriva dos contratos, ACLs, estrutura e agregados dos canais.
+  - Etapa 10 (capacidade 5, 1000): mesmo procedimento, com o manifesto capacity-10-manifest.json (as dez migrações) e
+    os SELECTs 40 (pré-voo) e 41 (pós-voo). Recusa histórico diferente das nove versões anteriores, reaplicação e
+    deriva do corpo, do dono, da ACL e do gatilho de oryn.enforce_room_capacity().
   NÃO faz backup nem dump. Etapas 1–7 mantêm verificações SQL separadas. Para a 8, ver PROFILE-PUBLICATION-08.md;
-  para a 9, CHANNELS-PUBLICATION-09.md.
+  para a 9, CHANNELS-PUBLICATION-09.md; para a 10, CAPACITY-PUBLICATION-10.md.
 
 .EXAMPLE
   pwsh -File integration/scripts/oryn-push-step.ps1 -Step 1            # dry-run da 0100
@@ -41,7 +44,7 @@
 #>
 [CmdletBinding()]
 param(
-  [Parameter(Mandatory)] [ValidateRange(1, 9)] [int] $Step,
+  [Parameter(Mandatory)] [ValidateRange(1, 10)] [int] $Step,
   [switch] $Apply,
   # Para testes locais com uma CLI falsa: executável e argumentos fixos antes dos da CLI.
   [string] $SupabaseCli = 'supabase',
@@ -65,26 +68,28 @@ $allowed = @(
   '20261023000300_oryn_realtime.sql', '20261028000400_oryn_room_management.sql',
   '20261106000500_oryn_room_messages.sql', '20261107000600_oryn_room_membership.sql',
   '20261108000700_oryn_soundboard.sql', '20261109224924_oryn_account_display_name.sql',
-  '20261110000900_oryn_channels.sql'
+  '20261110000900_oryn_channels.sql', '20261112001000_oryn_room_capacity_5.sql'
 )
 $expected = @(Get-ChildItem -Path $migrationsDir -Filter '*.sql' | Sort-Object Name)
-if ($expected.Count -notin @(7, 8, 9) -or $expected.Count -lt $Step -or
+if ($expected.Count -notin @(7, 8, 9, 10) -or $expected.Count -lt $Step -or
     ($expected.Name -join ',') -cne (($allowed | Select-Object -First $expected.Count) -join ',')) {
-  throw 'migrações inesperadas ou ausentes: somente as sete históricas, a oitava e a nona aprovadas são aceitas'
+  throw 'migrações inesperadas ou ausentes: somente as sete históricas e a oitava, a nona e a décima aprovadas são aceitas'
 }
 # Hashes fixados nos artefatos revisados. Normalizar CRLF evita depender do autocrlf do checkout.
 function Get-CanonicalHash([string] $Path) {
   $bytes = [Text.Encoding]::UTF8.GetBytes([IO.File]::ReadAllText($Path).Replace("`r`n", "`n"))
   return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
 }
-# Dois manifestos: o da etapa 8 fixa as oito primeiras; o da 9, as nove. Todo arquivo presente confere com todos
-# os manifestos que o citam (os oito primeiros hashes são os mesmos nos dois).
+# Três manifestos: o da etapa 8 fixa as oito primeiras; o da 9, as nove; o da 10, as dez. Todo arquivo presente confere
+# com todos os manifestos que o citam (os hashes em comum são os mesmos).
 $profileManifest = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'profile-08-manifest.json') -Raw | ConvertFrom-Json
 $channelsManifest = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'channels-09-manifest.json') -Raw | ConvertFrom-Json
+$capacityManifest = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'capacity-10-manifest.json') -Raw | ConvertFrom-Json
 if (($profileManifest.migrations.file -join ',') -cne (($allowed | Select-Object -First 8) -join ',')) { throw 'manifesto de migrações divergente' }
-if (($channelsManifest.migrations.file -join ',') -cne ($allowed -join ',')) { throw 'manifesto de migrações divergente' }
+if (($channelsManifest.migrations.file -join ',') -cne (($allowed | Select-Object -First 9) -join ',')) { throw 'manifesto de migrações divergente' }
+if (($capacityManifest.migrations.file -join ',') -cne ($allowed -join ',')) { throw 'manifesto de migrações divergente' }
 foreach ($m in $expected) {
-  $pins = @(@($profileManifest.migrations) + @($channelsManifest.migrations) | Where-Object file -CEQ $m.Name)
+  $pins = @(@($profileManifest.migrations) + @($channelsManifest.migrations) + @($capacityManifest.migrations) | Where-Object file -CEQ $m.Name)
   $actual = Get-CanonicalHash $m.FullName
   if ($pins.Count -lt 1 -or @($pins | Where-Object { $_.sha256 -cne $actual }).Count -gt 0) {
     throw "integridade divergente: $($m.Name)"
@@ -96,6 +101,8 @@ $stage = switch ($Step) {
          Files = @('integration/sql/20_profile_08_preflight.sql', 'integration/sql/21_profile_08_postflight.sql', 'integration/sql/22_profile_08_recovered.sql', 'integration/sql/95_recover_profile_08.sql') } }
   9 { @{ Manifest = $channelsManifest; Prefix = 'oryn-channels-09-'; Pre = '30_channels_09_preflight.sql'; Post = '31_channels_09_postflight.sql'
          Files = @('integration/sql/30_channels_09_preflight.sql', 'integration/sql/31_channels_09_postflight.sql', 'integration/sql/32_channels_09_recovered.sql', 'integration/sql/96_recover_channels_09.sql') } }
+  10 { @{ Manifest = $capacityManifest; Prefix = 'oryn-capacity-10-'; Pre = '40_capacity_10_preflight.sql'; Post = '41_capacity_10_postflight.sql'
+          Files = @('integration/sql/40_capacity_10_preflight.sql', 'integration/sql/41_capacity_10_postflight.sql', 'integration/sql/97_rollback_capacity_10.sql') } }
   default { $null }
 }
 if ($stage) {
@@ -196,7 +203,7 @@ try {
   $plain = [System.Net.NetworkCredential]::new('', $Password).Password
   $env:SUPABASE_DB_PASSWORD = $plain
 
-  # Etapas 8 e 9: a consulta usa Management API (--linked), não cria papel CLI de login.
+  # Etapas 8, 9 e 10: a consulta usa Management API (--linked), não cria papel CLI de login.
   # Só SELECT de catálogo/histórico (e, na 9, agregados); saída bruta não é impressa. Sem conteúdo de usuários.
   function Assert-StageState([string] $Phase) {
     $sqlFile = if ($Phase -eq 'preflight') { $stage.Pre } else { $stage.Post }
