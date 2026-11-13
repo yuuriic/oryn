@@ -551,9 +551,9 @@ describe('lobby: acesso ao chat', () => {
     expect(opened).toEqual([ROOM]);
   });
 
-  it('sala encerrada: só "Ver mensagens"', () => {
+  it('sala encerrada: fora da lista, sem "Ver mensagens"', () => {
     const root = renderLobby(fakeDoc, lobbyState([room(ROOM, false)]), { ...base, callActive: false, onChat: () => undefined }) as unknown as FakeEl;
-    expect(buttons(root).map((b) => b.textContent)).toEqual(['Ver mensagens']);
+    expect(buttons(root)).toEqual([]);
   });
 
   it('chat já aberto: o botão indica e fica desativado', () => {

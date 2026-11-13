@@ -226,10 +226,13 @@ de deploy, Etapa 4 ⛔. Operação, validação manual e riscos: runbook §14.
 - **`close_room(p_room_id)`:** só o dono; idempotente; preserva o histórico (`closed_at`). Revoga as sessões e os
   convites pendentes e avisa quem está na chamada com o `bye` já existente (sem evento novo).
 - **Lobby** (depois do login):
-  - lista, com estados de carregamento, vazio e erro; encerradas num bloco recolhido, sem ações;
+  - lista só das salas abertas, com estados de carregamento, vazio e erro. As encerradas não aparecem: não há seção, contador
+    nem cartão delas. O registro continua no Supabase (`closed_at`, membros e mensagens);
   - criação com nome (até 40 caracteres) e nome de exibição (até 32), sempre com **2 lugares**;
   - "Entrar na chamada" usa o fluxo 1:1 existente; uma chamada por vez;
-  - "Encerrar sala" só para o dono, com confirmação; irreversível no MVP 01;
+  - "Encerrar sala" só para o dono, com confirmação; irreversível no MVP 01. Depois de encerrar, a interface volta à tela
+    inicial e fecha o chat e os membros da sala. O mesmo vale para os outros membros na próxima atualização da lista e depois
+    de recarregar. A tela inicial não guarda aviso de "Chamada encerrada". Web e desktop usam o mesmo código (`src/web/`);
   - o campo de UUID ficou em "Diagnóstico".
 - **Encerramento visto por quem está na chamada:** `bye` → roster `not-member` → desconexão `4403`, e o motivo
   ("sala encerrada", "não participa mais" ou "sessão expirou") vem de uma consulta ao `list_my_rooms`. Se o `bye`
@@ -251,7 +254,8 @@ cenários sem evidência em aparelho e riscos: runbook §14.12. Implantação: c
   as mais recentes; `p_before_seq` pagina para trás; `p_after_seq` traz as novas. Devolve nome de exibição e `is_mine`, sem conta de ninguém.
 - **Ordem:** `seq` por sala, atribuído sob a trava da sala e nunca reutilizado. Um cursor por `seq` não perde mensagem. A exclusão de uma conta pode deixar lacunas no histórico.
 - **Atualização:** consulta a cada 3 s com o painel aberto e a página visível; depois de falhas, espaça até 30 s.
-- **Sala encerrada:** somente leitura, em "Ver mensagens". Enviar devolve `room-closed`.
+- **Sala encerrada:** sem acesso às mensagens pela interface, que não mostra salas encerradas. As mensagens continuam no
+  Supabase, e o servidor segue aceitando a leitura por membro ativo. Enviar devolve `room-closed`.
 - **Texto puro:** só `textContent`, sem HTML. O texto não vai para registro nenhum nem para `realtime.messages`.
 - **Fora do escopo:** edição e exclusão de mensagens, anexos, indicador de digitação, entrega instantânea, espaços e canais.
 

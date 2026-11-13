@@ -13,9 +13,9 @@ const IDLE_TEXT = 'Nenhuma chamada em curso. Para falar, abra uma sala e use "En
 
 export function voiceSummary({ active, phase, room }: VoiceSummaryInput): { title: string; state: string } {
   if (active) return { title: `Chamada em ${room}`, state: capitalize(phase) };
-  if (phase === '—' || phase === 'parada') return { title: 'Chamada', state: IDLE_TEXT };
+  // Encerrada volta ao estado de repouso: nenhum aviso de encerramento fica na tela inicial.
+  if (phase === '—' || phase === 'parada' || phase === 'encerrada') return { title: 'Chamada', state: IDLE_TEXT };
   if (phase === 'verificando o motivo') return { title: 'Chamada', state: 'Verificando o motivo…' };
-  if (phase === 'encerrada') return { title: 'Chamada', state: 'Chamada encerrada.' };
   if (phase === 'falhou') return { title: 'Chamada', state: 'A chamada falhou.' };
   return { title: 'Chamada', state: capitalize(phase) };
 }
