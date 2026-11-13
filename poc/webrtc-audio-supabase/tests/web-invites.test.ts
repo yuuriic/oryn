@@ -17,6 +17,7 @@ import {
   INVITE_ROOM_FULL,
   INVITE_SESSION,
   INVITE_TTL_MINUTES,
+  INVITE_USED,
   InviteAcceptController,
   InviteShareController,
   LINK_COPIED,
@@ -279,6 +280,70 @@ describe('dono: gerar e compartilhar', () => {
     c.syncRooms([room()]);
     expect(c.state.link).toContain(TOKEN);
     expect(rpc).toHaveBeenCalledTimes(1);
+  });
+
+  // Regressão da homologação (2026-11-13): o único convite foi aceito por outra conta em 1 minuto; "Convidar" de novo
+  // mostrou o MESMO link (sem chamar create_room_invite), e a convidada recebeu "convite inválido" três vezes.
+  it('link já aceito (a sala ganhou membro): reabrir "Convidar" gera outro, em vez de mostrar o usado', async () => {
+    let n = 0;
+    const tokens = [TOKEN, OTHER];
+    const { c, rpc } = setup({ rpc: (async () => ({ data: [{ token: tokens[n++] }], error: null })) as unknown as InviteShareDeps['rpc'] });
+    await c.open(ROOM, 1);
+    expect(c.state.link).toContain(TOKEN);
+    c.close();
+    await c.open(ROOM, 2); // a lista atualizada mostra 2 membros: alguém aceitou
+    expect(c.state.link).toContain(OTHER);
+    expect(n).toBe(2);
+    c.close();
+    await c.open(ROOM, 2); // ninguém mais entrou: o mesmo link novo, sem gerar outro
+    expect(c.state.link).toContain(OTHER);
+    expect(n).toBe(2);
+    expect(rpc).toBeDefined();
+  });
+
+  it('link à vista quando a lista mostra membro novo: some, avisa que pode ter sido usado e oferece gerar outro', async () => {
+    const { c, rpc } = setup();
+    await c.open(ROOM, 1);
+    c.syncRooms([room({ member_count: 1, max_members: 5 })]); // sem mudança: o link fica
+    expect(c.state.link).toContain(TOKEN);
+    c.syncRooms([room({ member_count: 2, max_members: 5 })]);
+    expect(c.state).toMatchObject({ roomId: ROOM, link: null, expired: true, message: { tone: 'info', text: INVITE_USED } });
+    expect(c.state.message?.text).not.toContain(TOKEN);
+    await c.open(ROOM, 2); // "Gerar novo convite"
+    expect(rpc).toHaveBeenCalledTimes(2);
+    expect(c.state.link).toContain(TOKEN);
+  });
+
+  it('com o painel fechado, membro novo descarta o link guardado; contagem desconhecida mantém o comportamento anterior', async () => {
+    const { c, rpc } = setup();
+    await c.open(ROOM, 1);
+    c.close();
+    c.syncRooms([room({ member_count: 2, max_members: 5 })]);
+    expect(c.state.roomId).toBeNull(); // nada aparece com o painel fechado
+    await c.open(ROOM, 2);
+    expect(rpc).toHaveBeenCalledTimes(2);
+    // Sem contagem (null), o convite guardado é reaproveitado como antes.
+    const other = setup();
+    await other.c.open(ROOM);
+    other.c.syncRooms([room({ member_count: 2, max_members: 5 })]);
+    other.c.close();
+    await other.c.open(ROOM);
+    expect(other.rpc).toHaveBeenCalledTimes(1);
+  });
+
+  it('a página atualiza a lista antes de abrir o convite e passa a contagem atual', () => {
+    const main = read('src/web/main.ts');
+    expect(main).toContain('onInvite: (roomId) => openInvite(roomId),');
+    expect(main).toMatch(/function openInvite\(roomId: string\): void \{\n\s*void lobby\.refresh\(\)\.catch\(\(\) => undefined\)\.then\(\(\) => \{\n\s*const members = lobby\.state\.rooms\.find\(\(r\) => r\.room_id === roomId\)\?\.member_count \?\? null;\n\s*return inviteShare\.open\(roomId, members\);/);
+    expect(main).toMatch(/if \(roomId\) openInvite\(roomId\);/);
+    expect(code(main)).not.toMatch(/void inviteShare\.open\(/);
+  });
+
+  it('a mensagem do convidado cita o uso único sem revelar qual caso aconteceu', () => {
+    expect(INVITE_INVALID).toMatch(/uso único/);
+    expect(INVITE_INVALID).toMatch(/expirado/);
+    expect(INVITE_INVALID).toMatch(/revogado/);
+    expect(INVITE_INVALID).toMatch(/Peça um novo link ao dono da sala\.$/);
   });
 
   it('sala que deixou de aceitar convite enquanto gerava: a resposta é descartada', async () => {
