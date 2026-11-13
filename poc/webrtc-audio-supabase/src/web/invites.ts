@@ -50,6 +50,8 @@ export const CREATE_INVITE_ERRORS: Record<string, string> = {
 };
 export const CREATE_INVITE_FAILED = 'Não foi possível gerar o convite (falha de rede ou do servidor). Tente de novo.';
 export const INVITE_EXPIRED = 'Este convite expirou.';
+/** O convite é de uso único: alguém entrou na sala depois de ele ser gerado, e o link pode já ter sido usado. */
+export const INVITE_USED = 'Alguém entrou na sala depois que este link foi gerado, e ele pode já ter sido usado (cada link vale para uma pessoa). Gere um novo para convidar outra pessoa.';
 export const LINK_COPIED = 'Link copiado.';
 export const COPY_FAILED = 'Não foi possível copiar automaticamente: selecione o link acima e copie.';
 export const SHARE_FAILED = 'Não foi possível abrir o compartilhamento: use "Copiar link".';
@@ -103,8 +105,12 @@ export class InviteShareController {
   private s: InviteShareState = CLOSED;
   /** Muda a cada reset (logout): uma resposta da sessão anterior não mexe em nada. */
   private epoch = 0;
-  /** Convites gerados nesta página e ainda válidos. Fechar o painel não os descarta. */
-  private readonly invites = new Map<string, { link: string; expiresAt: number; timer: ReturnType<typeof setTimeout> }>();
+  /**
+   * Convites gerados nesta página e ainda válidos. Fechar o painel não os descarta. `members`: membros da sala quando o
+   * convite foi gerado (null = desconhecido). O servidor não avisa o uso; a lista de salas sim, pela contagem: se ela
+   * subiu, o link pode ter sido usado, e reaproveitá-lo daria "convite inválido" para quem o receber.
+   */
+  private readonly invites = new Map<string, { link: string; expiresAt: number; timer: ReturnType<typeof setTimeout>; members: number | null }>();
   private readonly deps: InviteShareDeps;
 
   constructor(deps: InviteShareDeps) {
@@ -120,11 +126,15 @@ export class InviteShareController {
     this.deps.onChange(next);
   }
 
-  /** "Convidar": mostra o convite válido desta sala; só gera outro se não houver nenhum em memória. */
-  async open(roomId: string): Promise<void> {
+  /**
+   * "Convidar": mostra o convite válido desta sala; só gera outro se não houver nenhum em memória, ou se a sala ganhou
+   * membro desde que ele foi gerado (`members`: contagem atual, lida da lista recém-atualizada).
+   */
+  async open(roomId: string, members: number | null = null): Promise<void> {
     if (this.s.busy) return;
     const known = this.invites.get(roomId);
-    if (known) return this.set({ ...CLOSED, roomId, link: known.link, expiresAt: known.expiresAt });
+    if (known && members !== null && known.members !== null && members > known.members) this.drop(roomId);
+    else if (known) return this.set({ ...CLOSED, roomId, link: known.link, expiresAt: known.expiresAt });
     const epoch = this.epoch;
     this.set({ ...CLOSED, roomId, busy: true });
     const res = await this.deps
@@ -141,7 +151,7 @@ export class InviteShareController {
     const expiresAt = Date.now() + INVITE_TTL_MINUTES * 60_000;
     const link = this.deps.link(token);
     const timer = setTimeout(() => this.expire(roomId), expiresAt - Date.now());
-    this.invites.set(roomId, { link, expiresAt, timer });
+    this.invites.set(roomId, { link, expiresAt, timer, members });
     this.set({ ...CLOSED, roomId, link, expiresAt });
   }
 
@@ -201,11 +211,20 @@ export class InviteShareController {
     this.set(CLOSED);
   }
 
-  /** Lista atualizada: sala encerrada ou completa não tem mais o que convidar. */
+  /**
+   * Lista atualizada: sala encerrada ou completa não tem mais o que convidar. Sala que ganhou membro desde o convite: o
+   * link pode ter sido usado; sai da memória e, se estiver na tela, dá lugar ao aviso e ao "Gerar novo convite".
+   */
   syncRooms(rooms: readonly RoomSummary[]): void {
     const usable = (id: string) => rooms.some((r) => r.room_id === id && r.is_open && r.role === 'owner' && r.member_count < r.max_members);
     for (const id of [...this.invites.keys()]) if (!usable(id)) this.forget(id);
     if (this.s.roomId !== null && !usable(this.s.roomId)) this.forget(this.s.roomId);
+    for (const [id, known] of [...this.invites]) {
+      const now = rooms.find((r) => r.room_id === id)?.member_count;
+      if (known.members === null || now === undefined || now <= known.members) continue;
+      this.drop(id);
+      if (this.s.roomId === id && this.s.link) this.set({ ...CLOSED, roomId: id, expired: true, message: { tone: 'info', text: INVITE_USED } });
+    }
   }
 
   /** Logout. Respostas em curso são descartadas. */
@@ -225,7 +244,9 @@ export class InviteShareController {
 // ---------- convidado: aceitar ----------
 
 export const BAD_LINK = 'Este link de convite não é válido.';
-export const INVITE_INVALID = 'Convite inválido, expirado, já utilizado ou revogado. Peça um novo ao dono da sala.';
+// O servidor responde igual para vencido, usado, revogado ou sala encerrada (não revela qual): o texto lista os casos,
+// começando pelo mais comum no uso real, um link de uso único aceito por outra conta.
+export const INVITE_INVALID = 'Este convite não vale mais: cada link é de uso único e pode já ter sido aceito por outra conta, ou ter expirado ou sido revogado. Peça um novo link ao dono da sala.';
 export const INVITE_ALREADY_MEMBER = 'Esta conta já participa desta sala. Ela está em "Minhas salas".';
 export const INVITE_ROOM_FULL = 'Esta sala já está completa.';
 export const INVITE_BAD_NAME = 'Seu nome de exibição: de 1 a 32 caracteres, sem caracteres de controle. Ajuste no Perfil; o convite continua nesta aba.';

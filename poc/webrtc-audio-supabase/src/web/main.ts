@@ -1000,7 +1000,7 @@ function renderRooms(): void {
       onJoin: (roomId) => startCall(roomId, roomId === selectedRoomId && centerKind === 'voice' ? selectedVoiceId : null),
       onClose: (roomId) => void lobby.close(roomId),
       inviteBusy: inviteShare.state.busy,
-      onInvite: (roomId) => void inviteShare.open(roomId),
+      onInvite: (roomId) => openInvite(roomId),
       onRevokeInvites: (roomId) => void inviteShare.revoke(roomId, lobby.state.rooms.find((r) => r.room_id === roomId)?.name ?? ''),
       chatRoomId: chat?.state.roomId ?? null,
       // Em Texto, o chat é o centro (vem pelos canais). Na visão geral e em Voz, a pílula abre o chat sob demanda.
@@ -1574,9 +1574,20 @@ function renderInviteAccept(s: InviteAcceptState): void {
 
 ui.inviteCopyBtn.addEventListener('click', () => void inviteShare.copy());
 ui.inviteNativeShareBtn.addEventListener('click', () => void inviteShare.share());
+/**
+ * "Convidar" e "Gerar novo convite": a lista é atualizada antes, para a contagem de membros ser a de agora. Convite de
+ * uso único já aceito (a sala ganhou membro) não é mostrado de novo: o controlador gera outro.
+ */
+function openInvite(roomId: string): void {
+  void lobby.refresh().catch(() => undefined).then(() => {
+    const members = lobby.state.rooms.find((r) => r.room_id === roomId)?.member_count ?? null;
+    return inviteShare.open(roomId, members);
+  });
+}
+
 ui.inviteNewBtn.addEventListener('click', () => {
   const { roomId } = inviteShare.state;
-  if (roomId) void inviteShare.open(roomId);
+  if (roomId) openInvite(roomId);
 });
 ui.inviteCloseBtn.addEventListener('click', () => inviteShare.close());
 // Escape (cancel nativo): fecha pelo controlador, que não fecha durante a geração ou a revogação.
