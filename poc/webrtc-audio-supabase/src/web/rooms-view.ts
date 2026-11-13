@@ -56,7 +56,7 @@ export function statusText(state: LobbyState): string {
   if (state.status === 'error') return state.listError ?? 'Não foi possível carregar as salas.';
   if (state.status !== 'ready') return '';
   if (state.rooms.length === 0) return 'Nenhuma sala ainda. Crie a primeira para conversar por voz e texto.';
-  if (!state.rooms.some((r) => r.is_open)) return 'Nenhuma sala aberta.';
+  if (!state.rooms.some((r) => r.is_open)) return 'Nenhuma sala aberta. Crie uma para conversar por voz e texto.';
   return '';
 }
 
@@ -119,7 +119,7 @@ export function renderRoomNav(doc: ViewDocument, state: LobbyState, opts: RoomNa
     return li;
   };
 
-  // Só salas abertas: as encerradas seguem em "Minhas salas", recolhidas e só para leitura.
+  // Só salas abertas, como em "Minhas salas".
   const { open } = splitRooms(state.rooms);
   if (open.length > 0) {
     const list = el('ul', undefined, 'room-list');
@@ -166,7 +166,8 @@ export function renderLobby(doc: ViewDocument, state: LobbyState, opts: LobbyVie
 
   const selected = opts.selectedRoomId ?? null;
   const shown = (state.status === 'ready' ? state.rooms : []).filter((r) => selected === null || r.room_id === selected);
-  const { open, closed } = splitRooms(shown);
+  // Só salas abertas: as encerradas não aparecem (o histórico continua no servidor, sem entrada na interface).
+  const { open } = splitRooms(shown);
   const busy = state.busy !== null;
 
   if (open.length > 0) {
@@ -221,26 +222,6 @@ export function renderLobby(doc: ViewDocument, state: LobbyState, opts: LobbyVie
       list.append(item);
     }
     root.append(list);
-  }
-
-  if (closed.length > 0) {
-    // Recolhida por padrão e sem nenhuma ação. Selecionada, já é o que a pessoa pediu para ver.
-    const box = el(selected === null ? 'details' : 'div');
-    if (selected === null) box.append(el('summary', `Salas encerradas (${closed.length})`));
-    const list = el('ul', undefined, 'rooms');
-    for (const room of closed) {
-      const item = el('li');
-      item.append(el('strong', room.name), el('span', ` ${ROLE[room.role]} · encerrada em ${formatWhen(room.closed_at ?? '')}`, 'muted'));
-      if (opts.onChat) {
-        const actions = el('div', undefined, 'buttons');
-        actions.append(chatButton(room.room_id, 'Ver mensagens', opts.onChat));
-        if (opts.onMembers) actions.append(membersButton(room.room_id, opts.onMembers));
-        item.append(actions);
-      }
-      list.append(item);
-    }
-    box.append(list);
-    root.append(box);
   }
   return root;
 }

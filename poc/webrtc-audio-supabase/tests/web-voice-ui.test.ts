@@ -115,7 +115,7 @@ describe('textos a partir dos estados reais', () => {
   it.each([
     ['—', /Nenhuma chamada em curso/],
     ['parada', /Nenhuma chamada em curso/],
-    ['encerrada', /^Chamada encerrada\.$/],
+    ['encerrada', /Nenhuma chamada em curso/], // sem aviso persistente de encerramento na tela inicial
     ['falhou', /^A chamada falhou\.$/],
     ['verificando o motivo', /^Verificando o motivo/],
   ])('sem chamada, fase %s', (phase, expected) => {

@@ -32,7 +32,7 @@ import { MembersController, MEMBERS_LOAD_FAILED, type MembersState } from './mem
 import { renderMembers, renderParticipants, volumeButtonLabel } from './members-view.ts';
 import { MeshCall, type ParticipantView } from './mesh-call.ts';
 import { MeshSignaling } from './mesh-signaling.ts';
-import { DISCONNECT_CHECKING, LobbyController, disconnectPhase, explainDisconnect, formatCallError, isClosingOwnCall, peerProblemNotice, type Notice } from './rooms.ts';
+import { DISCONNECT_CHECKING, LobbyController, disconnectPhase, explainDisconnect, formatCallError, isClosingOwnCall, peerProblemNotice, splitRooms, type Notice } from './rooms.ts';
 import { renderLobby, renderRoomNav, roomContext, type ContextChannel } from './rooms-view.ts';
 import { ShellController, replaceKeepingFocus, type ShellState } from './shell.ts';
 import { callBarStatus, callBarTitle, micLabel, otherRoomNote, voiceSummary } from './voice-view.ts';
@@ -958,8 +958,8 @@ function renderRooms(): void {
   ui.contextDetail.textContent = context.detail ?? '';
   ui.contextDetail.hidden = context.detail === null;
   ui.contextDetail.dataset['inCall'] = String(callActive && selectedRoomId !== null && callRoomId === selectedRoomId); // só o ponto verde
-  const noRooms = s.status === 'ready' && s.rooms.length === 0;
-  ui.createEmptyBtn.hidden = selectedRoomId !== null || !noRooms; // sem nenhuma sala, o convite à primeira
+  const noRooms = s.status === 'ready' && splitRooms(s.rooms).open.length === 0;
+  ui.createEmptyBtn.hidden = selectedRoomId !== null || !noRooms; // sem nenhuma sala aberta, o convite a criar uma
   // Sala aberta: as ações dela vêm antes da voz. Na visão geral, a voz vem antes de uma lista que pode ser longa. A troca é
   // no DOM, para o teclado seguir a ordem da tela, e só quando muda, para não tirar o foco de quem está no bloco.
   // Na sala aberta, as ações dela ficam no cabeçalho, ao lado do nome, e a voz ocupa o centro.
@@ -1258,6 +1258,17 @@ ui.channelCreateForm.addEventListener('submit', (event) => {
     else ui.channelList.querySelector<HTMLButtonElement>('[data-create-kind="voice"]')?.focus();
   });
 });
+
+/** Salas encerradas não ficam na interface: a sala em tela volta à visão geral e o chat e os membros dela fecham. Vale
+ * para quem encerrou e para quem viu o encerramento na próxima consulta, inclusive depois de recarregar. */
+function leaveClosedRooms(rooms: LobbyController['state']['rooms']): void {
+  const { closed } = splitRooms(rooms);
+  if (closed.length === 0) return;
+  const gone = new Set(closed.map((r) => r.room_id));
+  if (chat.state.roomId !== null && gone.has(chat.state.roomId)) chat.close();
+  if (members && members.state.roomId !== null && gone.has(members.state.roomId)) members.close();
+  if (shell.state.selectedRoomId !== null && gone.has(shell.state.selectedRoomId)) navigate(null);
+}
 
 /** Abre uma sala ou a visão geral. Só muda o que é mostrado: entrar na chamada segue sendo uma ação à parte. Abrir uma
  * sala mostra o canal de texto padrão dela; a chamada em curso, de qualquer sala, continua. */
@@ -2085,6 +2096,7 @@ try {
         if (selfUserId !== null) void soundCache.retainRooms(selfUserId, new Set(state.rooms.filter((r) => r.is_open).map((r) => r.room_id)));
         const callRoom = state.rooms.find((r) => r.room_id === soundboard.state.roomId);
         if (callRoom) soundboard.setOwner(callRoom.room_id, callRoom.role === 'owner');
+        leaveClosedRooms(state.rooms);
       }
       renderRooms();
     },

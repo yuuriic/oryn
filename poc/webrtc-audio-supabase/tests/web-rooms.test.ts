@@ -375,18 +375,19 @@ describe('renderLobby: só texto, estados e ações', () => {
     expect(view({ status: 'loading' }).root.textContent).toMatch(/Carregando salas/);
     expect(view({ status: 'error', listError: LIST_FAILED }).root.textContent).toContain(LIST_FAILED);
     expect(view({ status: 'ready', rooms: [] }).root.textContent).toMatch(/Nenhuma sala ainda/);
-    expect(view({ status: 'ready', rooms: [closedRoom(1)] }).root.textContent).toMatch(/Nenhuma sala aberta/);
+    // Só encerradas: o mesmo estado vazio de quem não tem sala aberta, sem histórico.
+    const closedOnly = view({ status: 'ready', rooms: [closedRoom(1, { name: 'Velha' })] }).root;
+    expect(closedOnly.textContent).toBe('Nenhuma sala aberta. Crie uma para conversar por voz e texto.');
+    expect(closedOnly.find('ul')).toEqual([]);
   });
 
-  it('abertas primeiro, com papel e membros/capacidade; encerradas recolhidas (details) e sem ação', () => {
+  it('só as abertas, com papel e membros/capacidade; encerradas não aparecem (nem seção, nem contador, nem cartão)', () => {
     const { root } = view({ rooms: [closedRoom(1, { name: 'Velha' }), room(2, { name: 'Nova', role: 'member', member_count: 2 })] });
     const top = root.children.map((c) => c.tagName);
-    expect(top).toEqual(['P', 'UL', 'DETAILS']);
+    expect(top).toEqual(['P', 'UL']);
     expect(root.children[1]!.textContent).toMatch(/^Nova membro · 2\/2 membros · aberta/);
-    const details = root.find('details')[0]!;
-    expect(details.attrs['open']).toBeUndefined();
-    expect(details.textContent).toMatch(/Salas encerradas \(1\)Velha dono · encerrada em/);
-    expect(details.find('button')).toEqual([]);
+    expect(root.find('details')).toEqual([]);
+    expect(root.textContent).not.toMatch(/Velha|encerrad/);
   });
 
   it('"Encerrar sala" só para o dono; cliques chamam onJoin/onClose com o id', () => {
@@ -455,7 +456,7 @@ describe('renderLobby: só texto, estados e ações', () => {
 
   it('nomes maliciosos são só texto: nenhum elemento além dos da lista, nenhum HTML interpretado', () => {
     const evil = '<img src=x onerror=alert(1)>';
-    const v = view({ rooms: [room(1, { name: evil }), closedRoom(2, { name: '<script>alert(2)</script>' })] });
+    const v = view({ rooms: [room(1, { name: evil }), room(2, { name: '<script>alert(2)</script>' })] });
     expect(v.root.find('strong').map((s) => s.textContent)).toEqual([evil, '<script>alert(2)</script>']);
     expect(v.root.find('img')).toEqual([]);
     expect(v.root.find('script')).toEqual([]);

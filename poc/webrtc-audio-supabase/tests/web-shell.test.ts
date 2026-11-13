@@ -212,7 +212,7 @@ describe('área central', () => {
   it('sem seleção, todas as salas; com seleção, só a escolhida e com as mesmas ações', () => {
     const texts = (r: FakeEl) => r.find('button').map((b) => b.textContent);
     const all = lobby(state(), null);
-    expect(all.root.find('strong').map((s) => s.textContent)).toEqual(['Sala Principal', 'Outra', 'Antiga']);
+    expect(all.root.find('strong').map((s) => s.textContent)).toEqual(['Sala Principal', 'Outra']);
     const one = lobby(state(), ROOM_A);
     expect(one.root.find('strong').map((s) => s.textContent)).toEqual(['Sala Principal']);
     expect(texts(one.root)).toEqual(['Entrar na chamada', 'Abrir chat', 'Membros', 'Convidar', 'Revogar convites pendentes desta sala', 'Encerrar sala']);
@@ -246,11 +246,13 @@ describe('área central', () => {
     expect(one.root.find('details')).toHaveLength(0);
   });
 
-  it('sala encerrada selecionada aparece sem precisar abrir nada, e sem ação de chamada', () => {
-    const { root } = lobby(state(), CLOSED);
-    expect(root.find('details')).toHaveLength(0);
-    expect(root.find('strong').map((s) => s.textContent)).toEqual(['Antiga']);
-    expect(root.find('button').map((b) => b.textContent)).toEqual(['Ver mensagens', 'Membros']);
+  it('sala encerrada não aparece, nem selecionada, nem na visão geral', () => {
+    const one = lobby(state(), CLOSED);
+    expect(one.root.find('strong')).toEqual([]);
+    expect(one.root.find('button')).toEqual([]);
+    const all = lobby(state(), null);
+    expect(all.root.find('strong').map((s) => s.textContent)).not.toContain('Antiga');
+    expect(all.root.textContent).not.toMatch(/encerrad/);
   });
 
   it('o cabeçalho acompanha a seleção', () => {
@@ -361,11 +363,23 @@ describe('Hybrid Midnight Gold: criação sob demanda e chat contextual', () => 
     expect(fn('applyIdentity')).toContain('renderInviteAccept(inviteAccept.state)');
   });
 
-  it('sem nenhuma sala, "Minhas salas" mostra só um botão "Criar sala" (o formulário fica no modal)', () => {
+  it('sem nenhuma sala aberta, "Minhas salas" mostra só um botão "Criar sala" (o formulário fica no modal)', () => {
     expect(html).toMatch(/<div id="rooms"><\/div>\s*<button id="create-empty-btn" type="button" hidden>Criar sala<\/button>/);
     const render = fn('renderRooms');
-    expect(render).toContain("const noRooms = s.status === 'ready' && s.rooms.length === 0");
+    expect(render).toContain("const noRooms = s.status === 'ready' && splitRooms(s.rooms).open.length === 0");
     expect(render).toContain('ui.createEmptyBtn.hidden = selectedRoomId !== null || !noRooms');
+  });
+
+  it('sala encerrada sai da interface: a tela volta à visão geral e o chat e os membros dela fecham', () => {
+    // A cada lista recebida (encerramento por aqui, por outra pessoa ou depois de recarregar), web e desktop.
+    expect(main).toMatch(/if \(callRoom\) soundboard\.setOwner\([^\n]*\n\s*leaveClosedRooms\(state\.rooms\);/);
+    const leave = fn('leaveClosedRooms');
+    expect(leave).toContain('const { closed } = splitRooms(rooms);');
+    expect(leave).toMatch(/gone\.has\(chat\.state\.roomId\)\) chat\.close\(\);/);
+    expect(leave).toMatch(/gone\.has\(members\.state\.roomId\)\) members\.close\(\);/);
+    expect(leave).toMatch(/gone\.has\(shell\.state\.selectedRoomId\)\) navigate\(null\);/);
+    // Só interface: nada de RPC, chamada ou dado do servidor.
+    expect(leave).not.toMatch(/rpc|endCall|startCall|close_room|backend/);
   });
 
   it('abrir uma sala mostra o texto padrão dela (Midnight), sem trocar o chat com mensagem pendente', () => {
